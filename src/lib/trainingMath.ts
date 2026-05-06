@@ -1,0 +1,538 @@
+import { createId, nowIso } from "./ids";
+import type {
+  DashboardMetric,
+  Exercise,
+  GymExerciseAdjustment,
+  LoggedExercise,
+  LoggedSet,
+  MuscleGroup,
+  PlannedSet,
+  ReadinessCheckIn,
+  Recommendation,
+  SetPerformanceStatus,
+  TrainingBlock,
+  TrainingDatabase,
+  UserProfile,
+  WorkoutSession
+} from "../types/domain";
+
+const RPE_PERCENT_TABLE: Record<number, Record<number, number>> = {
+  1: { 10: 1, 9.5: 0.978, 9: 0.955, 8.5: 0.939, 8: 0.922, 7.5: 0.907, 7: 0.892, 6.5: 0.878, 6: 0.865 },
+  2: { 10: 0.955, 9.5: 0.939, 9: 0.922, 8.5: 0.907, 8: 0.892, 7.5: 0.878, 7: 0.865, 6.5: 0.851, 6: 0.837 },
+  3: { 10: 0.922, 9.5: 0.907, 9: 0.892, 8.5: 0.878, 8: 0.865, 7.5: 0.851, 7: 0.837, 6.5: 0.824, 6: 0.811 },
+  4: { 10: 0.892, 9.5: 0.878, 9: 0.865, 8.5: 0.851, 8: 0.837, 7.5: 0.824, 7: 0.811, 6.5: 0.798, 6: 0.786 },
+  5: { 10: 0.865, 9.5: 0.851, 9: 0.837, 8.5: 0.824, 8: 0.811, 7.5: 0.798, 7: 0.786, 6.5: 0.774, 6: 0.762 },
+  6: { 10: 0.837, 9.5: 0.824, 9: 0.811, 8.5: 0.798, 8: 0.786, 7.5: 0.774, 7: 0.762, 6.5: 0.751, 6: 0.74 },
+  7: { 10: 0.811, 9.5: 0.798, 9: 0.786, 8.5: 0.774, 8: 0.762, 7.5: 0.751, 7: 0.74, 6.5: 0.723, 6: 0.707 },
+  8: { 10: 0.786, 9.5: 0.774, 9: 0.762, 8.5: 0.751, 8: 0.74, 7.5: 0.723, 7: 0.707, 6.5: 0.694, 6: 0.68 },
+  9: { 10: 0.762, 9.5: 0.751, 9: 0.74, 8.5: 0.723, 8: 0.707, 7.5: 0.694, 7: 0.68, 6.5: 0.667, 6: 0.653 },
+  10: { 10: 0.74, 9.5: 0.723, 9: 0.707, 8.5: 0.694, 8: 0.68, 7.5: 0.667, 7: 0.653, 6.5: 0.64, 6: 0.626 },
+  12: { 10: 0.68, 9.5: 0.667, 9: 0.653, 8.5: 0.64, 8: 0.626, 7.5: 0.614, 7: 0.602, 6.5: 0.59, 6: 0.578 },
+  15: { 10: 0.626, 9.5: 0.614, 9: 0.602, 8.5: 0.59, 8: 0.578, 7.5: 0.566, 7: 0.555, 6.5: 0.544, 6: 0.533 }
+};
+
+export function roundToIncrement(weight: number, increment = 5): number {
+  return Math.max(0, Math.round(weight / increment) * increment);
+}
+
+export function estimateOneRepMax(weight: number, reps: number, rpe = 10): number {
+  if (weight <= 0 || reps <= 0) return 0;
+  const percentage = lookupRpePercent(reps, rpe);
+  if (percentage) return Math.round(weight / percentage);
+  return Math.round(weight * (1 + reps / 30));
+}
+
+export function calculateE1RMFromSet(set: Pick<LoggedSet, "actualWeight" | "actualReps" | "actualRpe" | "kind" | "skipped">): number {
+  if (set.skipped || set.kind === "warmup" || set.actualWeight <= 0 || set.actualReps <= 0) return 0;
+  return estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10);
+}
+
+export function calculateSessionExerciseE1RM(loggedExercise: LoggedExercise): number {
+  return Math.max(0, ...loggedExercise.sets.map(calculateE1RMFromSet));
+}
+
+function clampScore(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function setRatingNumeric(rating?: LoggedSet["setRating"]): number {
+  if (rating === "Easy") return 5;
+  if (rating === "Good") return 3;
+  if (rating === "Hard") return 2;
+  if (rating === "Failed") return 1;
+  return 3;
+}
+
+export function calculateSetPerformanceScore(plannedSet: PlannedSet | undefined, actualSet: LoggedSet): {
+  score: number;
+  status: SetPerformanceStatus;
+  reasons: string[];
+} {
+  if (actualSet.skipped) return { score: 0, status: "skipped", reasons: ["Set was skipped."] };
+  const plannedReps = actualSet.plannedReps ?? plannedSet?.targetReps ?? actualSet.actualReps;
+  const plannedWeight = actualSet.plannedWeight ?? plannedSet?.plannedWeight ?? actualSet.actualWeight;
+  const plannedRpe = actualSet.targetRpe ?? plannedSet?.targetRpe ?? actualSet.actualRpe ?? 8;
+  const repsDelta = actualSet.actualReps - plannedReps;
+  const weightRatio = plannedWeight > 0 ? actualSet.actualWeight / plannedWeight : 1;
+  const rpeDelta = (actualSet.actualRpe ?? plannedRpe) - plannedRpe;
+  const rating = setRatingNumeric(actualSet.setRating);
+  const reasons: string[] = [];
+
+  let score = 72;
+  score += Math.max(-24, Math.min(18, repsDelta * 8));
+  score += Math.max(-18, Math.min(18, (weightRatio - 1) * 180));
+  score += Math.max(-18, Math.min(12, -rpeDelta * 7));
+  score += (rating - 3) * 7;
+  if (actualSet.added) score += 4;
+  if (actualSet.kind === "warmup") score = Math.max(50, Math.min(score, 75));
+  if (repsDelta < 0) reasons.push("Reps came in below plan.");
+  if (weightRatio < 0.98) reasons.push("Load came in below plan.");
+  if (rpeDelta >= 1.5) reasons.push("Actual RPE was materially above target.");
+  if (rating <= 2) reasons.push("Set rating showed higher-than-planned difficulty.");
+  if (!reasons.length) reasons.push(actualSet.added ? "Useful added work." : "Set was close to plan.");
+
+  const finalScore = clampScore(score);
+  const status: SetPerformanceStatus = actualSet.added
+    ? "added"
+    : finalScore >= 86 && (repsDelta > 0 || weightRatio > 1.01 || rpeDelta <= -1 || rating >= 5)
+      ? "overperformed"
+      : finalScore >= 63
+        ? "matched"
+        : "underperformed";
+  return { score: finalScore, status, reasons };
+}
+
+export function calculateWorkoutScore(session: WorkoutSession): {
+  score: number;
+  status: "poor" | "mixed" | "solid" | "excellent";
+  completionPercentage: number;
+  averageSetRating: number;
+  suggestions: string[];
+} {
+  const sets = session.loggedExercises.flatMap((exercise) => exercise.sets);
+  if (!sets.length) {
+    return {
+      score: 0,
+      status: "poor",
+      completionPercentage: 0,
+      averageSetRating: 0,
+      suggestions: ["No sets were logged."]
+    };
+  }
+  const scored = sets.map((set) => calculateSetPerformanceScore(undefined, set));
+  const skipped = sets.filter((set) => set.skipped).length;
+  const completed = sets.length - skipped;
+  const averagePerformance = scored.reduce((sum, item) => sum + item.score, 0) / scored.length;
+  const completionPercentage = Math.round((completed / sets.length) * 100);
+  const averageSetRating = Number((sets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / sets.length).toFixed(1));
+  const readiness = session.readiness?.readinessScore;
+  const readinessEffect = readiness === undefined ? 0 : readiness < 45 ? -4 : readiness > 85 ? 2 : 0;
+  const skippedPenalty = skipped ? Math.min(18, skipped * 5) : 0;
+  const score = clampScore(averagePerformance * 0.7 + completionPercentage * 0.3 + readinessEffect - skippedPenalty);
+  const status = score >= 88 ? "excellent" : score >= 72 ? "solid" : score >= 50 ? "mixed" : "poor";
+  const suggestions: string[] = [];
+  if (skipped >= 2) suggestions.push("Skipped volume was high; review fatigue or reduce optional sets.");
+  if (averageSetRating <= 2) suggestions.push("Sets felt harder than planned; keep load steady or trim volume.");
+  if (score >= 88) suggestions.push("Performance was ahead of plan; a small load increase can be reviewed next time.");
+  if (!suggestions.length) suggestions.push("Workout matched the plan closely; continue conservative progression.");
+  return { score, status, completionPercentage, averageSetRating, suggestions };
+}
+
+export function recommendNextWorkoutAdjustments(completedWorkoutSession: WorkoutSession, activeBlock?: TrainingBlock): string[] {
+  const sets = completedWorkoutSession.loggedExercises.flatMap((exercise) => exercise.sets);
+  const workingSets = sets.filter((set) => !set.skipped && set.kind !== "warmup");
+  const skipped = sets.filter((set) => set.skipped).length;
+  const easyAhead = workingSets.filter((set) => {
+    const targetRpe = set.targetRpe ?? 8;
+    return set.setRating === "Easy" && (set.actualRpe ?? targetRpe) <= targetRpe - 1 && set.actualReps >= (set.plannedReps ?? set.actualReps);
+  }).length;
+  const hardBehind = workingSets.filter((set) => {
+    const targetRpe = set.targetRpe ?? 8;
+    return set.setRating === "Failed" || set.setRating === "Hard" || (set.actualRpe ?? targetRpe) >= targetRpe + 1.5 || set.actualReps < (set.plannedReps ?? set.actualReps);
+  }).length;
+  const suggestions: string[] = [];
+
+  if (skipped >= 2) suggestions.push("Reduce optional volume or review fatigue before the next similar day.");
+  if (hardBehind >= Math.max(2, Math.ceil(workingSets.length * 0.35))) suggestions.push("Keep load the same or reduce 2.5-5% on the next exposure.");
+  if (easyAhead >= Math.max(2, Math.ceil(workingSets.length * 0.35))) suggestions.push("Review a small load increase next time.");
+  if ((completedWorkoutSession.readiness?.readinessScore || 100) < 50) suggestions.push("Readiness was low; consider lower top-set RPE or fewer accessories.");
+  if (!suggestions.length) suggestions.push("Keep progression conservative and run the next block day as planned.");
+  if (activeBlock?.type === "deload") suggestions.unshift("Respect deload intent; avoid turning easy sets into max-effort work.");
+  return suggestions;
+}
+
+export function lookupRpePercent(reps: number, rpe = 8): number {
+  const closestReps = Object.keys(RPE_PERCENT_TABLE)
+    .map(Number)
+    .reduce((best, candidate) => (Math.abs(candidate - reps) < Math.abs(best - reps) ? candidate : best), 1);
+  const rpeOptions = Object.keys(RPE_PERCENT_TABLE[closestReps]).map(Number);
+  const closestRpe = rpeOptions.reduce(
+    (best, candidate) => (Math.abs(candidate - rpe) < Math.abs(best - rpe) ? candidate : best),
+    rpeOptions[0]
+  );
+  return RPE_PERCENT_TABLE[closestReps][closestRpe];
+}
+
+export function calculateReadinessScore(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">): number {
+  const positive = input.sleepQuality + input.motivation + input.energy + input.nutritionQuality;
+  const negative = input.stress + input.soreness + input.jointPain * 1.4;
+  const caffeineBump = input.caffeine ? 0.4 : 0;
+  const raw = ((positive + caffeineBump - negative + 12) / 24) * 100;
+  return Math.max(0, Math.min(100, Math.round(raw)));
+}
+
+export function readinessAdjustment(readiness?: ReadinessCheckIn): {
+  rpeDelta: number;
+  accessorySetDelta: number;
+  explanation: string;
+} {
+  if (!readiness) return { rpeDelta: 0, accessorySetDelta: 0, explanation: "No readiness check-in yet." };
+  if (readiness.readinessScore < 45) {
+    return {
+      rpeDelta: -1,
+      accessorySetDelta: -1,
+      explanation: "Low readiness: reduce top-set RPE by about 1 and remove one optional accessory set."
+    };
+  }
+  if (readiness.readinessScore < 65) {
+    return {
+      rpeDelta: -0.5,
+      accessorySetDelta: 0,
+      explanation: "Moderate readiness: cap top sets slightly lower and avoid chasing load jumps."
+    };
+  }
+  if (readiness.readinessScore > 85) {
+    return {
+      rpeDelta: 0.25,
+      accessorySetDelta: 0,
+      explanation: "High readiness: small load increases are reasonable if warmups confirm it."
+    };
+  }
+  return { rpeDelta: 0, accessorySetDelta: 0, explanation: "Readiness is normal: run the plan." };
+}
+
+export function getRecentExerciseSets(
+  sessions: WorkoutSession[],
+  userId: string,
+  exerciseId: string,
+  limit = 8,
+  gymId?: string
+): LoggedSet[] {
+  return sessions
+    .filter((session) => session.userId === userId && session.status === "completed" && (!gymId || session.gymId === gymId))
+    .flatMap((session) =>
+      session.loggedExercises.filter((exercise) => exercise.exerciseId === exerciseId).flatMap((exercise) => exercise.sets)
+    )
+    .sort((a, b) => b.completedAt.localeCompare(a.completedAt))
+    .slice(0, limit);
+}
+
+export function findGymExerciseAdjustment(params: {
+  db: TrainingDatabase;
+  userId: string;
+  gymId?: string;
+  exerciseId: string;
+  machineId?: string;
+}): GymExerciseAdjustment | undefined {
+  const { db, userId, gymId, exerciseId, machineId } = params;
+  if (!gymId) return undefined;
+  return db.gyms
+    .filter((gym) => gym.userId === userId && gym.id === gymId)
+    .flatMap((gym) => gym.exerciseAdjustments || [])
+    .find((adjustment) => adjustment.exerciseId === exerciseId && (!machineId || adjustment.machineId === machineId));
+}
+
+export function suggestPlannedWeight(params: {
+  user: UserProfile;
+  exercise: Exercise;
+  plannedSet: PlannedSet;
+  db: TrainingDatabase;
+  readiness?: ReadinessCheckIn;
+  gymId?: string;
+  machineId?: string;
+}): { weight: number; explanation: string } {
+  const { user, exercise, plannedSet, db, readiness, gymId, machineId } = params;
+  const increment = user.unit === "kg" ? 2.5 : exercise.category === "dumbbell" || exercise.trackPerSide ? 2.5 : 5;
+  const liftMax = user.maxes.find((max) => max.exerciseId === exercise.id || exercise.name.toLowerCase().includes(max.liftName.toLowerCase()));
+  const gymSets = getRecentExerciseSets(db.sessions, user.id, exercise.id, 5, gymId);
+  const recentSets = gymSets.length ? gymSets : getRecentExerciseSets(db.sessions, user.id, exercise.id, 5);
+  const adjustment = findGymExerciseAdjustment({ db, userId: user.id, gymId, exerciseId: exercise.id, machineId });
+  const targetReps = plannedSet.targetReps || 8;
+  const targetRpe = plannedSet.targetRpe || 7;
+  const candidates: number[] = [];
+
+  if (plannedSet.plannedWeight) candidates.push(plannedSet.plannedWeight);
+  if (liftMax) candidates.push((liftMax.trainingMax || liftMax.oneRepMax) * lookupRpePercent(targetReps, targetRpe));
+  if (recentSets[0]) {
+    const last = recentSets[0];
+    const rpeDelta = (last.actualRpe || targetRpe) - targetRpe;
+    const repsDelta = last.actualReps - targetReps;
+    let recentWeight = last.actualWeight;
+
+    // The model is deliberately moderate: only strong performance signals move the next planned load.
+    if (last.setRating === "Failed" || repsDelta < -1 || rpeDelta >= 2 || (last.formRating ?? 4) <= 2) recentWeight *= 0.95;
+    else if (last.setRating === "Easy" && rpeDelta <= -1 && repsDelta >= 0) recentWeight *= 1.025;
+    else if (last.setRating === "Hard" || rpeDelta >= 1) recentWeight *= 0.985;
+    candidates.push(recentWeight);
+  }
+
+  if (candidates.length === 0) return { weight: 0, explanation: "No history or max yet. Enter a starting weight manually." };
+
+  const readinessEffect = readinessAdjustment(readiness);
+  const readinessMultiplier = readinessEffect.rpeDelta <= -1 ? 0.96 : readinessEffect.rpeDelta < 0 ? 0.985 : 1;
+  const blended = candidates.reduce((sum, weight) => sum + weight, 0) / candidates.length;
+  const shouldApplyGymFactor = !gymSets.length && Boolean(adjustment) && (exercise.category === "machine" || exercise.category === "cable" || adjustment?.source === "manual");
+  const gymMultiplier = shouldApplyGymFactor ? adjustment?.factor || 1 : 1;
+  const weight = roundToIncrement(blended * readinessMultiplier * gymMultiplier, increment);
+  return {
+    weight,
+    explanation: `Blends planned load, ${gymSets.length ? "this gym's" : "recent"} ${exercise.name} history, e1RM/RPE chart, readiness, and any machine conversion. ${readinessEffect.explanation}`
+  };
+}
+
+export function learnGymExerciseAdjustment(params: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  session: WorkoutSession;
+  loggedExercise: LoggedExercise;
+  loggedSet: LoggedSet;
+  exercise: Exercise;
+}): void {
+  const { db, user, session, loggedExercise, loggedSet, exercise } = params;
+  if (!session.gymId || exercise.category === "barbell" || exercise.category === "dumbbell" || exercise.category === "bodyweight") return;
+  const currentPerformance = estimateOneRepMax(loggedSet.actualWeight, loggedSet.actualReps, loggedSet.actualRpe || 10);
+  if (!currentPerformance) return;
+
+  const reference = db.sessions
+    .filter((item) => item.userId === user.id && item.status === "completed" && item.gymId && item.gymId !== session.gymId)
+    .flatMap((item) =>
+      item.loggedExercises
+        .filter((logged) => logged.exerciseId === loggedExercise.exerciseId)
+        .flatMap((logged) => logged.sets.map((set) => ({ gymId: item.gymId!, value: estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10) })))
+    )
+    .filter((item) => item.value > 0)
+    .sort((a, b) => b.value - a.value)[0];
+
+  if (!reference) return;
+  const learnedFactor = Math.max(0.5, Math.min(1.5, currentPerformance / reference.value));
+  const gym = db.gyms.find((item) => item.id === session.gymId && item.userId === user.id);
+  if (!gym) return;
+  gym.exerciseAdjustments ||= [];
+  const existing = gym.exerciseAdjustments.find(
+    (item) => item.exerciseId === loggedExercise.exerciseId && item.machineId === loggedExercise.machineId
+  );
+  if (existing && existing.source === "manual") return;
+
+  // This is a deliberately simple online update: each comparable set nudges the
+  // gym/machine factor toward the observed load relationship without letting one
+  // odd set completely rewrite future recommendations.
+  if (existing) {
+    const nextSampleSize = existing.sampleSize + 1;
+    existing.factor = Number(((existing.factor * existing.sampleSize + learnedFactor) / nextSampleSize).toFixed(3));
+    existing.sampleSize = nextSampleSize;
+    existing.baselineGymId = reference.gymId;
+    existing.lastCalculatedFactor = Number(learnedFactor.toFixed(3));
+    existing.confidence = Math.min(0.9, nextSampleSize / 6);
+    existing.updatedAt = nowIso();
+  } else {
+    gym.exerciseAdjustments.push({
+      id: createId("adj"),
+      userId: user.id,
+      gymId: session.gymId,
+      exerciseId: loggedExercise.exerciseId,
+      machineId: loggedExercise.machineId,
+      factor: Number(learnedFactor.toFixed(3)),
+      source: "learned",
+      sampleSize: 1,
+      baselineGymId: reference.gymId,
+      lastCalculatedFactor: Number(learnedFactor.toFixed(3)),
+      confidence: 0.25,
+      userAccepted: false,
+      notes: "Learned from comparable reps/RPE at another gym.",
+      updatedAt: nowIso()
+    });
+  }
+}
+
+export function suggestNextSetAdjustment(params: {
+  user: UserProfile;
+  exercise: Exercise;
+  loggedSet: LoggedSet;
+  nextPlannedSet?: PlannedSet;
+}): Recommendation | undefined {
+  const { user, exercise, loggedSet, nextPlannedSet } = params;
+  const targetRpe = loggedSet.targetRpe ?? nextPlannedSet?.targetRpe ?? 8;
+  const plannedReps = loggedSet.plannedReps ?? nextPlannedSet?.targetReps ?? loggedSet.actualReps;
+  const rpeDelta = (loggedSet.actualRpe ?? targetRpe) - targetRpe;
+  const missedReps = loggedSet.actualReps < plannedReps;
+  const painHigh = (loggedSet.painRating ?? 0) >= 6;
+  const formPoor = (loggedSet.formRating ?? 4) <= 2;
+  const feelPoorAccessory = exercise.kind.includes("isolation") && (loggedSet.muscleFeelRating ?? 4) <= 2;
+  let multiplier = 1;
+  let priority: "low" | "medium" | "high" = "medium";
+  let title = "Hold load";
+  let explanation = "The set was close enough to target that the plan can stay steady.";
+  let type: Recommendation["type"] = "load-change";
+
+  if (painHigh) {
+    multiplier = 0;
+    priority = "high";
+    type = "pain-warning";
+    title = "Stop or substitute";
+    explanation = "Pain was high. Stop this movement today or switch to a pain-free substitute.";
+  } else if (loggedSet.setRating === "Failed" || missedReps) {
+    multiplier = 0.92;
+    priority = "high";
+    title = "Reduce next set";
+    explanation = "Planned reps were missed. Reduce the next set by about 5-10%.";
+  } else if (rpeDelta >= 2) {
+    multiplier = 0.95;
+    title = "Reduce next set";
+    explanation = "Actual RPE was at least 2 points above target. Reduce the next set by about 2.5-7.5%.";
+  } else if (formPoor) {
+    multiplier = 0.975;
+    title = "Protect technique";
+    explanation = "Form quality was poor, so hold or slightly reduce load even though the reps were completed.";
+  } else if (loggedSet.setRating === "Easy" && rpeDelta <= -1) {
+    multiplier = 1.025;
+    priority = "low";
+    title = "Small increase available";
+    explanation = "The set was clearly easier than target. A small increase is reasonable if warmups and form agree.";
+  } else if (feelPoorAccessory) {
+    type = "cue";
+    priority = "low";
+    title = "Improve stimulus";
+    explanation = "Muscle feel was poor on an accessory. Try slower tempo, a setup cue, or a substitute next round.";
+  }
+
+  if (multiplier === 1 && type === "load-change") return undefined;
+  const increment = user.unit === "kg" ? 2.5 : exercise.trackPerSide || exercise.category === "dumbbell" ? 2.5 : 5;
+  const suggestedWeight = multiplier === 0 ? 0 : roundToIncrement(loggedSet.actualWeight * multiplier, increment);
+  return {
+    id: createId("rec"),
+    userId: user.id,
+    type,
+    priority,
+    title,
+    explanation,
+    action: {
+      exerciseId: exercise.id,
+      setId: loggedSet.id,
+      suggestedWeight
+    },
+    createdAt: nowIso()
+  };
+}
+
+export function calculateMuscleVolume(sessions: WorkoutSession[], exercises: Exercise[], userId: string): Partial<Record<MuscleGroup, number>> {
+  const totals: Partial<Record<MuscleGroup, number>> = {};
+  const sevenDaysAgo = Date.now() - 1000 * 60 * 60 * 24 * 7;
+  sessions
+    .filter((session) => session.userId === userId && new Date(session.startedAt).getTime() >= sevenDaysAgo)
+    .forEach((session) => {
+      session.loggedExercises.forEach((logged) => {
+        const exercise = exercises.find((item) => item.id === logged.exerciseId);
+        if (!exercise) return;
+        const hardSets = logged.sets.filter((set) => set.kind !== "warmup").length;
+        exercise.directVolumeMuscles.forEach((muscle) => {
+          totals[muscle] = (totals[muscle] || 0) + hardSets;
+        });
+        exercise.indirectVolumeMuscles.forEach((muscle) => {
+          totals[muscle] = (totals[muscle] || 0) + hardSets * 0.5;
+        });
+      });
+    });
+  return totals;
+}
+
+export function calculateSessionTonnage(session: WorkoutSession): number {
+  return session.loggedExercises.reduce(
+    (exerciseTotal, exercise) =>
+      exerciseTotal + exercise.sets.reduce((setTotal, set) => setTotal + (set.skipped ? 0 : set.actualWeight * set.actualReps), 0),
+    0
+  );
+}
+
+export function powerliftingMetrics(db: TrainingDatabase, user: UserProfile): DashboardMetric[] {
+  const squat = bestE1rmForExercise(db.sessions, user.id, "ex_squat_comp");
+  const bench = bestE1rmForExercise(db.sessions, user.id, "ex_bench_comp");
+  const deadlift = bestE1rmForExercise(db.sessions, user.id, "ex_deadlift_comp");
+  const fallback = (lift: string) => user.maxes.find((max) => max.liftName.toLowerCase().includes(lift))?.oneRepMax || 0;
+  const s = squat || fallback("squat");
+  const b = bench || fallback("bench");
+  const d = deadlift || fallback("deadlift");
+  return [
+    { id: "pl_squat", label: "Squat e1RM", value: s || "-", unit: user.unit, trend: "flat" },
+    { id: "pl_bench", label: "Bench e1RM", value: b || "-", unit: user.unit, trend: bench ? "up" : "flat" },
+    { id: "pl_deadlift", label: "Deadlift e1RM", value: d || "-", unit: user.unit, trend: "flat" },
+    { id: "pl_total", label: "Estimated total", value: s + b + d || "-", unit: user.unit, trend: "flat" }
+  ];
+}
+
+export function bestE1rmForExercise(sessions: WorkoutSession[], userId: string, exerciseId: string): number {
+  return Math.max(
+    0,
+    ...sessions
+      .filter((session) => session.userId === userId)
+      .flatMap((session) => session.loggedExercises)
+      .filter((exercise) => exercise.exerciseId === exerciseId)
+      .flatMap((exercise) => exercise.sets)
+      .filter((set) => !set.skipped && set.kind !== "warmup")
+      .map((set) => estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10))
+  );
+}
+
+export function recentTopSets(sessions: WorkoutSession[], userId: string): { exerciseId: string; set: LoggedSet }[] {
+  return sessions
+    .filter((session) => session.userId === userId && session.status === "completed")
+    .flatMap((session) =>
+      session.loggedExercises.flatMap((exercise) => exercise.sets.map((set) => ({ exerciseId: exercise.exerciseId, set })))
+    )
+    .filter(({ set }) => !set.skipped && set.kind !== "warmup")
+    .sort((a, b) => b.set.completedAt.localeCompare(a.set.completedAt))
+    .slice(0, 8);
+}
+
+export function detectWeakPointTags(loggedExercise: LoggedExercise): string[] {
+  const text = [loggedExercise.notes, ...loggedExercise.sets.map((set) => set.notes)].filter(Boolean).join(" ").toLowerCase();
+  const tags: string[] = [];
+  if (text.includes("off chest") || text.includes("slow off chest")) tags.push("weak-off-chest");
+  if (text.includes("lockout")) tags.push("lockout-weakness");
+  if (text.includes("out of hole") || text.includes("hole")) tags.push("squat-out-of-hole");
+  if (text.includes("upper back collapse")) tags.push("upper-back-collapse");
+  if (text.includes("off floor")) tags.push("deadlift-off-floor");
+  if (text.includes("grip")) tags.push("grip-weakness");
+  if (text.includes("no pump") || text.includes("poor feel")) tags.push("poor-stimulus");
+  return [...new Set([...loggedExercise.weakPointTags, ...tags])];
+}
+
+export function summarizeWeek(db: TrainingDatabase, user: UserProfile): {
+  completedWorkouts: number;
+  missedWorkouts: number;
+  volume: Partial<Record<MuscleGroup, number>>;
+  tonnage: number;
+  recommendations: string[];
+} {
+  const sevenDaysAgo = Date.now() - 1000 * 60 * 60 * 24 * 7;
+  const sessions = db.sessions.filter((session) => user.id === session.userId && new Date(session.startedAt).getTime() >= sevenDaysAgo);
+  const completed = sessions.filter((session) => session.status === "completed");
+  const volume = calculateMuscleVolume(completed, db.exercises, user.id);
+  const tonnage = completed.reduce((sum, session) => sum + calculateSessionTonnage(session), 0);
+  const highPainSets = completed.flatMap((session) => session.loggedExercises).flatMap((exercise) => exercise.sets).filter((set) => (set.painRating || 0) >= 5).length;
+  const hardFailed = completed
+    .flatMap((session) => session.loggedExercises)
+    .flatMap((exercise) => exercise.sets)
+    .filter((set) => set.setRating === "Hard" || set.setRating === "Failed").length;
+  const recommendations: string[] = [];
+  if (highPainSets) recommendations.push("Pain is showing up. Keep substitutions available and avoid forcing painful patterns.");
+  if (hardFailed >= 4) recommendations.push("Several sets were hard or failed. Hold load jumps next week or reduce accessory volume.");
+  if ((volume["side-delts"] || 0) < 4 && user.goal !== "general-health") recommendations.push("Side delt direct volume is low. Add 2-4 sets if recovery is normal.");
+  if (!recommendations.length) recommendations.push("Training stress looks manageable. Progress the main plan conservatively.");
+  return {
+    completedWorkouts: completed.length,
+    missedWorkouts: Math.max(0, user.availableDaysPerWeek - completed.length),
+    volume,
+    tonnage,
+    recommendations
+  };
+}

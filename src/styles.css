@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  background: #07090d;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 30rem),
+    linear-gradient(160deg, #07090d 0%, #111827 48%, #0d1016 100%);
+  color: #f8fafc;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  color-scheme: dark;
+}
+
+.safe-bottom {
+  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+}
+
+.safe-top {
+  padding-top: max(1rem, env(safe-area-inset-top));
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+.tap-highlight {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-lg border border-white/10 bg-white/[0.055] shadow-glow backdrop-blur;
+  }
+
+  .panel-soft {
+    @apply rounded-lg border border-white/10 bg-white/[0.035] backdrop-blur;
+  }
+
+  .btn-primary {
+    @apply tap-highlight inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-volt px-4 py-2.5 text-sm font-black text-iron-950 transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-secondary {
+    @apply tap-highlight inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/15 active:scale-[0.98];
+  }
+
+  .btn-ghost {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-iron-200 transition hover:bg-white/10 active:scale-[0.98];
+  }
+
+  .field {
+    @apply min-h-11 w-full rounded-lg border border-white/10 bg-iron-950/70 px-3 py-2 text-sm text-white outline-none ring-0 transition placeholder:text-iron-500 focus:border-volt/70;
+  }
+
+  .label {
+    @apply text-xs font-bold uppercase tracking-[0.18em] text-iron-400;
+  }
+
+  .metric-card {
+    @apply rounded-lg border border-white/10 bg-iron-950/60 p-3;
+  }
+}
