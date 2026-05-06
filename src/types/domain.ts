@@ -86,7 +86,7 @@ export type SetKind =
   | "technique"
   | "drop"
   | "conditioning";
-export type SetRating = "Easy" | "Good" | "Hard" | "Failed";
+export type SetRating = 1 | 2 | 3 | 4 | 5;
 export type SetPerformanceStatus = "underperformed" | "matched" | "overperformed" | "skipped" | "added";
 export type RecommendationType =
   | "load-change"

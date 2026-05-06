@@ -199,6 +199,13 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
           set.setNumber = index + 1;
           changed = true;
         }
+        // Migrate old string setRating ("Easy"/"Good"/"Hard"/"Failed") to numeric 1-5.
+        const rawRating = set.setRating as unknown;
+        if (typeof rawRating === "string") {
+          const legacyMap: Record<string, 1 | 2 | 3 | 4 | 5> = { Easy: 5, Good: 3, Hard: 2, Failed: 1 };
+          set.setRating = legacyMap[rawRating as string] ?? 3;
+          changed = true;
+        }
         if (set.performanceScore === undefined || !set.performanceStatus) {
           const performance = calculateSetPerformanceScore(undefined, set);
           set.performanceScore = performance.score;

@@ -674,8 +674,8 @@ function sampleSession(userId: string, gymId: string, templateId: string): Worko
         order: 1,
         weakPointTags: ["slow-out-of-hole"],
         sets: [
-          { id: createId("set"), kind: "working", actualWeight: 315, plannedWeight: 315, plannedReps: 5, actualReps: 5, targetRpe: 7, actualRpe: 7, setRating: "Good", formRating: 4, muscleFeelRating: 3, painRating: 0, completedAt: nowIso() },
-          { id: createId("set"), kind: "working", actualWeight: 315, plannedWeight: 315, plannedReps: 5, actualReps: 5, targetRpe: 7, actualRpe: 8, setRating: "Hard", formRating: 3, muscleFeelRating: 3, painRating: 1, completedAt: nowIso(), notes: "Slow out of hole on set 2." }
+          { id: createId("set"), kind: "working", actualWeight: 315, plannedWeight: 315, plannedReps: 5, actualReps: 5, targetRpe: 7, actualRpe: 7, setRating: 3, formRating: 4, muscleFeelRating: 3, painRating: 0, completedAt: nowIso() },
+          { id: createId("set"), kind: "working", actualWeight: 315, plannedWeight: 315, plannedReps: 5, actualReps: 5, targetRpe: 7, actualRpe: 8, setRating: 2, formRating: 3, muscleFeelRating: 3, painRating: 1, completedAt: nowIso(), notes: "Slow out of hole on set 2." }
         ]
       },
       {
@@ -684,8 +684,8 @@ function sampleSession(userId: string, gymId: string, templateId: string): Worko
         order: 2,
         weakPointTags: ["weak-off-chest"],
         sets: [
-          { id: createId("set"), kind: "working", actualWeight: 225, plannedWeight: 225, plannedReps: 6, actualReps: 6, targetRpe: 7, actualRpe: 7, setRating: "Good", formRating: 4, muscleFeelRating: 4, painRating: 0, completedAt: nowIso() },
-          { id: createId("set"), kind: "working", actualWeight: 225, plannedWeight: 225, plannedReps: 6, actualReps: 5, targetRpe: 7, actualRpe: 9, setRating: "Hard", formRating: 3, muscleFeelRating: 3, painRating: 0, completedAt: nowIso(), notes: "Bench was slow off chest." }
+          { id: createId("set"), kind: "working", actualWeight: 225, plannedWeight: 225, plannedReps: 6, actualReps: 6, targetRpe: 7, actualRpe: 7, setRating: 3, formRating: 4, muscleFeelRating: 4, painRating: 0, completedAt: nowIso() },
+          { id: createId("set"), kind: "working", actualWeight: 225, plannedWeight: 225, plannedReps: 6, actualReps: 5, targetRpe: 7, actualRpe: 9, setRating: 2, formRating: 3, muscleFeelRating: 3, painRating: 0, completedAt: nowIso(), notes: "Bench was slow off chest." }
         ]
       }
     ]

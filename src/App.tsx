@@ -70,6 +70,7 @@ import {
   readinessAdjustment,
   recommendNextWorkoutAdjustments,
   recentTopSets,
+  setRatingNumeric,
   summarizeWeek,
   suggestNextSetAdjustment,
   suggestPlannedWeight
@@ -538,10 +539,13 @@ function LiveLogger({
   const hasMoreExercises = activeExerciseIndex < liveSession.loggedExercises.length - 1;
   const primaryAction = isCurrentSetLastPlannedSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
   const primaryActionLabel = primaryAction === "finish-workout" ? "Finish Workout" : primaryAction === "finish-exercise" ? "Finish Exercise" : "Next Set";
-  const exerciseComplete = plannedSets.length > 0 && liveExerciseLog.sets.length >= plannedSets.length;
+  const hasLoggedNonSkippedSets = liveExerciseLog.sets.filter((s) => !s.skipped).length > 0;
+  // An exercise is complete when all planned sets are logged, or (if no planned sets) at least one non-skipped set exists.
+  const exerciseComplete = plannedSets.length > 0 ? liveExerciseLog.sets.length >= plannedSets.length : hasLoggedNonSkippedSets;
   const allExercisesComplete = liveSession.loggedExercises.every((logged) => {
     const plannedForLog = findPlannedExercise(db, liveSession, logged);
-    return Boolean(plannedForLog?.plannedSets.length && logged.sets.length >= plannedForLog.plannedSets.length);
+    if (plannedForLog?.plannedSets.length) return logged.sets.length >= plannedForLog.plannedSets.length;
+    return logged.sets.filter((s) => !s.skipped).length > 0;
   });
 
   function addReadiness(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">) {
@@ -635,7 +639,7 @@ function LiveLogger({
       actualWeight: 0,
       actualReps: 0,
       targetRpe: nextPlannedSet?.targetRpe,
-      setRating: "Failed",
+      setRating: 1 as SetRating,
       skipped: true,
       notes: setDraft.notes || "Skipped set.",
       completedAt: nowIso()
@@ -853,12 +857,18 @@ function LiveLogger({
                 </select>
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-4 gap-2">
-              {(["Easy", "Good", "Hard", "Failed"] as SetRating[]).map((rating) => (
-                <button key={rating} className={`min-h-12 rounded-lg text-sm font-black ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => setSetDraft((draft) => ({ ...draft, setRating: rating }))}>
-                  {rating}
-                </button>
-              ))}
+            <div className="mt-4">
+              <p className="label mb-2">Set feel (1 = much harder than expected, 5 = much easier)</p>
+            </div>
+            <div className="grid grid-cols-5 gap-2">
+              {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
+                const labels: Record<number, string> = { 1: "1", 2: "2", 3: "3", 4: "4", 5: "5" };
+                return (
+                  <button key={rating} className={`min-h-12 rounded-lg text-xs font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => setSetDraft((draft) => ({ ...draft, setRating: rating }))}>
+                    {labels[rating]}
+                  </button>
+                );
+              })}
             </div>
             <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
               <SmallRating label="Form" value={setDraft.formRating} onChange={(value) => setSetDraft((draft) => ({ ...draft, formRating: value }))} />
@@ -878,7 +888,8 @@ function LiveLogger({
               >
                 <Check className="h-5 w-5" /> {primaryActionLabel}
               </button>
-              <button className="btn-secondary" onClick={addSet} disabled={!isCurrentSetLastPlannedSet && !isPastLastPlannedSet}>Add Set</button>
+              {/* Add Set is always available for free-form sessions (no planned sets) or when on/past the last planned set */}
+              <button className="btn-secondary" onClick={addSet} disabled={plannedSets.length > 0 && !isCurrentSetLastPlannedSet && !isPastLastPlannedSet}>Add Set</button>
               <button className="btn-secondary" onClick={finishExercise} disabled={!exerciseComplete}>Finish Exercise</button>
             </div>
           </section>
@@ -2118,8 +2129,15 @@ function ExerciseProgressPanel({
       if (!log) return undefined;
       const value = calculateSessionExerciseE1RM(log);
       if (!value) return undefined;
+      // Prefer block week label; fall back to looking up week from block structure; then use date.
+      const blockWeekNumber = session.weekNumber
+        ?? db.programs
+            .flatMap((program) => program.blocks)
+            .flatMap((block) => block.weeks)
+            .find((week) => week.workouts.some((day) => day.id === session.workoutDayId))
+            ?.weekNumber;
       return {
-        label: session.weekNumber ? `W${session.weekNumber}` : new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        label: blockWeekNumber ? `W${blockWeekNumber}` : new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
         value,
         date: session.startedAt
       };
@@ -2569,7 +2587,9 @@ function GymScreen({
 function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; user: UserProfile; setScreen: (screen: Screen) => void }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
-  const week = block?.weeks.find((item) => item.weekNumber === block.currentWeek) || block?.weeks[0];
+  // Derive the current week from the block cursor (sequence-based, not calendar-based).
+  const cursor = block ? getCurrentWorkoutForUser(db, user.id) : undefined;
+  const week = (cursor ? block?.weeks.find((item) => item.weekNumber === cursor.week.weekNumber) : undefined) || block?.weeks.find((item) => item.weekNumber === block?.currentWeek) || block?.weeks[0];
   const weekSessions = db.sessions.filter((session) => session.userId === user.id && session.blockId === block?.id && session.weekNumber === week?.weekNumber);
   const completedSessions = weekSessions.filter((session) => session.status === "completed");
   const skippedCount = week?.workouts.filter((day) => block?.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped").length || 0;
@@ -2583,7 +2603,7 @@ function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; use
     .flatMap((exercise) => exercise.sets)
     .filter((set) => !set.skipped);
   const averageSetFeel = averageSetRating.length
-    ? Number((averageSetRating.reduce((sum, set) => sum + setRatingValue(set.setRating), 0) / averageSetRating.length).toFixed(1))
+    ? Number((averageSetRating.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / averageSetRating.length).toFixed(1))
     : 0;
 
   return (
@@ -2689,7 +2709,7 @@ function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile 
                     <p className="font-bold">{exercise?.name}</p>
                     <p className="text-sm text-volt">{estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)} e1RM</p>
                   </div>
-                  <p className="text-xs text-iron-400">{set.actualWeight} x {set.actualReps} @ {set.actualRpe || "?"} - {set.setRating}</p>
+                  <p className="text-xs text-iron-400">{set.actualWeight} x {set.actualReps} @ {set.actualRpe || "?"} - feel {set.setRating}/5</p>
                 </div>
               );
             })}
@@ -2971,7 +2991,7 @@ function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; e
               <th className="p-3">Load</th>
               <th className="p-3">Reps</th>
               <th className="p-3">RPE</th>
-              <th className="p-3">Rating</th>
+              <th className="p-3">Feel</th>
               <th className="p-3">e1RM</th>
             </tr>
           </thead>
@@ -2982,7 +3002,7 @@ function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; e
                 <td className="p-3">{set.actualWeight} {user.unit}</td>
                 <td className="p-3">{set.actualReps}</td>
                 <td className="p-3">{set.actualRpe || "-"}</td>
-                <td className="p-3">{set.setRating}</td>
+                <td className="p-3">{set.setRating}/5</td>
                 <td className="p-3">{estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)}</td>
               </tr>
             ))}
@@ -2991,13 +3011,6 @@ function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; e
       </div>
     </section>
   );
-}
-
-function setRatingValue(rating: SetRating): number {
-  if (rating === "Easy") return 5;
-  if (rating === "Good") return 3;
-  if (rating === "Hard") return 2;
-  return 1;
 }
 
 function finishWorkoutInDraft(draft: TrainingDatabase, user: UserProfile, target: WorkoutSession): void {
@@ -3021,7 +3034,7 @@ function finishWorkoutInDraft(draft: TrainingDatabase, user: UserProfile, target
     const validSets = logged.sets.filter((set) => !set.skipped && set.kind !== "warmup");
     if (!validSets.length) return;
     const totalReps = validSets.reduce((sum, set) => sum + set.actualReps, 0);
-    const averageSetRating = Number((validSets.reduce((sum, set) => sum + setRatingValue(set.setRating), 0) / validSets.length).toFixed(1));
+    const averageSetRating = Number((validSets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / validSets.length).toFixed(1));
     const exercise = draft.exercises.find((item) => item.id === logged.exerciseId);
     draft.exercisePerformanceLogs?.push({
       id: createId("elog"),
@@ -3084,7 +3097,7 @@ function emptySetDraft(planned?: PlannedSet, last?: LoggedSet, draftKey = "") {
     actualWeight: String(planned?.plannedWeight ?? last?.actualWeight ?? ""),
     actualReps: String(planned?.targetReps ?? last?.actualReps ?? ""),
     actualRpe: String(planned?.targetRpe ?? last?.targetRpe ?? ""),
-    setRating: "Good" as SetRating,
+    setRating: 3 as SetRating,
     formRating: "4",
     muscleFeelRating: "4",
     pumpRating: "3",
