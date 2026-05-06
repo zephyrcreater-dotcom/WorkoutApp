@@ -8,7 +8,7 @@ The app should support multiple local users, each with separate data. It should 
 
 ## Current Project Status
 
-The app is runnable and builds successfully. It has a working React/TypeScript PWA shell, local IndexedDB persistence, seed users, dashboards, exercise library, gym manager, program generation, live workout logging, program gap analysis, weekly overview, block history, and gym-specific machine/cable adjustment factors.
+The app is runnable and builds successfully. It has a working React/TypeScript PWA shell, local IndexedDB persistence, seed users, dashboards, exercise library, gym manager, program generation, live workout logging, program gap analysis, weekly overview, block history, gym-specific machine/cable adjustment factors, sequence-based block progression, and a numeric set-feel rating system.
 
 Current verified commands:
 
@@ -17,7 +17,7 @@ npm run lint
 npm run build
 ```
 
-Both passed at the end of the first session.
+Both passed at the end of Session 2. Note: `@humanfs/core@0.19.2` (an ESLint transitive dep) has a broken package publish. Session 2 pinned it to `0.19.1` inside node_modules. If `npm install` upgrades it to 0.19.2 again, run `npm install @humanfs/core@0.19.1 --no-save` to fix lint.
 
 The dev server was running at:
 
@@ -44,6 +44,19 @@ Session 1 iteration 2 note: an older process held port 5174 during verification 
 - Adding an exercise to a workout day auto-fills editable starter sets, reps, RPE/RIR, rep ranges, and notes.
 - Starter prescription logic is centralized in `src/lib/programmingLogic.ts` as `getBlockExercisePrescription`.
 - `PlannedSet` now has optional `setNumber`, `repRange`, `targetRir`, and `percentageOfTopSet` fields to prepare for Session 2 warmup/top/backdown/variable prescription work.
+
+## Session 2 Updates
+
+- `SetRating` type changed from `"Easy" | "Good" | "Hard" | "Failed"` to `1 | 2 | 3 | 4 | 5` (1=terrible/much harder than expected, 5=very easy/better than expected).
+- `normalizeDatabase` in `db.ts` migrates old string ratings to numeric on load. Existing saved data is automatically converted.
+- `setRatingNumeric` in `trainingMath.ts` is now exported (identity function for the numeric type) and is the single source of truth. The duplicate `setRatingValue` function in `App.tsx` has been removed.
+- All string-based rating comparisons in `trainingMath.ts` (`suggestPlannedWeight`, `recommendNextWorkoutAdjustments`, `suggestNextSetAdjustment`, `summarizeWeek`, `calculateWorkoutScore`) have been updated to numeric comparisons.
+- Live Logger rating buttons are now a 1-5 number grid with a descriptive label ("Set feel — 1=much harder than expected, 5=much easier").
+- Final-set edge case fixed: `exerciseComplete` and `allExercisesComplete` now correctly handle sessions with no linked planned exercise. An exercise with no planned sets is considered complete once at least one non-skipped set is logged. The Add Set button is now always enabled for free-form sessions.
+- `WeekProgressScreen` now derives its current week from `getCurrentWorkoutForUser` (the block cursor) rather than raw `block.currentWeek`, so Week is always in sync with Today's progression pointer.
+- e1RM chart X-axis label falls back to looking up the week number from block structure by `workoutDayId` when `session.weekNumber` is not set directly.
+- Seed data updated to use numeric set ratings (3 = Good, 2 = Hard).
+- `@humanfs/core` pinned to 0.19.1 to unblock `npm run lint` (0.19.2 has a broken package publish).
 
 ## Session 1 Iteration 3 Updates
 

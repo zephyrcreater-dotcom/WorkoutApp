@@ -5,12 +5,17 @@
 0. Program page is still dense.
    - Status: Improved but not fully solved.
    - Current behavior: Program Flow is compact and Exercise Avoider is hidden in manual mode, but Block Planner, Weekly Overview, day editor, Program Gap Analysis, and Previous Blocks still share one page.
-   - Suggested fix: In Session 2 or a focused UX pass, separate review/history from active day editing.
+   - Suggested fix: In a focused UX pass, separate review/history from active day editing.
 
-0.1. Week Progress scoring is placeholder-only.
-   - Status: Expected limitation.
-   - Current behavior: Week Progress shows block week, statuses, readiness, sets, skipped sets, and tonnage, but not a final readiness/performance score.
-   - Suggested fix: Session 2 should add the scoring model using readiness, set performance, RPE/RIR, completion, skipped/added sets, and feedback.
+0.1. Week Progress scoring is now wired.
+   - Status: Fixed in Session 2 (partially).
+   - Current behavior: Week screen derives current week from block cursor, shows workout score, set feel average, completion %, readiness, tonnage, and progression suggestions from completed sessions.
+   - Remaining: Per-day readiness summary and set rating summary columns not yet expanded.
+
+0.2. ESLint @humanfs/core broken package publish.
+   - Status: Workaround applied in Session 2.
+   - Current behavior: `@humanfs/core@0.19.2` ships without `src/index.js`, breaking ESLint 9.x. Pinned to 0.19.1 inside node_modules with `npm install @humanfs/core@0.19.1 --no-save`.
+   - Risk: `npm install` may re-upgrade to 0.19.2. Re-run the pin command if `npm run lint` breaks.
 
 1. Previous blocks can be deleted.
    - Status: Fixed in Session 1.
