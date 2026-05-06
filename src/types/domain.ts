@@ -29,22 +29,42 @@ export type DayFocus =
   | "hybrid";
 export type MuscleGroup =
   | "chest"
+  | "upper-chest"
+  | "lower-chest"
   | "back"
   | "lats"
   | "upper-back"
+  | "mid-back"
+  | "traps"
+  | "spinal-erectors"
   | "quads"
   | "hamstrings"
   | "glutes"
   | "calves"
+  | "adductors"
+  | "abductors"
   | "biceps"
   | "triceps"
   | "front-delts"
   | "side-delts"
   | "rear-delts"
   | "abs"
+  | "obliques"
   | "forearms"
   | "full-body"
   | "conditioning";
+
+// Algorithm-facing exercise classification fields
+export type ExerciseCategoryLabel =
+  | "sbd"
+  | "main_compound"
+  | "secondary_compound"
+  | "machine_compound"
+  | "isolation"
+  | "bodyweight"
+  | "conditioning";
+
+export type FatigueLevel = "low" | "moderate" | "high" | "very_high";
 export type MovementPattern =
   | "squat"
   | "hinge"
@@ -271,6 +291,18 @@ export interface Exercise {
   createdByUser?: boolean;
   createdAt?: string;
   updatedAt?: string;
+  // Algorithm classification fields (V2 Iteration 1)
+  exerciseCategory?: ExerciseCategoryLabel;
+  isSBDMainLift?: boolean;
+  systemicFatigue?: FatigueLevel;
+  localFatigue?: FatigueLevel;
+  repDropSensitivity?: FatigueLevel;
+  failureTolerance?: "low" | "moderate" | "high";
+  // Variation / grouping fields (V2 Iteration 1 — architecture prep)
+  parentExerciseId?: ID;
+  variationGroupId?: string;
+  variationName?: string;
+  isVariation?: boolean;
 }
 
 export interface ExerciseVariant {
@@ -296,6 +328,15 @@ export interface SplitTemplate {
   updatedAt?: string;
 }
 
+export interface SplitDayRequirement {
+  id: ID;
+  targetMuscle: MuscleGroup;
+  movementPattern?: MovementPattern;
+  requiredExerciseCount: number;
+  priority: number;
+  notes?: string;
+}
+
 export interface SplitDay {
   id: ID;
   name: string;
@@ -310,6 +351,7 @@ export interface SplitDay {
   priorityMuscles: MuscleGroup[];
   priorityLifts: string[];
   weeklySetTargets: Partial<Record<MuscleGroup, number>>;
+  requirements?: SplitDayRequirement[];
   notes?: string;
 }
 
@@ -427,6 +469,7 @@ export interface PlannedExercise {
   restSeconds: number;
   notes?: string;
   substitutionIds: ID[];
+  fulfillsRequirementId?: ID;
 }
 
 export interface PlannedSet {

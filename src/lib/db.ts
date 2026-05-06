@@ -1,8 +1,9 @@
-import { seedDatabase } from "../data/seedData";
+import { builtInExercises, seedDatabase } from "../data/seedData";
 import { syncActiveBlockProgress } from "./blockProgression";
 import { defaultCompoundSettings } from "./programmingLogic";
 import { calculateSetPerformanceScore, calculateWorkoutScore } from "./trainingMath";
-import type { TrainingDatabase } from "../types/domain";
+import type { ExerciseCategoryLabel, FatigueLevel, MuscleGroup, TrainingDatabase } from "../types/domain";
+import { createId } from "./ids";
 
 const DB_NAME = "iron-orbit-training-db";
 const DB_VERSION = 1;
@@ -76,6 +77,16 @@ export async function loadDatabase(): Promise<TrainingDatabase> {
 function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
   let changed = false;
   const next = structuredClone(data) as TrainingDatabase;
+
+  // Merge any built-in exercises that are missing from the stored DB (e.g. newly added in seedData.ts).
+  const existingIds = new Set(next.exercises.map((e) => e.id));
+  builtInExercises.forEach((exercise) => {
+    if (!existingIds.has(exercise.id)) {
+      next.exercises.push(exercise);
+      changed = true;
+    }
+  });
+
   next.programGaps ||= [];
   next.exercisePerformanceLogs ||= [];
   next.gymExerciseVariants ||= [];
@@ -100,6 +111,68 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       exercise.fatigueRating = exercise.kind.includes("competition-lift") ? 5 : exercise.kind.includes("compound") ? 3 : exercise.kind.includes("conditioning") ? 2 : 1;
       changed = true;
     }
+    // V2 Iteration 1: algorithm classification fields
+    if (!exercise.exerciseCategory) {
+      let cat: ExerciseCategoryLabel = "isolation";
+      if (exercise.kind.includes("competition-lift")) {
+        cat = "sbd";
+      } else if (exercise.category === "bodyweight" && !exercise.kind.includes("compound")) {
+        cat = "bodyweight";
+      } else if (exercise.kind.includes("conditioning")) {
+        cat = "conditioning";
+      } else if (exercise.kind.includes("compound") || exercise.kind.includes("variation")) {
+        cat = exercise.category === "machine" ? "machine_compound" : exercise.kind.includes("accessory") ? "secondary_compound" : "main_compound";
+      }
+      exercise.exerciseCategory = cat;
+      changed = true;
+    }
+    if (exercise.isSBDMainLift === undefined) {
+      exercise.isSBDMainLift = exercise.kind.includes("competition-lift") ||
+        ["ex_squat_comp", "ex_bench_comp", "ex_deadlift_comp"].includes(exercise.id);
+      changed = true;
+    }
+    if (!exercise.systemicFatigue) {
+      const isSBD = exercise.isSBDMainLift;
+      const isHeavyBarbell = exercise.category === "barbell" && exercise.kind.includes("compound");
+      const isMachineCable = exercise.category === "machine" || exercise.category === "cable";
+      const isIso = exercise.kind.includes("isolation");
+      let sys: FatigueLevel = "moderate";
+      if (isSBD) sys = "very_high";
+      else if (isHeavyBarbell) sys = "high";
+      else if (isMachineCable || exercise.category === "dumbbell") sys = "moderate";
+      else if (isIso) sys = "low";
+      exercise.systemicFatigue = sys;
+      changed = true;
+    }
+    if (!exercise.localFatigue) {
+      const isIso = exercise.kind.includes("isolation");
+      const isCompound = exercise.kind.includes("compound") || exercise.kind.includes("competition-lift");
+      let loc: FatigueLevel = "moderate";
+      if (isIso) loc = "high";
+      else if (isCompound && exercise.category === "barbell") loc = "high";
+      else if (exercise.category === "machine" || exercise.category === "cable") loc = "moderate";
+      exercise.localFatigue = loc;
+      changed = true;
+    }
+    if (!exercise.repDropSensitivity) {
+      const isIso = exercise.kind.includes("isolation");
+      const isSBD = exercise.isSBDMainLift;
+      let rds: FatigueLevel = "moderate";
+      if (isIso || exercise.category === "cable" || exercise.category === "machine") rds = "high";
+      else if (isSBD) rds = "low";
+      exercise.repDropSensitivity = rds;
+      changed = true;
+    }
+    if (!exercise.failureTolerance) {
+      const isSBD = exercise.isSBDMainLift;
+      const isBarbellCompound = exercise.category === "barbell" && exercise.kind.includes("compound");
+      let ft: "low" | "moderate" | "high" = "moderate";
+      if (isSBD) ft = "low";
+      else if (isBarbellCompound) ft = "low";
+      else if (exercise.category === "machine" || exercise.category === "cable" || exercise.category === "bodyweight") ft = "high";
+      exercise.failureTolerance = ft;
+      changed = true;
+    }
   });
   next.splitTemplates.forEach((split) => {
     if (!split.favoriteUserIds) {
@@ -117,6 +190,17 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
     split.days.forEach((day) => {
       if (!day.notes) {
         day.notes = "";
+        changed = true;
+      }
+      // V2 Iteration 1: auto-generate requirements from muscleGroups if missing
+      if (!day.requirements || day.requirements.length === 0) {
+        const muscles: MuscleGroup[] = day.muscleGroups.length ? day.muscleGroups : (day.targetMuscles || []);
+        day.requirements = muscles.map((muscle, index) => ({
+          id: createId("req"),
+          targetMuscle: muscle,
+          requiredExerciseCount: 1,
+          priority: index + 1,
+        }));
         changed = true;
       }
     });

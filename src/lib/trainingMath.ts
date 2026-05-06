@@ -16,6 +16,11 @@ import type {
   WorkoutSession
 } from "../types/domain";
 
+/** Round an RPE value to the nearest 0.5 increment and clamp to [6, 10]. */
+export function sanitizeRpe(value: number): number {
+  return Math.max(6, Math.min(10, Math.round(value * 2) / 2));
+}
+
 const RPE_PERCENT_TABLE: Record<number, Record<number, number>> = {
   1: { 10: 1, 9.5: 0.978, 9: 0.955, 8.5: 0.939, 8: 0.922, 7.5: 0.907, 7: 0.892, 6.5: 0.878, 6: 0.865 },
   2: { 10: 0.955, 9.5: 0.939, 9: 0.922, 8.5: 0.907, 8: 0.892, 7.5: 0.878, 7: 0.865, 6.5: 0.851, 6: 0.837 },
@@ -531,4 +536,59 @@ export function summarizeWeek(db: TrainingDatabase, user: UserProfile): {
     tonnage,
     recommendations
   };
+}
+
+export interface WeekReview {
+  weekNumber: number;
+  totalWeeks: number;
+  completedWorkouts: number;
+  skippedWorkouts: number;
+  plannedWorkouts: number;
+  hardSetsCompleted: number;
+  averageRpe: number;
+  averageSetRating: number;
+  averageReadiness: number | null;
+  isAllDone: boolean;
+  suggestions: string[];
+}
+
+export function isBlockWeekComplete(block: TrainingBlock, sessions: WorkoutSession[]): boolean {
+  const currentWeek = block.weeks.find((w) => w.weekNumber === block.currentWeek);
+  if (!currentWeek) return false;
+  return currentWeek.workouts.every((day) => {
+    const isSkipped = block.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped";
+    const isCompleted = sessions.some((s) => s.workoutDayId === day.id && s.status === "completed");
+    return isSkipped || isCompleted;
+  });
+}
+
+export function generateWeekReview(block: TrainingBlock, sessions: WorkoutSession[]): WeekReview {
+  const week = block.weeks.find((w) => w.weekNumber === block.currentWeek);
+  if (!week) {
+    return { weekNumber: block.currentWeek, totalWeeks: block.lengthWeeks, completedWorkouts: 0, skippedWorkouts: 0, plannedWorkouts: 0, hardSetsCompleted: 0, averageRpe: 0, averageSetRating: 0, averageReadiness: null, isAllDone: false, suggestions: [] };
+  }
+
+  const weekSessions = sessions.filter((s) => s.workoutDayId && week.workouts.some((d) => d.id === s.workoutDayId));
+  const completed = weekSessions.filter((s) => s.status === "completed");
+  const skipped = week.workouts.filter((d) => block.skippedWorkoutDayIds?.includes(d.id) || d.status === "skipped").length;
+  const allSets = completed.flatMap((s) => s.loggedExercises).flatMap((e) => e.sets);
+  const hardSets = allSets.filter((s) => !s.skipped && s.kind !== "warmup");
+  const averageRpe = hardSets.length ? Number((hardSets.reduce((sum, s) => sum + (s.actualRpe || 0), 0) / hardSets.filter((s) => s.actualRpe).length || 0).toFixed(1)) : 0;
+  const averageSetRating = hardSets.length ? Number((hardSets.reduce((sum, s) => sum + (s.setRating ?? 3), 0) / hardSets.length).toFixed(1)) : 0;
+  const readinessScores = completed.map((s) => s.readiness?.readinessScore).filter((r): r is number => r !== undefined);
+  const averageReadiness = readinessScores.length ? Math.round(readinessScores.reduce((a, b) => a + b, 0) / readinessScores.length) : null;
+  const isAllDone = isBlockWeekComplete(block, sessions);
+
+  const weekProgress = block.currentWeek / block.lengthWeeks;
+  const suggestions: string[] = [];
+
+  if (skipped >= 2) suggestions.push("Multiple workouts were skipped. Consider repeating this week or reducing volume next week to avoid debt.");
+  if (averageSetRating < 2.5 && hardSets.length >= 3) suggestions.push("Average set feel was low (≤ 2.5/5). Hold loads steady next week and monitor recovery.");
+  else if (averageSetRating >= 4.5 && hardSets.length >= 3) suggestions.push("Sets felt easy (≥ 4.5/5). A conservative load increase next week is reasonable.");
+  if (averageRpe > 9 && hardSets.filter((s) => s.actualRpe).length >= 3) suggestions.push("Average RPE exceeded 9 across working sets. Reduce load 2-5% or trim one accessory set next week.");
+  if (averageReadiness !== null && averageReadiness < 55) suggestions.push("Readiness averaged below 55 this week. Prioritize sleep, nutrition, and recovery before pushing load next week.");
+  if (weekProgress >= 0.75 && block.type !== "deload") suggestions.push(`You are in week ${block.currentWeek} of ${block.lengthWeeks}. Plan a deload after this block finishes.`);
+  if (!suggestions.length) suggestions.push("Performance matched expectations. Continue conservative progression into next week.");
+
+  return { weekNumber: block.currentWeek, totalWeeks: block.lengthWeeks, completedWorkouts: completed.length, skippedWorkouts: skipped, plannedWorkouts: week.workouts.length, hardSetsCompleted: hardSets.length, averageRpe, averageSetRating, averageReadiness, isAllDone, suggestions };
 }

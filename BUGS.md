@@ -2,94 +2,89 @@
 
 ## Known Bugs
 
-0. Program page is still dense.
-   - Status: Improved but not fully solved.
-   - Current behavior: Program Flow is compact and Exercise Avoider is hidden in manual mode, but Block Planner, Weekly Overview, day editor, Program Gap Analysis, and Previous Blocks still share one page.
-   - Suggested fix: In a focused UX pass, separate review/history from active day editing.
+### Build / Tooling
 
-0.1. Week Progress scoring is now wired.
-   - Status: Fixed in Session 2 (partially).
-   - Current behavior: Week screen derives current week from block cursor, shows workout score, set feel average, completion %, readiness, tonnage, and progression suggestions from completed sessions.
-   - Remaining: Per-day readiness summary and set rating summary columns not yet expanded.
+**B0.1 — `@humanfs/core` ESLint broken publish**
+- Status: Workaround applied.
+- `@humanfs/core@0.19.2` ships without `src/index.js`, breaking ESLint 9.x. Pinned to 0.19.1 with `npm install @humanfs/core@0.19.1 --no-save`.
+- Risk: `npm install` may re-upgrade to 0.19.2. Re-run the pin command if `npm run lint` breaks.
 
-0.2. ESLint @humanfs/core broken package publish.
-   - Status: Workaround applied in Session 2.
-   - Current behavior: `@humanfs/core@0.19.2` ships without `src/index.js`, breaking ESLint 9.x. Pinned to 0.19.1 inside node_modules with `npm install @humanfs/core@0.19.1 --no-save`.
-   - Risk: `npm install` may re-upgrade to 0.19.2. Re-run the pin command if `npm run lint` breaks.
+---
 
-1. Previous blocks can be deleted.
-   - Status: Fixed in Session 1.
-   - Note: Deletion uses confirmation and removes the archived/draft program from local data.
+### Data / Logic
 
-2. Today reads the active generated program.
-   - Status: Improved in Session 1 iteration 2.
-   - Current behavior: Today shows the scheduled active-block workout or a no-active-program state.
-   - Remaining risk: Current-day/week selection is simple and should become calendar-aware later.
+**B1 — `fulfillsRequirementId` not retroactively set on existing exercises**
+- Status: Known limitation.
+- Exercises added before V2 Iteration 2 have no `fulfillsRequirementId`. They fall back to muscle matching in `countFulfilled`. If a day has mixed tagged/untagged exercises, the count may be imprecise.
+- Suggested fix: A future normalization step could attempt to assign `fulfillsRequirementId` to existing exercises by matching them to requirements in order.
 
-3. Builder tab is too long and confusing.
-   - Status: Product/UX bug.
-   - Current behavior: Block planner, generated split, weekly overview, day editor, program gap analysis, template builder, and previous blocks are all stacked.
-   - Suggested fix: Separate Split Library/Split Builder, Block Builder, and Block History into clearer flows.
+**B2 — Split requirements not auto-generated for new splits**
+- Status: Known gap.
+- New split days created in the UI start with no requirements. Users must add them manually.
+- `normalizeDatabase` auto-generates requirements from `muscleGroups` for existing splits missing them, but new days created post-migration start empty.
+- Suggested fix: Auto-populate one requirement per muscle group when a muscle is toggled on in `SplitDayEditor`.
 
-4. Workout Template Builder purpose is unclear.
-   - Status: Product/UX bug.
-   - Current behavior: It overlaps with weekly day editor and block builder.
-   - Suggested fix: Decide whether templates are reusable standalone workouts or whether block-generated days are the primary workflow.
+**B3 — Program generator does not use `SplitDayRequirement`**
+- Status: Known gap.
+- `programGenerator.ts` selects exercises from `muscleGroups`/`targetMuscles`, not from `requirements`. Requirements currently only guide the WorkoutDayEditor manual chooser.
+- Suggested fix: V2 Iteration 3 or later — make the generator use requirements as exercise selection slots.
 
-5. The template dropdown “Powerbuilding Base Week” does not make sense.
-   - Status: Confusing UX.
-   - Suspected area: `TemplateEditor` in `src/App.tsx` and seed templates in `src/data/seedData.ts`.
-   - Suggested fix: Rename/reframe templates or move them into Library.
+**B4 — `generateWeekReview` suggestions are generic**
+- Status: Logic limitation.
+- Suggestions are based on average RPE, average set rating, and block week position, but do not yet name specific exercises or recommend specific load/rep adjustments.
+- Suggested fix: V2 Iteration 3 — per-exercise load change suggestions in Week Review.
 
-6. Split templates are user-editable assets.
-   - Status: Improved in Session 1 iteration 2.
-   - Current behavior: Split Library supports custom splits, editing days/muscles/patterns, duplicate/delete, and favorites.
-   - Remaining risk: The editing UI is useful but still not a polished final split-builder experience.
+**B5 — `summarizeWeek` still returns `tonnage` in its return type**
+- Status: Minor dead field.
+- The field is computed and returned but no longer rendered anywhere in the UI.
+- Suggested fix: Remove `tonnage` from `summarizeWeek` return type in a future cleanup pass (low priority).
 
-7. Program generation can still over-select fatigue-heavy compounds.
-   - Status: Logic limitation.
-   - Current behavior: Key lifts and split logic can include too many compound lifts in a week.
-   - Suspected area: `src/lib/programGenerator.ts`.
-   - Suggested fix: Add block-level compound limits, avoid-compound settings, frequency targets, and fatigue scores.
+---
 
-8. Program gap analysis thresholds are generic.
-   - Status: Logic limitation.
-   - Current behavior: `src/lib/programAnalysis.ts` uses hardcoded hypertrophy ranges.
-   - Suggested fix: Make thresholds goal-, experience-, priority-, and block-type-aware.
+### UX / Product
 
-9. Gym-specific conversion learning is not very visible during logging.
-   - Status: UX gap.
-   - Current behavior: Factors exist in Gym screen and are used in suggestions, but the logger needs a clearer “this machine feels different” flow.
-   - Suspected areas: `LiveLogger`, `GymScreen`, `src/lib/trainingMath.ts`.
+**B6 — Program page is still dense**
+- Status: Improved but not fully solved.
+- Block Planner, Weekly Overview, Day Editor, Program Gap Analysis, and Previous Blocks still share one long page.
+- Suggested fix: Separate review/history from active editing in a focused UX pass.
 
-10. No automated unit tests.
-    - Status: Missing engineering safety.
-    - Suggested fix: Add tests for `programGenerator`, `programAnalysis`, `trainingMath`, and `db` normalization.
+**B7 — Split template builder experience is functional but not polished**
+- Status: Improved in V2 Iteration 2 (requirements UI added) but still rough.
+- The requirements section uses a plain `<select>` and numeric input. No drag-to-reorder, no inline description, no preview of which exercises match.
+- Suggested fix: Future UX pass with richer requirement cards.
 
-## Confusing Current Behavior
+**B8 — Program generation can still over-select fatigue-heavy compounds**
+- Status: Logic limitation.
+- Key lifts and split logic can include too many heavy compounds in a week.
+- Suggested fix: Block-level compound limits, fatigue score distribution, frequency targets.
 
-- It is unclear where a split template comes from.
-- If a split has fewer days than the block, looping behavior is not obvious in the UI.
-- Program history can fill with many archived/generated blocks during testing.
-- Existing IndexedDB data may show old bad/generated blocks unless reset or deleted.
-- The app has both historical `weakPoints` seed data and newer `programGaps`; UI now favors program gaps, but old weak-point data still exists in the model.
+**B9 — Gym-specific conversion learning is not visible during logging**
+- Status: UX gap.
+- Factors exist and are used, but the logger does not have a clear "this machine feels different" action.
 
-## Broken Flows Or Missing Connections
+---
 
-- Library manages split templates, including user favorites.
-- Settings does not yet expose max editing or avoided compounds.
-- Today is now a cleaner active-block scheduled workout experience, but calendar behavior remains basic.
-- Previous block duplication and delete work.
-- Generated block changes do not yet have a robust audit/history UI beyond `changeLog`.
-- Exercise progress charts are only placeholders; the panel and data connection exist, but formulas/visualizations are deferred.
-- Exercise progress has a first e1RM line chart, but the formula is intentionally simple and should be improved in Session 2.
+## Resolved In V2 Iteration 2
 
-## File Areas Likely Involved
+- Tonnage removed from WeekProgressScreen and ProgressScreen. Replaced with hard sets, avg RPE, avg feel.
+- `countFulfilled` now uses `fulfillsRequirementId` as primary signal; legacy exercises fall back to muscle matching.
+- `addExercise` tags exercises with `fulfillsRequirementId = currentReq?.id`.
+- `SplitDayEditor` now has an Exercise Requirements section (add/remove/edit muscle + count per requirement).
+- `NumberField` accepts `step` prop; planned RPE fields use `step={0.5}` + `sanitizeRpe()`.
+- `WeekReviewPanel` shows when `isBlockWeekComplete` is true; displays metrics, suggestions, and a "Start Week N+1" confirmation button.
+- Week advancement requires explicit user action — nothing auto-applies.
 
-- `src/App.tsx`: Most UI flows.
-- `src/types/domain.ts`: Data model additions.
-- `src/lib/programGenerator.ts`: Program generation bugs.
-- `src/lib/programAnalysis.ts`: Program gap and bodybuilding dashboard logic.
-- `src/lib/trainingMath.ts`: Weight recommendations and gym conversions.
-- `src/lib/db.ts`: Migration/normalization for existing local data.
-- `src/data/seedData.ts`: Built-in splits, exercises, gyms, seed users.
+## Resolved Earlier
+
+- Previous blocks can be deleted (Session 1).
+- Today reads the active generated program (Session 1 Iter 2).
+- `SetRating` migrated from string to numeric; all string comparisons updated (Session 2).
+- `exerciseComplete` and `allExercisesComplete` edge cases fixed for sessions with no planned sets (Session 2).
+- `WeekProgressScreen` derives current week from block cursor (Session 2).
+
+---
+
+## No Automated Tests
+
+- No unit tests for `programGenerator`, `programAnalysis`, `trainingMath`, or `db` normalization.
+- Recommended: Add tests in V2 Iteration 3 or later as a build-safety measure.
