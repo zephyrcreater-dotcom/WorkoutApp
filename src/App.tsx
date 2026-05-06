@@ -57,6 +57,7 @@ import {
   sessionFatigueScore
 } from "./lib/programmingLogic";
 import { verifyPin } from "./lib/security";
+import { recommendNextSetAdjustment as algNextSetAdjustment, recommendPlannedWeight } from "./lib/algorithms";
 import {
   calculateMuscleVolume,
   calculateReadinessScore,
@@ -65,6 +66,7 @@ import {
   calculateWorkoutScore,
   detectWeakPointTags,
   estimateOneRepMax,
+  findGymExerciseAdjustment,
   learnGymExerciseAdjustment,
   powerliftingMetrics,
   readinessAdjustment,
@@ -72,7 +74,6 @@ import {
   recentTopSets,
   setRatingNumeric,
   summarizeWeek,
-  suggestNextSetAdjustment,
   suggestPlannedWeight
 } from "./lib/trainingMath";
 import type {
@@ -493,17 +494,44 @@ function LiveLogger({
   const [restRemaining, setRestRemaining] = useState(0);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
-  const adjustedSuggestion = exercise && nextPlannedSet
-    ? suggestPlannedWeight({
-        user,
-        exercise,
-        plannedSet: nextPlannedSet,
-        db,
-        readiness: session?.readiness,
-        gymId: session?.gymId,
-        machineId: activeExerciseLog?.machineId
-      })
+
+  // Weight Estimator v1: use exercise performance history + block context for the recommendation
+  const activeLoggerProgram = db.programs.find((p) => p.id === session?.programId && p.userId === user.id);
+  const activeLoggerBlock = activeLoggerProgram?.blocks.find((b) => b.id === session?.blockId);
+  const exercisePerfHistory = (db.exercisePerformanceLogs ?? []).filter(
+    (log) => log.exerciseId === exercise?.id && log.userId === user.id
+  );
+  const liftMaxEntry = exercise
+    ? user.maxes.find((m) => m.exerciseId === exercise.id || exercise.name.toLowerCase().includes(m.liftName.toLowerCase()))
     : undefined;
+  const gymAdjustEntry =
+    exercise && session?.gymId
+      ? findGymExerciseAdjustment({ db, userId: user.id, gymId: session.gymId, exerciseId: exercise.id, machineId: activeExerciseLog?.machineId })
+      : undefined;
+
+  const weightRec =
+    exercise && nextPlannedSet
+      ? recommendPlannedWeight({
+          exercise,
+          plannedSet: nextPlannedSet,
+          performanceHistory: exercisePerfHistory,
+          readiness: session?.readiness,
+          blockType: activeLoggerBlock?.type,
+          weekNumber: activeLoggerBlock?.currentWeek ?? 1,
+          totalWeeks: activeLoggerBlock?.lengthWeeks ?? 4,
+          unit: user.unit,
+          manualE1RM: liftMaxEntry ? (liftMaxEntry.trainingMax || liftMaxEntry.oneRepMax) : undefined,
+          gymAdjustmentFactor: gymAdjustEntry?.factor,
+        })
+      : undefined;
+
+  // Fall back to legacy suggestion if the new algorithm has no data (no history, no manual max)
+  const adjustedSuggestion =
+    weightRec && weightRec.weight > 0
+      ? weightRec
+      : exercise && nextPlannedSet
+        ? suggestPlannedWeight({ user, exercise, plannedSet: nextPlannedSet, db, readiness: session?.readiness, gymId: session?.gymId, machineId: activeExerciseLog?.machineId })
+        : undefined;
   const adjustedWeight = adjustedSuggestion?.weight;
 
   useEffect(() => {
@@ -532,7 +560,10 @@ function LiveLogger({
   const liveSession = session;
   const liveExerciseLog = activeExerciseLog;
   const liveExercise = exercise;
-  const recommendation = lastSet ? suggestNextSetAdjustment({ user, exercise: liveExercise, loggedSet: lastSet, nextPlannedSet }) : undefined;
+  const nextSetResult = lastSet
+    ? algNextSetAdjustment({ user, exercise: liveExercise, loggedSet: lastSet, nextPlannedSet, setsCompletedThisExercise: liveExerciseLog.sets.length })
+    : undefined;
+  const recommendation = nextSetResult?.recommendation;
   const plannedSets = planned?.plannedSets || [];
   const isCurrentSetLastPlannedSet = plannedSets.length > 0 && currentSetIndex === plannedSets.length - 1;
   const isPastLastPlannedSet = plannedSets.length > 0 && currentSetIndex >= plannedSets.length;
@@ -590,7 +621,7 @@ function LiveLogger({
     const performance = calculateSetPerformanceScore(nextPlannedSet, loggedSet);
     loggedSet.performanceScore = performance.score;
     loggedSet.performanceStatus = performance.status;
-    const rec = suggestNextSetAdjustment({ user, exercise: liveExercise, loggedSet, nextPlannedSet });
+    const rec = algNextSetAdjustment({ user, exercise: liveExercise, loggedSet, nextPlannedSet, setsCompletedThisExercise: currentSetIndex + 1 }).recommendation;
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
@@ -794,7 +825,9 @@ function LiveLogger({
                 <p className="mt-1 text-sm text-iron-300">{exercise.setupCues.slice(0, 3).join(" - ")}</p>
                 <p className="mt-1 text-xs text-iron-500">
                   {activeGym?.name || "No gym selected"}
-                  {adjustedSuggestion?.weight ? ` - suggested ${adjustedSuggestion.weight} ${user.unit}` : ""}
+                  {adjustedSuggestion?.weight
+                    ? ` — suggested ${adjustedSuggestion.weight} ${user.unit}${weightRec && weightRec.weight > 0 ? ` (${Math.round(weightRec.confidence * 100)}% conf.)` : ""}`
+                    : ""}
                 </p>
               </div>
               <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
@@ -904,6 +937,20 @@ function LiveLogger({
                   Apply {recommendation.action.suggestedWeight} {user.unit}
                 </button>
               ) : null}
+            </section>
+          )}
+
+          {weightRec && weightRec.weight > 0 && weightRec.sources[0] !== "no-data" && (
+            <section className="panel border-white/10 p-4">
+              <div className="flex items-center justify-between">
+                <p className="label">Weight analysis</p>
+                <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-iron-300">
+                  {Math.round(weightRec.confidence * 100)}% confidence
+                </span>
+              </div>
+              {weightRec.reasoning.slice(0, 3).map((line, i) => (
+                <p key={i} className={`mt-1 ${i === 0 ? "text-sm text-iron-200" : "text-xs text-iron-500"}`}>{line}</p>
+              ))}
             </section>
           )}
 
