@@ -40,6 +40,14 @@
   - Missing accessory categories.
   - Fatigue clustering.
 
+## Session 2 Decisions
+
+- `SetRating` changed from a 4-option string enum to a numeric `1 | 2 | 3 | 4 | 5` type. This gives algorithm functions a clean numeric input without a conversion step. Old string values are migrated via `normalizeDatabase`.
+- `setRatingNumeric` exported from `trainingMath.ts` is now the single source of truth for rating→number conversion (identity function). The local `setRatingValue` in App.tsx has been removed.
+- `WeekProgressScreen` derives its current week from the block cursor (`getCurrentWorkoutForUser`) rather than raw `block.currentWeek` to guarantee Week and Today are always looking at the same block day.
+- The `exerciseComplete` and `allExercisesComplete` checks in LiveLogger now treat a free-form exercise (no linked planned sets) as complete after ≥1 non-skipped set, and Add Set is always available in free-form mode.
+- e1RM chart prefers `session.weekNumber`, then looks up the week from block structure by `workoutDayId`, then falls back to calendar date label.
+
 ## Data Model Decisions
 
 - Exercises are global by default.

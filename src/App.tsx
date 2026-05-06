@@ -57,6 +57,7 @@ import {
   sessionFatigueScore
 } from "./lib/programmingLogic";
 import { verifyPin } from "./lib/security";
+import { recommendNextSetAdjustment as algNextSetAdjustment, recommendPlannedWeight } from "./lib/algorithms";
 import {
   calculateMuscleVolume,
   calculateReadinessScore,
@@ -65,14 +66,18 @@ import {
   calculateWorkoutScore,
   detectWeakPointTags,
   estimateOneRepMax,
+  findGymExerciseAdjustment,
   learnGymExerciseAdjustment,
   powerliftingMetrics,
   readinessAdjustment,
   recommendNextWorkoutAdjustments,
   recentTopSets,
+  setRatingNumeric,
   summarizeWeek,
-  suggestNextSetAdjustment,
-  suggestPlannedWeight
+  suggestPlannedWeight,
+  sanitizeRpe,
+  isBlockWeekComplete,
+  generateWeekReview
 } from "./lib/trainingMath";
 import type {
   BlockType,
@@ -94,8 +99,10 @@ import type {
   SetKind,
   SetRating,
   SplitDay,
+  SplitDayRequirement,
   SplitLoopMode,
   SplitTemplate,
+  TrainingBlock,
   TrainingDatabase,
   TrainingGoal,
   UserProfile,
@@ -124,21 +131,100 @@ const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
 
 const muscleOptions: MuscleGroup[] = [
   "chest",
+  "upper-chest",
+  "lower-chest",
   "back",
   "lats",
   "upper-back",
+  "mid-back",
+  "traps",
+  "spinal-erectors",
   "quads",
   "hamstrings",
   "glutes",
   "calves",
+  "adductors",
+  "abductors",
   "biceps",
   "triceps",
   "front-delts",
   "side-delts",
   "rear-delts",
   "abs",
+  "obliques",
+  "forearms",
   "conditioning"
 ];
+
+// Parent muscle groups: broad categories whose requirements can be satisfied by specific child muscles.
+// Specific child muscles (lats, upper-back, etc.) must match EXACTLY — no fallback alias expansion.
+const PARENT_MUSCLE_CHILDREN: Partial<Record<MuscleGroup, MuscleGroup[]>> = {
+  "back": ["lats", "upper-back", "mid-back", "traps", "spinal-erectors"],
+  "chest": ["upper-chest", "lower-chest"],
+  "quads": ["quads"],
+  "hamstrings": ["hamstrings"],
+  "glutes": ["glutes"],
+  "biceps": ["biceps"],
+  "triceps": ["triceps"],
+};
+
+// Whether a requirement muscle is a broad parent category.
+function isParentMuscle(muscle: MuscleGroup): boolean {
+  return muscle in PARENT_MUSCLE_CHILDREN;
+}
+
+// An exercise satisfies a requirement if:
+// 1. The exact targetMuscle is in the exercise's primaryMuscles (always works).
+// 2. OR the requirement is a broad parent and one of its children is in primaryMuscles (parent-only fallback).
+// Secondary muscles and directVolumeMuscles are NOT used for requirement completion.
+function exerciseFulfillsRequirement(exercise: Exercise, req: SplitDayRequirement): boolean {
+  const primary = exercise.primaryMuscles;
+  if (primary.includes(req.targetMuscle)) return true;
+  if (isParentMuscle(req.targetMuscle)) {
+    const children = PARENT_MUSCLE_CHILDREN[req.targetMuscle] ?? [];
+    return primary.some((m) => children.includes(m));
+  }
+  return false;
+}
+
+function deriveRequirements(day: WorkoutDay, splitDays: SplitDay[]): SplitDayRequirement[] {
+  const splitDay = splitDays.find((sd) => sd.id === day.splitDayId);
+  if (splitDay?.requirements?.length) return splitDay.requirements;
+  const muscles = day.targetMuscles?.length ? day.targetMuscles : (splitDay?.muscleGroups ?? []);
+  return muscles.map((muscle, i) => ({
+    id: `auto_${muscle}_${i}`,
+    targetMuscle: muscle,
+    requiredExerciseCount: 1,
+    priority: i + 1,
+  }));
+}
+
+// localStorage-backed builder form draft per user
+const builderDraftKey = (userId: string) => `iron_orbit_builder_draft_${userId}`;
+interface BuilderFormSnapshot {
+  selectedSplitId: string;
+  buildMode: ProgramBuildMode;
+  requestName: string;
+  requestGoal: TrainingGoal;
+  requestDaysPerWeek: number;
+  requestBlockType: BlockType;
+  requestBlockLengthWeeks: number;
+  requestSplitLoopMode: SplitLoopMode;
+  requestNotes: string;
+  savedAt: string;
+}
+function loadBuilderDraft(userId: string): BuilderFormSnapshot | null {
+  try {
+    const raw = localStorage.getItem(builderDraftKey(userId));
+    return raw ? (JSON.parse(raw) as BuilderFormSnapshot) : null;
+  } catch { return null; }
+}
+function saveBuilderDraft(userId: string, snap: BuilderFormSnapshot): void {
+  try { localStorage.setItem(builderDraftKey(userId), JSON.stringify(snap)); } catch { /* ignore quota */ }
+}
+function clearBuilderDraft(userId: string): void {
+  localStorage.removeItem(builderDraftKey(userId));
+}
 
 const equipmentOptions: EquipmentCategory[] = ["barbell", "dumbbell", "cable", "machine", "bodyweight", "cardio", "bands"];
 const movementOptions: MovementPattern[] = ["squat", "hinge", "horizontal-press", "vertical-press", "horizontal-pull", "vertical-pull", "single-leg", "isolation", "carry", "brace", "locomotion", "mobility"];
@@ -492,17 +578,44 @@ function LiveLogger({
   const [restRemaining, setRestRemaining] = useState(0);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
-  const adjustedSuggestion = exercise && nextPlannedSet
-    ? suggestPlannedWeight({
-        user,
-        exercise,
-        plannedSet: nextPlannedSet,
-        db,
-        readiness: session?.readiness,
-        gymId: session?.gymId,
-        machineId: activeExerciseLog?.machineId
-      })
+
+  // Weight Estimator v1: use exercise performance history + block context for the recommendation
+  const activeLoggerProgram = db.programs.find((p) => p.id === session?.programId && p.userId === user.id);
+  const activeLoggerBlock = activeLoggerProgram?.blocks.find((b) => b.id === session?.blockId);
+  const exercisePerfHistory = (db.exercisePerformanceLogs ?? []).filter(
+    (log) => log.exerciseId === exercise?.id && log.userId === user.id
+  );
+  const liftMaxEntry = exercise
+    ? user.maxes.find((m) => m.exerciseId === exercise.id || exercise.name.toLowerCase().includes(m.liftName.toLowerCase()))
     : undefined;
+  const gymAdjustEntry =
+    exercise && session?.gymId
+      ? findGymExerciseAdjustment({ db, userId: user.id, gymId: session.gymId, exerciseId: exercise.id, machineId: activeExerciseLog?.machineId })
+      : undefined;
+
+  const weightRec =
+    exercise && nextPlannedSet
+      ? recommendPlannedWeight({
+          exercise,
+          plannedSet: nextPlannedSet,
+          performanceHistory: exercisePerfHistory,
+          readiness: session?.readiness,
+          blockType: activeLoggerBlock?.type,
+          weekNumber: activeLoggerBlock?.currentWeek ?? 1,
+          totalWeeks: activeLoggerBlock?.lengthWeeks ?? 4,
+          unit: user.unit,
+          manualE1RM: liftMaxEntry ? (liftMaxEntry.trainingMax || liftMaxEntry.oneRepMax) : undefined,
+          gymAdjustmentFactor: gymAdjustEntry?.factor,
+        })
+      : undefined;
+
+  // Fall back to legacy suggestion if the new algorithm has no data (no history, no manual max)
+  const adjustedSuggestion =
+    weightRec && weightRec.weight > 0
+      ? weightRec
+      : exercise && nextPlannedSet
+        ? suggestPlannedWeight({ user, exercise, plannedSet: nextPlannedSet, db, readiness: session?.readiness, gymId: session?.gymId, machineId: activeExerciseLog?.machineId })
+        : undefined;
   const adjustedWeight = adjustedSuggestion?.weight;
 
   useEffect(() => {
@@ -531,17 +644,23 @@ function LiveLogger({
   const liveSession = session;
   const liveExerciseLog = activeExerciseLog;
   const liveExercise = exercise;
-  const recommendation = lastSet ? suggestNextSetAdjustment({ user, exercise: liveExercise, loggedSet: lastSet, nextPlannedSet }) : undefined;
+  const nextSetResult = lastSet
+    ? algNextSetAdjustment({ user, exercise: liveExercise, loggedSet: lastSet, nextPlannedSet, setsCompletedThisExercise: liveExerciseLog.sets.length })
+    : undefined;
+  const recommendation = nextSetResult?.recommendation;
   const plannedSets = planned?.plannedSets || [];
   const isCurrentSetLastPlannedSet = plannedSets.length > 0 && currentSetIndex === plannedSets.length - 1;
   const isPastLastPlannedSet = plannedSets.length > 0 && currentSetIndex >= plannedSets.length;
   const hasMoreExercises = activeExerciseIndex < liveSession.loggedExercises.length - 1;
   const primaryAction = isCurrentSetLastPlannedSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
   const primaryActionLabel = primaryAction === "finish-workout" ? "Finish Workout" : primaryAction === "finish-exercise" ? "Finish Exercise" : "Next Set";
-  const exerciseComplete = plannedSets.length > 0 && liveExerciseLog.sets.length >= plannedSets.length;
+  const hasLoggedNonSkippedSets = liveExerciseLog.sets.filter((s) => !s.skipped).length > 0;
+  // An exercise is complete when all planned sets are logged, or (if no planned sets) at least one non-skipped set exists.
+  const exerciseComplete = plannedSets.length > 0 ? liveExerciseLog.sets.length >= plannedSets.length : hasLoggedNonSkippedSets;
   const allExercisesComplete = liveSession.loggedExercises.every((logged) => {
     const plannedForLog = findPlannedExercise(db, liveSession, logged);
-    return Boolean(plannedForLog?.plannedSets.length && logged.sets.length >= plannedForLog.plannedSets.length);
+    if (plannedForLog?.plannedSets.length) return logged.sets.length >= plannedForLog.plannedSets.length;
+    return logged.sets.filter((s) => !s.skipped).length > 0;
   });
 
   function addReadiness(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">) {
@@ -586,7 +705,7 @@ function LiveLogger({
     const performance = calculateSetPerformanceScore(nextPlannedSet, loggedSet);
     loggedSet.performanceScore = performance.score;
     loggedSet.performanceStatus = performance.status;
-    const rec = suggestNextSetAdjustment({ user, exercise: liveExercise, loggedSet, nextPlannedSet });
+    const rec = algNextSetAdjustment({ user, exercise: liveExercise, loggedSet, nextPlannedSet, setsCompletedThisExercise: currentSetIndex + 1 }).recommendation;
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
@@ -635,7 +754,7 @@ function LiveLogger({
       actualWeight: 0,
       actualReps: 0,
       targetRpe: nextPlannedSet?.targetRpe,
-      setRating: "Failed",
+      setRating: 1 as SetRating,
       skipped: true,
       notes: setDraft.notes || "Skipped set.",
       completedAt: nowIso()
@@ -790,7 +909,9 @@ function LiveLogger({
                 <p className="mt-1 text-sm text-iron-300">{exercise.setupCues.slice(0, 3).join(" - ")}</p>
                 <p className="mt-1 text-xs text-iron-500">
                   {activeGym?.name || "No gym selected"}
-                  {adjustedSuggestion?.weight ? ` - suggested ${adjustedSuggestion.weight} ${user.unit}` : ""}
+                  {adjustedSuggestion?.weight
+                    ? ` — suggested ${adjustedSuggestion.weight} ${user.unit}${weightRec && weightRec.weight > 0 ? ` (${Math.round(weightRec.confidence * 100)}% conf.)` : ""}`
+                    : ""}
                 </p>
               </div>
               <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
@@ -853,13 +974,29 @@ function LiveLogger({
                 </select>
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-4 gap-2">
-              {(["Easy", "Good", "Hard", "Failed"] as SetRating[]).map((rating) => (
-                <button key={rating} className={`min-h-12 rounded-lg text-sm font-black ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => setSetDraft((draft) => ({ ...draft, setRating: rating }))}>
-                  {rating}
-                </button>
-              ))}
+            <div className="mt-4">
+              <p className="label mb-2">Set feel (1 = much harder than expected, 5 = much easier)</p>
             </div>
+            <div className="grid grid-cols-5 gap-2">
+              {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
+                const labels: Record<number, string> = { 1: "1", 2: "2", 3: "3", 4: "4", 5: "5" };
+                return (
+                  <button key={rating} className={`min-h-12 rounded-lg text-xs font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => setSetDraft((draft) => ({ ...draft, setRating: rating }))}>
+                    {labels[rating]}
+                  </button>
+                );
+              })}
+            </div>
+            {/*
+              Set-level feedback (Form + Feel) feeds the intra-workout adjustment algorithm directly.
+              setRating (1–5) is the primary signal for load changes between sets.
+              formRating and muscleFeelRating are secondary signals used by recommendNextSetAdjustment.
+
+              TODO (V2 Iteration 2): Move Pump, Pain, and Sore to exercise-level feedback logged
+              once per exercise after all sets are done, not per-set. These metrics measure
+              cumulative stimulus and recovery, not individual set quality. Moving them reduces
+              friction and improves data accuracy. See: LoggedExercise.exerciseFeedback (planned field).
+            */}
             <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
               <SmallRating label="Form" value={setDraft.formRating} onChange={(value) => setSetDraft((draft) => ({ ...draft, formRating: value }))} />
               <SmallRating label="Feel" value={setDraft.muscleFeelRating} onChange={(value) => setSetDraft((draft) => ({ ...draft, muscleFeelRating: value }))} />
@@ -878,7 +1015,8 @@ function LiveLogger({
               >
                 <Check className="h-5 w-5" /> {primaryActionLabel}
               </button>
-              <button className="btn-secondary" onClick={addSet} disabled={!isCurrentSetLastPlannedSet && !isPastLastPlannedSet}>Add Set</button>
+              {/* Add Set is always available for free-form sessions (no planned sets) or when on/past the last planned set */}
+              <button className="btn-secondary" onClick={addSet} disabled={plannedSets.length > 0 && !isCurrentSetLastPlannedSet && !isPastLastPlannedSet}>Add Set</button>
               <button className="btn-secondary" onClick={finishExercise} disabled={!exerciseComplete}>Finish Exercise</button>
             </div>
           </section>
@@ -893,6 +1031,20 @@ function LiveLogger({
                   Apply {recommendation.action.suggestedWeight} {user.unit}
                 </button>
               ) : null}
+            </section>
+          )}
+
+          {weightRec && weightRec.weight > 0 && weightRec.sources[0] !== "no-data" && (
+            <section className="panel border-white/10 p-4">
+              <div className="flex items-center justify-between">
+                <p className="label">Weight analysis</p>
+                <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-iron-300">
+                  {Math.round(weightRec.confidence * 100)}% confidence
+                </span>
+              </div>
+              {weightRec.reasoning.slice(0, 3).map((line, i) => (
+                <p key={i} className={`mt-1 ${i === 0 ? "text-sm text-iron-200" : "text-xs text-iron-500"}`}>{line}</p>
+              ))}
             </section>
           )}
 
@@ -917,11 +1069,9 @@ function BuilderScreen({
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
 }) {
   const splitTemplates = db.splitTemplates.filter((split) => !split.ownerUserId || split.ownerUserId === user.id);
-  const [selectedSplitId, setSelectedSplitId] = useState(splitTemplates[0]?.id || db.splitTemplates[0]?.id || "");
-  const [generationState, setGenerationState] = useState<{ status: "idle" | "loading" | "success" | "error"; message?: string }>({ status: "idle" });
-  const [buildMode, setBuildMode] = useState<ProgramBuildMode>("manual");
-  const [showFlowHelp, setShowFlowHelp] = useState(false);
-  const [request, setRequest] = useState<ProgramRequest>({
+
+  const defaultSplitId = splitTemplates[0]?.id || db.splitTemplates[0]?.id || "";
+  const defaultRequest: ProgramRequest = {
     name: "Custom Powerbuilding Block",
     goal: user.goal,
     daysPerWeek: user.availableDaysPerWeek,
@@ -929,12 +1079,53 @@ function BuilderScreen({
     blockLengthWeeks: 6,
     priorityMuscles: user.goal === "general-health" ? ["full-body" as MuscleGroup] : ["chest", "quads", "side-delts"],
     priorityExerciseIds: user.goal === "general-health" ? ["ex_leg_press", "ex_machine_chest_press"] : ["ex_squat_comp", "ex_bench_comp"],
-    splitTemplateId: selectedSplitId,
+    splitTemplateId: defaultSplitId,
     splitLoopMode: "continuous",
     compoundSettings: defaultCompoundSettings,
     buildMode: "manual",
     notes: "Block notes, constraints, and coaching context."
-  });
+  };
+
+  const savedDraft = loadBuilderDraft(user.id);
+  const [selectedSplitId, setSelectedSplitId] = useState(savedDraft?.selectedSplitId || defaultSplitId);
+  const [generationState, setGenerationState] = useState<{ status: "idle" | "loading" | "success" | "error"; message?: string }>({ status: "idle" });
+  const [buildMode, setBuildMode] = useState<ProgramBuildMode>(savedDraft?.buildMode || "manual");
+  const [showFlowHelp, setShowFlowHelp] = useState(false);
+  const [request, setRequest] = useState<ProgramRequest>(savedDraft ? {
+    ...defaultRequest,
+    name: savedDraft.requestName,
+    goal: savedDraft.requestGoal,
+    daysPerWeek: savedDraft.requestDaysPerWeek,
+    blockType: savedDraft.requestBlockType,
+    blockLengthWeeks: savedDraft.requestBlockLengthWeeks,
+    splitTemplateId: savedDraft.selectedSplitId,
+    splitLoopMode: savedDraft.requestSplitLoopMode,
+    notes: savedDraft.requestNotes,
+  } : defaultRequest);
+
+  useEffect(() => {
+    saveBuilderDraft(user.id, {
+      selectedSplitId,
+      buildMode,
+      requestName: request.name,
+      requestGoal: request.goal,
+      requestDaysPerWeek: request.daysPerWeek,
+      requestBlockType: request.blockType,
+      requestBlockLengthWeeks: request.blockLengthWeeks,
+      requestSplitLoopMode: request.splitLoopMode,
+      requestNotes: request.notes,
+      savedAt: new Date().toISOString(),
+    });
+  }, [user.id, selectedSplitId, buildMode, request.name, request.goal, request.daysPerWeek, request.blockType, request.blockLengthWeeks, request.splitLoopMode, request.notes]);
+
+  function resetBuilderForm() {
+    if (!confirm("Reset the form to defaults? This clears your draft selections.")) return;
+    clearBuilderDraft(user.id);
+    setSelectedSplitId(defaultSplitId);
+    setBuildMode("manual");
+    setRequest(defaultRequest);
+    setGenerationState({ status: "idle" });
+  }
   const selectedSplit = db.splitTemplates.find((split) => split.id === selectedSplitId);
   const generatedSplit = useMemo(() => {
     const splitDays = selectedSplit?.days.length ? selectedSplit.days : [];
@@ -1103,10 +1294,15 @@ function BuilderScreen({
               {generationState.message}
             </div>
           )}
-          <button className="btn-primary mt-4 w-full" onClick={() => createProgram(buildMode)} disabled={generationState.status === "loading"}>
-            <Save className="h-4 w-4" />
-            {generationState.status === "loading" ? "Working..." : buildMode === "manual" ? "Create Manual Draft" : "Suggest Full Program"}
-          </button>
+          <div className="mt-4 flex gap-2">
+            <button className="btn-primary flex-1" onClick={() => createProgram(buildMode)} disabled={generationState.status === "loading"}>
+              <Save className="h-4 w-4" />
+              {generationState.status === "loading" ? "Working..." : buildMode === "manual" ? "Create Manual Draft" : "Suggest Full Program"}
+            </button>
+            <button className="btn-ghost" onClick={resetBuilderForm} title="Reset form to defaults">
+              <RefreshCcw className="h-4 w-4" />
+            </button>
+          </div>
         </Panel>
 
         <Panel title="Split Schedule Preview" icon={CalendarDays}>
@@ -1356,22 +1552,44 @@ function WorkoutDayEditor({
   day: WorkoutDay;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
 }) {
-  const targetMuscles = day.targetMuscles?.length ? day.targetMuscles : db.splitTemplates.flatMap((split) => split.days).find((splitDay) => splitDay.id === day.splitDayId)?.muscleGroups || [];
-  const uniqueTargetMuscles = targetMuscles.filter((muscle, index) => targetMuscles.indexOf(muscle) === index);
-  const coveredMuscles = new Set<MuscleGroup>();
-  day.exercises.forEach((planned) => {
-    const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
-    exercise?.directVolumeMuscles.forEach((muscle) => coveredMuscles.add(muscle));
-  });
-  const [currentPickerMuscle, setCurrentPickerMuscle] = useState<MuscleGroup | "all">(uniqueTargetMuscles[0] || "all");
+  const allSplitDays = db.splitTemplates.flatMap((split) => split.days);
+  const requirements = deriveRequirements(day, allSplitDays);
+
+  // Count how many exercises already satisfy each requirement.
+  // Exercises with an explicit fulfillsRequirementId are counted only for the req they were tagged for.
+  // Untagged exercises (legacy) fall back to muscle matching.
+  function countFulfilled(exercises: typeof day.exercises, req: SplitDayRequirement): number {
+    const explicit = exercises.filter((p) => p.fulfillsRequirementId === req.id).length;
+    const untagged = exercises.filter((p) => !p.fulfillsRequirementId);
+    const legacyMatched = untagged.filter((p) => {
+      const ex = db.exercises.find((e) => e.id === p.exerciseId);
+      return ex && exerciseFulfillsRequirement(ex, req);
+    }).length;
+    return explicit + legacyMatched;
+  }
+
+  const reqProgress = requirements.map((req) => ({
+    req,
+    fulfilled: countFulfilled(day.exercises, req),
+    needed: req.requiredExerciseCount,
+  }));
+  const allReqsMet = reqProgress.every((item) => item.fulfilled >= item.needed);
+  const firstUnmetIndex = reqProgress.findIndex((item) => item.fulfilled < item.needed);
+
+  const [currentReqIndex, setCurrentReqIndex] = useState<number>(firstUnmetIndex >= 0 ? firstUnmetIndex : 0);
   const [showAllExercises, setShowAllExercises] = useState(false);
   const [chooserWarning, setChooserWarning] = useState("");
+  const [showPrescription, setShowPrescription] = useState(allReqsMet);
 
+  // Advance to the first unfulfilled requirement whenever exercises change
   useEffect(() => {
-    if (currentPickerMuscle !== "all" && !uniqueTargetMuscles.includes(currentPickerMuscle)) {
-      setCurrentPickerMuscle(uniqueTargetMuscles[0] || "all");
-    }
-  }, [currentPickerMuscle, uniqueTargetMuscles]);
+    if (showAllExercises) return;
+    const nextUnmet = reqProgress.findIndex((item) => item.fulfilled < item.needed);
+    if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
+  }, [day.exercises.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const currentReq = requirements[currentReqIndex] as SplitDayRequirement | undefined;
+  const alreadyAddedIds = day.exercises.map((planned) => planned.exerciseId);
 
   function updateDay(mutator: (target: WorkoutDay) => void) {
     void updateDb((draft) => {
@@ -1389,17 +1607,28 @@ function WorkoutDayEditor({
   }
 
   function addExercise(exercise: Exercise) {
+    // Anti-spam: block duplicate exercise on this day
+    if (alreadyAddedIds.includes(exercise.id)) return;
+    const reqId = currentReq?.id;
     updateDay((target) => {
-      target.exercises.push(buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise, order: target.exercises.length + 1 }));
+      const planned = buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise, order: target.exercises.length + 1 });
+      planned.fulfillsRequirementId = reqId;
+      target.exercises.push(planned);
     });
-    if (currentPickerMuscle !== "all") {
-      const nextMuscle = uniqueTargetMuscles.find((muscle) => muscle !== currentPickerMuscle && !coveredMuscles.has(muscle));
-      if (nextMuscle) setCurrentPickerMuscle(nextMuscle);
+    // Advance to next unfulfilled requirement using just-added exercise
+    if (!showAllExercises && requirements.length > 0) {
+      const updatedExercises = [...day.exercises, { exerciseId: exercise.id } as typeof day.exercises[number]];
+      const nextUnmet = requirements.findIndex((req, idx) => {
+        const currentFulfilled = countFulfilled(updatedExercises, req);
+        return currentFulfilled < req.requiredExerciseCount && idx !== currentReqIndex;
+      });
+      if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
     }
   }
 
   function chooseForMe() {
     if (day.exercises.length && !confirm("Replace the exercises currently selected for this workout?")) return;
+    const targetMuscles = day.targetMuscles?.length ? day.targetMuscles : allSplitDays.find((sd) => sd.id === day.splitDayId)?.muscleGroups || [];
     const targetPatterns = day.movementPatterns || [];
     const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
     const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
@@ -1423,6 +1652,10 @@ function WorkoutDayEditor({
     });
   }
 
+  const pickerTargetMuscles = showAllExercises || !currentReq
+    ? []
+    : [currentReq.targetMuscle];
+
   return (
     <div className="mt-5 space-y-4">
       <div className="grid gap-3 md:grid-cols-2">
@@ -1431,41 +1664,72 @@ function WorkoutDayEditor({
       </div>
       <button className="btn-secondary w-full" onClick={chooseForMe}><Wand2 className="h-4 w-4" /> Choose For Me</button>
       {chooserWarning && <div className="rounded-lg border border-ember/40 bg-ember/10 p-3 text-sm text-orange-100">{chooserWarning}</div>}
-      <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <span className="label">Target muscle steps</span>
-          {(uniqueTargetMuscles.length ? uniqueTargetMuscles : ["full-body" as MuscleGroup]).map((muscle) => (
-            <button
-              key={muscle}
-              className={`rounded-full px-3 py-1 text-xs font-bold ${currentPickerMuscle === muscle ? "bg-volt text-iron-950" : coveredMuscles.has(muscle) ? "bg-volt/20 text-volt" : "bg-white/10 text-iron-300"}`}
-              onClick={() => setCurrentPickerMuscle(muscle)}
-            >
-              {muscle}
+
+      {/* Requirement progress badges */}
+      {requirements.length > 0 && (
+        <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <span className="label">Requirements</span>
+            {reqProgress.map((item, idx) => {
+              const done = item.fulfilled >= item.needed;
+              const active = idx === currentReqIndex && !showAllExercises;
+              return (
+                <button
+                  key={item.req.id}
+                  className={`rounded-full px-3 py-1 text-xs font-bold transition ${
+                    active ? "bg-volt text-iron-950" :
+                    done ? "bg-volt/20 text-volt" :
+                    "bg-white/10 text-iron-300"
+                  }`}
+                  onClick={() => { setCurrentReqIndex(idx); setShowAllExercises(false); }}
+                >
+                  {item.req.targetMuscle} {item.fulfilled}/{item.needed}
+                </button>
+              );
+            })}
+          </div>
+          {allReqsMet && !showPrescription && (
+            <button className="btn-primary w-full mt-2" onClick={() => setShowPrescription(true)}>
+              <CheckCircle2 className="h-4 w-4" /> All requirements met — Continue to prescription
             </button>
-          ))}
+          )}
         </div>
-        <label className="mb-3 flex items-center gap-2 text-sm font-bold text-iron-200">
-          <input type="checkbox" checked={showAllExercises} onChange={(event) => setShowAllExercises(event.target.checked)} />
-          Override: show all exercises
-        </label>
-        <ExercisePicker
-          db={db}
-          user={user}
-          onPick={addExercise}
-          targetMuscles={showAllExercises || currentPickerMuscle === "all" ? [] : [currentPickerMuscle]}
-          targetPatterns={showAllExercises ? [] : day.movementPatterns || []}
-          grouped={!showAllExercises}
-        />
-      </div>
+      )}
+
+      {/* Exercise picker — hidden after all requirements met unless user wants more */}
+      {(!allReqsMet || !showPrescription) && (
+        <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
+          <label className="mb-3 flex items-center gap-2 text-sm font-bold text-iron-200">
+            <input type="checkbox" checked={showAllExercises} onChange={(event) => setShowAllExercises(event.target.checked)} />
+            Override: show all exercises
+          </label>
+          <ExercisePicker
+            db={db}
+            user={user}
+            onPick={addExercise}
+            alreadyAddedIds={alreadyAddedIds}
+            targetMuscles={pickerTargetMuscles}
+            targetPatterns={showAllExercises ? [] : day.movementPatterns || []}
+            grouped={!showAllExercises}
+          />
+        </div>
+      )}
+
+      {/* Prescription list */}
       <div className="space-y-2">
         {day.exercises.map((planned) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+          // Which requirement does this exercise satisfy?
+          const satisfiedReq = requirements.find((req) => exercise && exerciseFulfillsRequirement(exercise, req));
           return (
             <div key={planned.id} className="rounded-lg border border-white/10 bg-white/[0.06] p-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="font-black">{planned.order}. {exercise?.name}</p>
-                  <p className="text-xs text-iron-400">{planned.plannedSets.length} sets - {planned.plannedSets[0]?.targetReps} reps - RPE {planned.plannedSets[0]?.targetRpe}</p>
+                  <p className="text-xs text-iron-400">
+                    {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps} reps · RPE {planned.plannedSets[0]?.targetRpe}
+                    {satisfiedReq ? <span className="ml-2 rounded-full bg-volt/15 px-2 py-0.5 text-volt">{satisfiedReq.targetMuscle}</span> : null}
+                  </p>
                 </div>
                 <button className="btn-ghost text-orange-100" onClick={() => updateDay((target) => {
                   target.exercises = target.exercises.filter((item) => item.id !== planned.id).map((item, index) => ({ ...item, order: index + 1 }));
@@ -1481,8 +1745,8 @@ function WorkoutDayEditor({
                 <NumberField label="Reps" value={planned.plannedSets[0]?.targetReps || 8} onChange={(reps) => updateDay((target) => {
                   target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetReps = reps; });
                 })} />
-                <NumberField label="RPE" value={planned.plannedSets[0]?.targetRpe || 7} onChange={(rpe) => updateDay((target) => {
-                  target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = rpe; });
+                <NumberField label="RPE" step={0.5} value={planned.plannedSets[0]?.targetRpe || 7} onChange={(rpe) => updateDay((target) => {
+                  target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
                 })} />
               </div>
             </div>
@@ -1498,6 +1762,7 @@ function ExercisePicker({
   user,
   onPick,
   selectedIds = [],
+  alreadyAddedIds = [],
   compoundFilter = "all",
   targetMuscles = [],
   targetPatterns = [],
@@ -1507,6 +1772,7 @@ function ExercisePicker({
   user: UserProfile;
   onPick: (exercise: Exercise) => void;
   selectedIds?: string[];
+  alreadyAddedIds?: string[];
   compoundFilter?: "all" | "compound" | "isolation";
   targetMuscles?: MuscleGroup[];
   targetPatterns?: MovementPattern[];
@@ -1546,16 +1812,33 @@ function ExercisePicker({
       })).filter((section) => section.exercises.length)
     : [];
 
-  const renderExerciseButton = (exercise: Exercise) => (
-    <button key={exercise.id} className={`rounded-lg border p-3 text-left hover:border-volt/50 ${selectedIds.includes(exercise.id) ? "border-volt bg-volt/10" : "border-white/10 bg-white/[0.06]"}`} onClick={() => onPick(exercise)}>
-      <div className="flex items-start justify-between gap-2">
-        <p className="font-black">{exercise.name}</p>
-        {selectedIds.includes(exercise.id) && <Check className="h-4 w-4 text-volt" />}
-      </div>
-      <p className="mt-1 text-xs text-iron-400">{exercise.primaryMuscles.join(", ")} - {exercise.equipment.join(", ")} - {exercise.movementPattern}</p>
-      <p className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500">{isCompound(exercise) ? "compound" : "isolation/accessory"} - fatigue {fatigueRatingForExercise(exercise)}/5</p>
-    </button>
-  );
+  const renderExerciseButton = (exercise: Exercise) => {
+    const isSelected = selectedIds.includes(exercise.id);
+    const isAlreadyAdded = alreadyAddedIds.includes(exercise.id);
+    return (
+      <button
+        key={exercise.id}
+        disabled={isAlreadyAdded}
+        className={`rounded-lg border p-3 text-left transition ${
+          isAlreadyAdded ? "cursor-not-allowed border-white/5 bg-white/[0.03] opacity-50" :
+          isSelected ? "border-volt bg-volt/10 hover:border-volt/80" :
+          "border-white/10 bg-white/[0.06] hover:border-volt/50"
+        }`}
+        onClick={() => !isAlreadyAdded && onPick(exercise)}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <p className="font-black">{exercise.name}</p>
+          {isAlreadyAdded
+            ? <span className="rounded-full bg-white/10 px-2 py-0.5 text-[0.65rem] font-bold text-iron-400">Added</span>
+            : isSelected
+              ? <Check className="h-4 w-4 text-volt" />
+              : null}
+        </div>
+        <p className="mt-1 text-xs text-iron-400">{exercise.primaryMuscles.join(", ")} · {exercise.equipment.join(", ")} · {exercise.movementPattern}</p>
+        <p className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500">{isCompound(exercise) ? "compound" : "isolation/accessory"} · fatigue {fatigueRatingForExercise(exercise)}/5</p>
+      </button>
+    );
+  };
 
   return (
     <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
@@ -2118,8 +2401,15 @@ function ExerciseProgressPanel({
       if (!log) return undefined;
       const value = calculateSessionExerciseE1RM(log);
       if (!value) return undefined;
+      // Prefer block week label; fall back to looking up week from block structure; then use date.
+      const blockWeekNumber = session.weekNumber
+        ?? db.programs
+            .flatMap((program) => program.blocks)
+            .flatMap((block) => block.weeks)
+            .find((week) => week.workouts.some((day) => day.id === session.workoutDayId))
+            ?.weekNumber;
       return {
-        label: session.weekNumber ? `W${session.weekNumber}` : new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        label: blockWeekNumber ? `W${blockWeekNumber}` : new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
         value,
         date: session.startedAt
       };
@@ -2393,6 +2683,66 @@ function SplitDayEditor({ day, index, onChange, onDelete }: { day: SplitDay; ind
           ))}
         </div>
       </div>
+      <div className="mt-3">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="label">Exercise requirements</p>
+          <button
+            className="btn-ghost text-xs text-volt"
+            onClick={() => {
+              const newReq: SplitDayRequirement = {
+                id: createId("req"),
+                targetMuscle: day.muscleGroups[0] ?? "chest",
+                requiredExerciseCount: 1,
+                priority: (day.requirements?.length ?? 0) + 1,
+              };
+              onChange({ ...day, requirements: [...(day.requirements ?? []), newReq] });
+            }}
+          >
+            <Plus className="inline h-3 w-3" /> Add
+          </button>
+        </div>
+        {(day.requirements ?? []).length === 0 && (
+          <p className="text-xs text-iron-400">No requirements — exercises are added freely. Add requirements to guide the exercise chooser.</p>
+        )}
+        <div className="space-y-2">
+          {(day.requirements ?? []).map((req, reqIdx) => (
+            <div key={req.id} className="flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] p-2">
+              <select
+                className="field flex-1 text-xs"
+                value={req.targetMuscle}
+                onChange={(e) => {
+                  const updated = (day.requirements ?? []).map((r, i) => i === reqIdx ? { ...r, targetMuscle: e.target.value as MuscleGroup } : r);
+                  onChange({ ...day, requirements: updated });
+                }}
+              >
+                {muscleOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <input
+                type="number"
+                className="field w-14 text-center text-xs"
+                min={1}
+                max={6}
+                value={req.requiredExerciseCount}
+                onChange={(e) => {
+                  const updated = (day.requirements ?? []).map((r, i) => i === reqIdx ? { ...r, requiredExerciseCount: Math.max(1, parseInt(e.target.value) || 1) } : r);
+                  onChange({ ...day, requirements: updated });
+                }}
+                title="Required exercise count"
+              />
+              <span className="text-xs text-iron-400">ex</span>
+              <button
+                className="btn-ghost text-xs text-orange-100"
+                onClick={() => {
+                  const updated = (day.requirements ?? []).filter((_, i) => i !== reqIdx).map((r, i) => ({ ...r, priority: i + 1 }));
+                  onChange({ ...day, requirements: updated });
+                }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
       <TextField label="Notes" value={day.notes || ""} onChange={(notes) => onChange({ ...day, notes })} />
     </div>
   );
@@ -2569,7 +2919,9 @@ function GymScreen({
 function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; user: UserProfile; setScreen: (screen: Screen) => void }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
-  const week = block?.weeks.find((item) => item.weekNumber === block.currentWeek) || block?.weeks[0];
+  // Derive the current week from the block cursor (sequence-based, not calendar-based).
+  const cursor = block ? getCurrentWorkoutForUser(db, user.id) : undefined;
+  const week = (cursor ? block?.weeks.find((item) => item.weekNumber === cursor.week.weekNumber) : undefined) || block?.weeks.find((item) => item.weekNumber === block?.currentWeek) || block?.weeks[0];
   const weekSessions = db.sessions.filter((session) => session.userId === user.id && session.blockId === block?.id && session.weekNumber === week?.weekNumber);
   const completedSessions = weekSessions.filter((session) => session.status === "completed");
   const skippedCount = week?.workouts.filter((day) => block?.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped").length || 0;
@@ -2583,7 +2935,7 @@ function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; use
     .flatMap((exercise) => exercise.sets)
     .filter((set) => !set.skipped);
   const averageSetFeel = averageSetRating.length
-    ? Number((averageSetRating.reduce((sum, set) => sum + setRatingValue(set.setRating), 0) / averageSetRating.length).toFixed(1))
+    ? Number((averageSetRating.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / averageSetRating.length).toFixed(1))
     : 0;
 
   return (
@@ -2615,7 +2967,9 @@ function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; use
                 const actualSets = session?.loggedExercises.reduce((sum, log) => sum + log.sets.filter((set) => !set.skipped).length, 0) || 0;
                 const skippedSets = session?.loggedExercises.reduce((sum, log) => sum + log.sets.filter((set) => set.skipped).length, 0) || 0;
                 const plannedSets = day.exercises.reduce((sum, planned) => sum + planned.plannedSets.length, 0);
-                const tonnage = session?.loggedExercises.reduce((sum, log) => sum + log.sets.reduce((setSum, set) => setSum + (set.skipped ? 0 : set.actualWeight * set.actualReps), 0), 0) || 0;
+                const completedSets = session?.loggedExercises.flatMap((log) => log.sets.filter((set) => !set.skipped)) ?? [];
+                const avgRpe = completedSets.length ? completedSets.reduce((sum, set) => sum + (set.actualRpe ?? 0), 0) / completedSets.length : 0;
+                const avgSetRating = completedSets.length ? completedSets.reduce((sum, set) => sum + (set.setRating ?? 3), 0) / completedSets.length : 0;
                 const score = session?.workoutScore ?? (session?.status === "completed" ? calculateWorkoutScore(session).score : undefined);
                 const daySkipped = block.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped";
                 return (
@@ -2632,10 +2986,10 @@ function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; use
                     </div>
                     {session ? (
                       <div className="mt-3 grid gap-2 sm:grid-cols-5">
-                        <Metric label="Actual sets" value={actualSets} />
+                        <Metric label="Hard sets" value={actualSets} />
                         <Metric label="Skipped" value={skippedSets} />
-                        <Metric label="Tonnage" value={Math.round(tonnage).toLocaleString()} unit={user.unit} />
-                        <Metric label="Readiness" value={session.readiness?.readinessScore || "-"} />
+                        <Metric label="Avg RPE" value={avgRpe ? avgRpe.toFixed(1) : "-"} />
+                        <Metric label="Avg feel" value={avgSetRating ? avgSetRating.toFixed(1) : "-"} unit={avgSetRating ? "/5" : undefined} />
                         <Metric label="Score" value={score || "-"} unit={score ? "/100" : undefined} />
                       </div>
                     ) : (
@@ -2651,12 +3005,55 @@ function WeekProgressScreen({ db, user, setScreen }: { db: TrainingDatabase; use
                 );
               })}
             </div>
-            <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] p-3">
-              <p className="font-black">Coming next</p>
-              <p className="mt-1 text-sm text-iron-300">Weekly score, fatigue trend, and progression suggestions are wired as placeholders here; completed workouts now provide the score and set-feel inputs.</p>
-            </div>
+            {isBlockWeekComplete(block, db.sessions.filter((s) => s.userId === user.id && s.blockId === block.id)) && (
+              <WeekReviewPanel block={block} sessions={db.sessions.filter((s) => s.userId === user.id && s.blockId === block.id)} />
+            )}
           </Panel>
         </>
+      )}
+    </div>
+  );
+}
+
+function WeekReviewPanel({ block, sessions }: { block: TrainingBlock; sessions: WorkoutSession[] }) {
+  const review = generateWeekReview(block, sessions);
+  const [confirmed, setConfirmed] = useState(false);
+
+  return (
+    <div className="mt-4 rounded-lg border border-volt/30 bg-volt/5 p-4">
+      <div className="mb-3 flex items-center gap-2">
+        <CheckCircle2 className="h-5 w-5 text-volt" />
+        <p className="font-black text-volt">Week {review.weekNumber} Complete!</p>
+        {review.totalWeeks > 0 && <span className="text-xs text-iron-400">({review.weekNumber}/{review.totalWeeks})</span>}
+      </div>
+      <div className="mb-4 grid gap-2 sm:grid-cols-4">
+        <Metric label="Completed" value={review.completedWorkouts} unit={`/${review.plannedWorkouts}`} />
+        <Metric label="Skipped" value={review.skippedWorkouts} />
+        <Metric label="Hard sets" value={review.hardSetsCompleted} />
+        <Metric label="Avg RPE" value={review.averageRpe ? review.averageRpe.toFixed(1) : "-"} />
+      </div>
+      <div className="mb-4 grid gap-2 sm:grid-cols-2">
+        <Metric label="Avg feel" value={review.averageSetRating ? `${review.averageSetRating.toFixed(1)}/5` : "-"} />
+        {review.averageReadiness !== null && <Metric label="Avg readiness" value={review.averageReadiness.toFixed(0)} unit="/10" />}
+      </div>
+      {review.suggestions.length > 0 && (
+        <div className="mb-4 space-y-2 rounded-lg bg-iron-950/50 p-3">
+          <p className="label">Suggestions for next week</p>
+          {review.suggestions.map((suggestion) => (
+            <p key={suggestion} className="text-sm text-iron-300">• {suggestion}</p>
+          ))}
+          <p className="mt-2 text-xs text-iron-400">These are suggestions only. Review them and start the next week when ready — nothing changes automatically.</p>
+        </div>
+      )}
+      {!confirmed ? (
+        <button className="btn-primary w-full" onClick={() => setConfirmed(true)}>
+          Start Week {review.weekNumber + 1}
+        </button>
+      ) : (
+        <div className="rounded-lg border border-volt/30 bg-volt/10 p-3 text-center">
+          <p className="font-bold text-volt">Ready to go.</p>
+          <p className="mt-1 text-sm text-iron-300">Head to Today to begin your next training day. The block will advance automatically when you start your first session of Week {review.weekNumber + 1}.</p>
+        </div>
       )}
     </div>
   );
@@ -2666,6 +3063,10 @@ function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile 
   const metrics = powerliftingMetrics(db, user);
   const weekly = summarizeWeek(db, user);
   const topSets = recentTopSets(db.sessions, user.id);
+  const sevenDaysAgo = Date.now() - 1000 * 60 * 60 * 24 * 7;
+  const recentSessions = db.sessions.filter((s) => s.userId === user.id && s.status === "completed" && new Date(s.startedAt).getTime() >= sevenDaysAgo);
+  const weeklyHardSets = recentSessions.flatMap((s) => s.loggedExercises).flatMap((log) => log.sets.filter((set) => !set.skipped && set.kind !== "warmup"));
+  const weeklyAvgRpe = weeklyHardSets.length ? weeklyHardSets.reduce((sum, set) => sum + (set.actualRpe ?? 0), 0) / weeklyHardSets.filter((s) => s.actualRpe).length : 0;
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const programGaps = analyzeProgramGaps(activeProgram, db);
 
@@ -2689,7 +3090,7 @@ function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile 
                     <p className="font-bold">{exercise?.name}</p>
                     <p className="text-sm text-volt">{estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)} e1RM</p>
                   </div>
-                  <p className="text-xs text-iron-400">{set.actualWeight} x {set.actualReps} @ {set.actualRpe || "?"} - {set.setRating}</p>
+                  <p className="text-xs text-iron-400">{set.actualWeight} x {set.actualReps} @ {set.actualRpe || "?"} - feel {set.setRating}/5</p>
                 </div>
               );
             })}
@@ -2699,7 +3100,8 @@ function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile 
       <section className="grid gap-4 lg:grid-cols-3">
         <Panel title="Weekly Review" icon={ClipboardList}>
           <Metric label="Completed" value={weekly.completedWorkouts} unit="workouts" />
-          <Metric label="Tonnage" value={Math.round(weekly.tonnage).toLocaleString()} unit={user.unit} />
+          <Metric label="Hard sets" value={weeklyHardSets.length} />
+          <Metric label="Avg RPE" value={weeklyAvgRpe ? weeklyAvgRpe.toFixed(1) : "-"} />
         </Panel>
         <Panel title="Program Gaps" icon={ShieldAlert}>
           <div className="space-y-2">
@@ -2971,7 +3373,7 @@ function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; e
               <th className="p-3">Load</th>
               <th className="p-3">Reps</th>
               <th className="p-3">RPE</th>
-              <th className="p-3">Rating</th>
+              <th className="p-3">Feel</th>
               <th className="p-3">e1RM</th>
             </tr>
           </thead>
@@ -2982,7 +3384,7 @@ function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; e
                 <td className="p-3">{set.actualWeight} {user.unit}</td>
                 <td className="p-3">{set.actualReps}</td>
                 <td className="p-3">{set.actualRpe || "-"}</td>
-                <td className="p-3">{set.setRating}</td>
+                <td className="p-3">{set.setRating}/5</td>
                 <td className="p-3">{estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)}</td>
               </tr>
             ))}
@@ -2991,13 +3393,6 @@ function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; e
       </div>
     </section>
   );
-}
-
-function setRatingValue(rating: SetRating): number {
-  if (rating === "Easy") return 5;
-  if (rating === "Good") return 3;
-  if (rating === "Hard") return 2;
-  return 1;
 }
 
 function finishWorkoutInDraft(draft: TrainingDatabase, user: UserProfile, target: WorkoutSession): void {
@@ -3021,7 +3416,7 @@ function finishWorkoutInDraft(draft: TrainingDatabase, user: UserProfile, target
     const validSets = logged.sets.filter((set) => !set.skipped && set.kind !== "warmup");
     if (!validSets.length) return;
     const totalReps = validSets.reduce((sum, set) => sum + set.actualReps, 0);
-    const averageSetRating = Number((validSets.reduce((sum, set) => sum + setRatingValue(set.setRating), 0) / validSets.length).toFixed(1));
+    const averageSetRating = Number((validSets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / validSets.length).toFixed(1));
     const exercise = draft.exercises.find((item) => item.id === logged.exerciseId);
     draft.exercisePerformanceLogs?.push({
       id: createId("elog"),
@@ -3084,7 +3479,7 @@ function emptySetDraft(planned?: PlannedSet, last?: LoggedSet, draftKey = "") {
     actualWeight: String(planned?.plannedWeight ?? last?.actualWeight ?? ""),
     actualReps: String(planned?.targetReps ?? last?.actualReps ?? ""),
     actualRpe: String(planned?.targetRpe ?? last?.targetRpe ?? ""),
-    setRating: "Good" as SetRating,
+    setRating: 3 as SetRating,
     formRating: "4",
     muscleFeelRating: "4",
     pumpRating: "3",
@@ -3164,11 +3559,11 @@ function TextField({ label, value, onChange }: { label: string; value: string; o
   );
 }
 
-function NumberField({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+function NumberField({ label, value, step, onChange }: { label: string; value: number; step?: number; onChange: (value: number) => void }) {
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="field mt-2" type="number" value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input className="field mt-2" type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
     </div>
   );
 }

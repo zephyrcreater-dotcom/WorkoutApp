@@ -16,6 +16,11 @@ import type {
   WorkoutSession
 } from "../types/domain";
 
+/** Round an RPE value to the nearest 0.5 increment and clamp to [6, 10]. */
+export function sanitizeRpe(value: number): number {
+  return Math.max(6, Math.min(10, Math.round(value * 2) / 2));
+}
+
 const RPE_PERCENT_TABLE: Record<number, Record<number, number>> = {
   1: { 10: 1, 9.5: 0.978, 9: 0.955, 8.5: 0.939, 8: 0.922, 7.5: 0.907, 7: 0.892, 6.5: 0.878, 6: 0.865 },
   2: { 10: 0.955, 9.5: 0.939, 9: 0.922, 8.5: 0.907, 8: 0.892, 7.5: 0.878, 7: 0.865, 6.5: 0.851, 6: 0.837 },
@@ -55,12 +60,8 @@ function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function setRatingNumeric(rating?: LoggedSet["setRating"]): number {
-  if (rating === "Easy") return 5;
-  if (rating === "Good") return 3;
-  if (rating === "Hard") return 2;
-  if (rating === "Failed") return 1;
-  return 3;
+export function setRatingNumeric(rating?: LoggedSet["setRating"]): number {
+  return rating ?? 3;
 }
 
 export function calculateSetPerformanceScore(plannedSet: PlannedSet | undefined, actualSet: LoggedSet): {
@@ -88,7 +89,7 @@ export function calculateSetPerformanceScore(plannedSet: PlannedSet | undefined,
   if (repsDelta < 0) reasons.push("Reps came in below plan.");
   if (weightRatio < 0.98) reasons.push("Load came in below plan.");
   if (rpeDelta >= 1.5) reasons.push("Actual RPE was materially above target.");
-  if (rating <= 2) reasons.push("Set rating showed higher-than-planned difficulty.");
+  if (rating <= 2) reasons.push("Set feel showed higher-than-planned difficulty.");
   if (!reasons.length) reasons.push(actualSet.added ? "Useful added work." : "Set was close to plan.");
 
   const finalScore = clampScore(score);
@@ -132,7 +133,7 @@ export function calculateWorkoutScore(session: WorkoutSession): {
   const status = score >= 88 ? "excellent" : score >= 72 ? "solid" : score >= 50 ? "mixed" : "poor";
   const suggestions: string[] = [];
   if (skipped >= 2) suggestions.push("Skipped volume was high; review fatigue or reduce optional sets.");
-  if (averageSetRating <= 2) suggestions.push("Sets felt harder than planned; keep load steady or trim volume.");
+  if (averageSetRating <= 2) suggestions.push("Sets felt harder than planned (avg feel ≤ 2/5); keep load steady or trim volume.");
   if (score >= 88) suggestions.push("Performance was ahead of plan; a small load increase can be reviewed next time.");
   if (!suggestions.length) suggestions.push("Workout matched the plan closely; continue conservative progression.");
   return { score, status, completionPercentage, averageSetRating, suggestions };
@@ -144,11 +145,11 @@ export function recommendNextWorkoutAdjustments(completedWorkoutSession: Workout
   const skipped = sets.filter((set) => set.skipped).length;
   const easyAhead = workingSets.filter((set) => {
     const targetRpe = set.targetRpe ?? 8;
-    return set.setRating === "Easy" && (set.actualRpe ?? targetRpe) <= targetRpe - 1 && set.actualReps >= (set.plannedReps ?? set.actualReps);
+    return (set.setRating ?? 3) >= 4 && (set.actualRpe ?? targetRpe) <= targetRpe - 1 && set.actualReps >= (set.plannedReps ?? set.actualReps);
   }).length;
   const hardBehind = workingSets.filter((set) => {
     const targetRpe = set.targetRpe ?? 8;
-    return set.setRating === "Failed" || set.setRating === "Hard" || (set.actualRpe ?? targetRpe) >= targetRpe + 1.5 || set.actualReps < (set.plannedReps ?? set.actualReps);
+    return (set.setRating ?? 3) <= 2 || (set.actualRpe ?? targetRpe) >= targetRpe + 1.5 || set.actualReps < (set.plannedReps ?? set.actualReps);
   }).length;
   const suggestions: string[] = [];
 
@@ -270,9 +271,9 @@ export function suggestPlannedWeight(params: {
     let recentWeight = last.actualWeight;
 
     // The model is deliberately moderate: only strong performance signals move the next planned load.
-    if (last.setRating === "Failed" || repsDelta < -1 || rpeDelta >= 2 || (last.formRating ?? 4) <= 2) recentWeight *= 0.95;
-    else if (last.setRating === "Easy" && rpeDelta <= -1 && repsDelta >= 0) recentWeight *= 1.025;
-    else if (last.setRating === "Hard" || rpeDelta >= 1) recentWeight *= 0.985;
+    if ((last.setRating ?? 3) <= 1 || repsDelta < -1 || rpeDelta >= 2 || (last.formRating ?? 4) <= 2) recentWeight *= 0.95;
+    else if ((last.setRating ?? 3) >= 5 && rpeDelta <= -1 && repsDelta >= 0) recentWeight *= 1.025;
+    else if ((last.setRating ?? 3) <= 2 || rpeDelta >= 1) recentWeight *= 0.985;
     candidates.push(recentWeight);
   }
 
@@ -380,24 +381,24 @@ export function suggestNextSetAdjustment(params: {
     type = "pain-warning";
     title = "Stop or substitute";
     explanation = "Pain was high. Stop this movement today or switch to a pain-free substitute.";
-  } else if (loggedSet.setRating === "Failed" || missedReps) {
+  } else if ((loggedSet.setRating ?? 3) <= 1 || missedReps) {
     multiplier = 0.92;
     priority = "high";
     title = "Reduce next set";
-    explanation = "Planned reps were missed. Reduce the next set by about 5-10%.";
-  } else if (rpeDelta >= 2) {
+    explanation = "Planned reps were missed or set feel was 1/5. Reduce the next set by about 5-10%.";
+  } else if (rpeDelta >= 2 || (loggedSet.setRating ?? 3) <= 2) {
     multiplier = 0.95;
     title = "Reduce next set";
-    explanation = "Actual RPE was at least 2 points above target. Reduce the next set by about 2.5-7.5%.";
+    explanation = "Actual RPE was well above target or set feel was 2/5. Reduce the next set by about 2.5-7.5%.";
   } else if (formPoor) {
     multiplier = 0.975;
     title = "Protect technique";
     explanation = "Form quality was poor, so hold or slightly reduce load even though the reps were completed.";
-  } else if (loggedSet.setRating === "Easy" && rpeDelta <= -1) {
+  } else if ((loggedSet.setRating ?? 3) >= 5 && rpeDelta <= -1) {
     multiplier = 1.025;
     priority = "low";
     title = "Small increase available";
-    explanation = "The set was clearly easier than target. A small increase is reasonable if warmups and form agree.";
+    explanation = "The set was clearly easier than target (feel 5/5). A small increase is reasonable if warmups and form agree.";
   } else if (feelPoorAccessory) {
     type = "cue";
     priority = "low";
@@ -522,7 +523,7 @@ export function summarizeWeek(db: TrainingDatabase, user: UserProfile): {
   const hardFailed = completed
     .flatMap((session) => session.loggedExercises)
     .flatMap((exercise) => exercise.sets)
-    .filter((set) => set.setRating === "Hard" || set.setRating === "Failed").length;
+    .filter((set) => (set.setRating ?? 3) <= 2).length;
   const recommendations: string[] = [];
   if (highPainSets) recommendations.push("Pain is showing up. Keep substitutions available and avoid forcing painful patterns.");
   if (hardFailed >= 4) recommendations.push("Several sets were hard or failed. Hold load jumps next week or reduce accessory volume.");
@@ -535,4 +536,59 @@ export function summarizeWeek(db: TrainingDatabase, user: UserProfile): {
     tonnage,
     recommendations
   };
+}
+
+export interface WeekReview {
+  weekNumber: number;
+  totalWeeks: number;
+  completedWorkouts: number;
+  skippedWorkouts: number;
+  plannedWorkouts: number;
+  hardSetsCompleted: number;
+  averageRpe: number;
+  averageSetRating: number;
+  averageReadiness: number | null;
+  isAllDone: boolean;
+  suggestions: string[];
+}
+
+export function isBlockWeekComplete(block: TrainingBlock, sessions: WorkoutSession[]): boolean {
+  const currentWeek = block.weeks.find((w) => w.weekNumber === block.currentWeek);
+  if (!currentWeek) return false;
+  return currentWeek.workouts.every((day) => {
+    const isSkipped = block.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped";
+    const isCompleted = sessions.some((s) => s.workoutDayId === day.id && s.status === "completed");
+    return isSkipped || isCompleted;
+  });
+}
+
+export function generateWeekReview(block: TrainingBlock, sessions: WorkoutSession[]): WeekReview {
+  const week = block.weeks.find((w) => w.weekNumber === block.currentWeek);
+  if (!week) {
+    return { weekNumber: block.currentWeek, totalWeeks: block.lengthWeeks, completedWorkouts: 0, skippedWorkouts: 0, plannedWorkouts: 0, hardSetsCompleted: 0, averageRpe: 0, averageSetRating: 0, averageReadiness: null, isAllDone: false, suggestions: [] };
+  }
+
+  const weekSessions = sessions.filter((s) => s.workoutDayId && week.workouts.some((d) => d.id === s.workoutDayId));
+  const completed = weekSessions.filter((s) => s.status === "completed");
+  const skipped = week.workouts.filter((d) => block.skippedWorkoutDayIds?.includes(d.id) || d.status === "skipped").length;
+  const allSets = completed.flatMap((s) => s.loggedExercises).flatMap((e) => e.sets);
+  const hardSets = allSets.filter((s) => !s.skipped && s.kind !== "warmup");
+  const averageRpe = hardSets.length ? Number((hardSets.reduce((sum, s) => sum + (s.actualRpe || 0), 0) / hardSets.filter((s) => s.actualRpe).length || 0).toFixed(1)) : 0;
+  const averageSetRating = hardSets.length ? Number((hardSets.reduce((sum, s) => sum + (s.setRating ?? 3), 0) / hardSets.length).toFixed(1)) : 0;
+  const readinessScores = completed.map((s) => s.readiness?.readinessScore).filter((r): r is number => r !== undefined);
+  const averageReadiness = readinessScores.length ? Math.round(readinessScores.reduce((a, b) => a + b, 0) / readinessScores.length) : null;
+  const isAllDone = isBlockWeekComplete(block, sessions);
+
+  const weekProgress = block.currentWeek / block.lengthWeeks;
+  const suggestions: string[] = [];
+
+  if (skipped >= 2) suggestions.push("Multiple workouts were skipped. Consider repeating this week or reducing volume next week to avoid debt.");
+  if (averageSetRating < 2.5 && hardSets.length >= 3) suggestions.push("Average set feel was low (≤ 2.5/5). Hold loads steady next week and monitor recovery.");
+  else if (averageSetRating >= 4.5 && hardSets.length >= 3) suggestions.push("Sets felt easy (≥ 4.5/5). A conservative load increase next week is reasonable.");
+  if (averageRpe > 9 && hardSets.filter((s) => s.actualRpe).length >= 3) suggestions.push("Average RPE exceeded 9 across working sets. Reduce load 2-5% or trim one accessory set next week.");
+  if (averageReadiness !== null && averageReadiness < 55) suggestions.push("Readiness averaged below 55 this week. Prioritize sleep, nutrition, and recovery before pushing load next week.");
+  if (weekProgress >= 0.75 && block.type !== "deload") suggestions.push(`You are in week ${block.currentWeek} of ${block.lengthWeeks}. Plan a deload after this block finishes.`);
+  if (!suggestions.length) suggestions.push("Performance matched expectations. Continue conservative progression into next week.");
+
+  return { weekNumber: block.currentWeek, totalWeeks: block.lengthWeeks, completedWorkouts: completed.length, skippedWorkouts: skipped, plannedWorkouts: week.workouts.length, hardSetsCompleted: hardSets.length, averageRpe, averageSetRating, averageReadiness, isAllDone, suggestions };
 }
