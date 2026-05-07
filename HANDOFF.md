@@ -10,14 +10,43 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ## Current Project Status
 
-- **Branch:** `session-2-algorithm-logic`
+- **Branch:** `v2-hotfix-today-readiness-sbd`
 - **Build:** Passing (`tsc -b && vite build`, 1595 modules, no errors or warnings)
 - **Lint:** Passing (`eslint .`, no errors)
-- **Git status:** 7 files modified, untracked `imports/` and `src/lib/importers/` (excluded by `.gitignore`)
 
-Modified files in current working tree:
-- `.gitignore`
-- `package.json`
+Modified files in current working tree (from base):
+- `src/App.tsx`
+- `src/lib/algorithms/setAdjustment.ts`
+- `src/lib/programAnalysis.ts`
+- `src/lib/programmingLogic.ts`
+- `src/lib/trainingMath.ts`
+- `src/types/domain.ts`
+
+---
+
+## Tab Ownership (V2 Hotfix Final)
+
+**Block tab (`programs` screen):**
+- Owns block building, split selection, draft blocks, block activation, block history, program gap analysis.
+- Does NOT show the active weekly overview when a block is already active. Active blocks show a compact summary card with a "View current week →" link to the Week tab.
+- Weekly/day overview is only shown when a **draft** block is being reviewed or edited.
+
+**Week tab (`week` screen):**
+- Owns current week progress, per-day session summaries, completed workout review, and Week Review when the week is complete.
+- Supports week history: a week selector shows all weeks in the active block; completed weeks remain accessible after advancing.
+- Week Review shows when `isBlockWeekComplete` is true. It includes "Start Week N+1" and a "Plan Next Week" placeholder (coming soon).
+
+**Analytics tab (`progress` screen):**
+- Exercise analytics default to **Overall** mode (sorted by date, short date labels).
+- **Current Block** mode filters to active block sessions, using `W{n}D{n}` labels to avoid duplicate W1 entries.
+- e1RM chart titled "Estimated Progress" for non-barbell/non-strength exercises.
+- Volume/tonnage is not shown in exercise analytics.
+
+**Today / Logger:**
+- Off-program exercise additions show a scope modal: "This session only" (active) or "Future planned workouts" (disabled, coming soon).
+- Added exercises are marked `offProgram: true` on `LoggedExercise` and do not alter the active block plan.
+
+---
 - `src/App.tsx`
 - `src/data/seedData.ts`
 - `src/lib/db.ts`

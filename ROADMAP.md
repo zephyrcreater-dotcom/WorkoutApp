@@ -1,6 +1,17 @@
 # ROADMAP.md
 
-## V2 Iteration 3 — Recommended Next Focus
+## V2 Hotfix Final — Completed
+
+- Block tab simplified: active block shows compact summary + "View current week" link; WeeklyOverview only shown for drafts.
+- Week tab owns active week progress and completed week history (week selector tabs).
+- Exercise analytics: Overall mode (by date) vs Current Block mode (W{n}D{n} labels). Default: Overall.
+- Off-program exercises in LiveLogger: scope modal (This session only / Future [coming soon]).
+- Next-week editing: placeholder in Week Review with "coming soon" helper text.
+- LiveLogger set-flow fixes: phantom next set, skip guard, finish-exercise confirmation, applySuggestion persistence.
+
+---
+
+## V2 Next Iteration — Recommended Focus
 
 **Theme: Weight Estimator v1 + Exercise Library Depth**
 

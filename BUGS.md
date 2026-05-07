@@ -64,6 +64,21 @@
 
 ---
 
+## Resolved In V2 Hotfix Final
+
+- Block tab no longer shows active weekly overview; shows compact summary + "View current week →" link.
+- Week tab owns active week progress, completed session review, week history selector, and Week Review.
+- Analytics exercise chart defaults to Overall (by date); Current Block mode uses `W{n}D{n}` labels.
+- Off-program exercise additions prompt a scope modal; default is "This session only".
+- `LoggedExercise.offProgram` field added to domain.
+- `nextPlannedSet` no longer falls back to `at(-1)` (phantom Next Set fixed).
+- `skipSet()` guarded by `isPastLastPlannedSet`; Skip Set button disabled past last planned set.
+- Finish Exercise shows confirmation when planned sets remain; skips remaining on confirm.
+- `applySuggestion()` persists suggested weight to planned set in db.
+- Week Review visible at top of Week tab when week is complete.
+- `recommendNextWeekAdjustments()` stub added to trainingMath.ts.
+- Zero-weight guard in `logSet()` catches both weight=0+reps>0 and weight=0+reps=0.
+
 ## Resolved In V2 Iteration 2
 
 - Tonnage removed from WeekProgressScreen and ProgressScreen. Replaced with hard sets, avg RPE, avg feel.

@@ -22,7 +22,7 @@ export const defaultCompoundSettings: CompoundSettings = {
 export const muscleVolumeTargets: Record<TrainingGoal, Partial<Record<MuscleGroup, { min: number; target: number; max: number }>>> = {
   powerlifting: {
     chest: { min: 6, target: 10, max: 16 },
-    back: { min: 8, target: 12, max: 18 },
+    lats: { min: 4, target: 8, max: 14 },
     "upper-back": { min: 6, target: 10, max: 16 },
     quads: { min: 6, target: 10, max: 16 },
     hamstrings: { min: 4, target: 8, max: 14 },
@@ -32,7 +32,6 @@ export const muscleVolumeTargets: Record<TrainingGoal, Partial<Record<MuscleGrou
   },
   bodybuilding: {
     chest: { min: 8, target: 12, max: 20 },
-    back: { min: 8, target: 14, max: 22 },
     lats: { min: 6, target: 10, max: 20 },
     "upper-back": { min: 6, target: 10, max: 20 },
     quads: { min: 8, target: 12, max: 20 },
@@ -47,7 +46,6 @@ export const muscleVolumeTargets: Record<TrainingGoal, Partial<Record<MuscleGrou
   },
   powerbuilding: {
     chest: { min: 8, target: 12, max: 18 },
-    back: { min: 8, target: 12, max: 20 },
     lats: { min: 6, target: 10, max: 18 },
     "upper-back": { min: 6, target: 10, max: 18 },
     quads: { min: 8, target: 12, max: 18 },
@@ -281,7 +279,7 @@ export function getBlockExercisePrescription(params: {
     rpe = Math.min(rpe, 6.5);
   }
 
-  const normalizedRpe = Math.max(6, Math.min(9, Number(rpe.toFixed(1))));
+  const normalizedRpe = Math.max(6, Math.min(9, Math.round(rpe * 2) / 2));
   const plannedSets = Array.from({ length: Math.max(1, sets) }, (_, index) => ({
     id: `placeholder_${index + 1}`,
     kind: (index === 0 && (sbd || isPriority) ? "top" : "working") as PlannedSet["kind"],
