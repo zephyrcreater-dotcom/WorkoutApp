@@ -141,8 +141,14 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
     });
   }
 
+  // "full-body" and "conditioning" are day-level focuses, not specific muscles.
+  // "back" is a parent group — exercises use specific children (lats, upper-back, etc.) which are
+  // already checked separately, so "back" would always show as 0 and generate false warnings.
+  const SKIP_VOLUME_GAP_MUSCLES = new Set<MuscleGroup>(["full-body", "conditioning", "back"]);
+
   Object.entries(targets).forEach(([muscleName, target]) => {
     const muscle = muscleName as MuscleGroup;
+    if (SKIP_VOLUME_GAP_MUSCLES.has(muscle)) return;
     const sets = volume[muscle] || 0;
     if (sets < target.min) {
       const fix = suggestedExercise(db, muscle, undefined, program);

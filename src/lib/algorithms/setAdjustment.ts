@@ -73,19 +73,36 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     title = "Protect technique";
     reason = "Form quality was poor. Hold or slightly reduce load — prioritize movement pattern over load.";
     shouldReturn = true;
-  } else if (setFeel >= 5 && rpeDelta <= -1.5) {
+  } else if (setFeel >= 5 && rpeDelta <= 0) {
+    // Easy (5/5) and actual RPE at or below target → recommend increase
     const fatigueAllowsIncrease =
       fatigueProfile.systemicFatigue <= 3 || setsCompletedThisExercise <= 1;
     if (fatigueAllowsIncrease) {
-      multiplier = 1.025;
+      multiplier = rpeDelta <= -1.5 ? 1.025 : 1.0125;
       priority = "low";
       title = "Small increase available";
-      reason = `Set feel was 5/5 and RPE was well below target (actual: ${loggedSet.actualRpe ?? "–"}, target: ${targetRpe}). A small increase is reasonable.`;
+      reason = `Set felt easy (5/5) and actual RPE was ${loggedSet.actualRpe ?? "–"} vs target ${targetRpe}. A small weight increase is reasonable.`;
       shouldReturn = true;
     } else {
-      reason =
-        "Set feel was 5/5 but this exercise accumulates fatigue quickly — hold load for now.";
+      reason = "Set felt easy but this movement builds fatigue quickly — hold load and reassess next set.";
     }
+  } else if (setFeel >= 4 && rpeDelta <= -0.5) {
+    // A little easy (4/5) and at least 0.5 below target RPE → suggest or maintain
+    const fatigueAllowsIncrease =
+      fatigueProfile.systemicFatigue <= 3 || setsCompletedThisExercise <= 1;
+    if (fatigueAllowsIncrease) {
+      multiplier = 1.0125;
+      priority = "low";
+      title = "Consider a small increase";
+      reason = `Set felt slightly easy (4/5) and RPE came in ${Math.abs(rpeDelta).toFixed(1)} below target. Hold or add a small increment next set.`;
+      shouldReturn = true;
+    } else {
+      reason = "Set felt slightly easy but fatigue is building — hold load for now.";
+    }
+  } else if (setFeel === 4 && rpeDelta > -0.5) {
+    // A little easy but RPE matched — note it, no weight change
+    reason = `Set felt a little easy (4/5) but actual RPE (${loggedSet.actualRpe ?? "–"}) matched the target. Maintain load.`;
+    shouldReturn = false;
   } else if (feelPoorAccessory) {
     type = "cue";
     priority = "low";

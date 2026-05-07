@@ -21,6 +21,18 @@ export function sanitizeRpe(value: number): number {
   return Math.max(6, Math.min(10, Math.round(value * 2) / 2));
 }
 
+/**
+ * Compute average RPE from a set of LoggedSets.
+ * Only uses sets with a positive, finite actualRpe. Each value is sanitized
+ * before averaging. The result is clamped to [0, 10].
+ */
+export function safeAverageRpe(sets: Pick<LoggedSet, "actualRpe">[]): number {
+  const valid = sets.map((s) => s.actualRpe).filter((r): r is number => typeof r === "number" && r > 0 && isFinite(r));
+  if (!valid.length) return 0;
+  const raw = valid.reduce((sum, r) => sum + Math.min(10, Math.max(0, r)), 0) / valid.length;
+  return Math.min(10, Number(raw.toFixed(1)));
+}
+
 const RPE_PERCENT_TABLE: Record<number, Record<number, number>> = {
   1: { 10: 1, 9.5: 0.978, 9: 0.955, 8.5: 0.939, 8: 0.922, 7.5: 0.907, 7: 0.892, 6.5: 0.878, 6: 0.865 },
   2: { 10: 0.955, 9.5: 0.939, 9: 0.922, 8.5: 0.907, 8: 0.892, 7.5: 0.878, 7: 0.865, 6.5: 0.851, 6: 0.837 },
@@ -177,8 +189,9 @@ export function lookupRpePercent(reps: number, rpe = 8): number {
 export function calculateReadinessScore(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">): number {
   const positive = input.sleepQuality + input.motivation + input.energy + input.nutritionQuality;
   const negative = input.stress + input.soreness + input.jointPain * 1.4;
-  const caffeineBump = input.caffeine ? 0.4 : 0;
-  const raw = ((positive + caffeineBump - negative + 12) / 24) * 100;
+  const caffeineBump = input.caffeine ? 1 : 0;
+  // Neutral values (pos=12, neg=3.4) → ~70. Max pos (20) + no caffeine → ~93. All-bad → <15.
+  const raw = ((positive + caffeineBump - negative + 15) / 34) * 100;
   return Math.max(0, Math.min(100, Math.round(raw)));
 }
 
@@ -573,7 +586,7 @@ export function generateWeekReview(block: TrainingBlock, sessions: WorkoutSessio
   const skipped = week.workouts.filter((d) => block.skippedWorkoutDayIds?.includes(d.id) || d.status === "skipped").length;
   const allSets = completed.flatMap((s) => s.loggedExercises).flatMap((e) => e.sets);
   const hardSets = allSets.filter((s) => !s.skipped && s.kind !== "warmup");
-  const averageRpe = hardSets.length ? Number((hardSets.reduce((sum, s) => sum + (s.actualRpe || 0), 0) / hardSets.filter((s) => s.actualRpe).length || 0).toFixed(1)) : 0;
+  const averageRpe = safeAverageRpe(hardSets);
   const averageSetRating = hardSets.length ? Number((hardSets.reduce((sum, s) => sum + (s.setRating ?? 3), 0) / hardSets.length).toFixed(1)) : 0;
   const readinessScores = completed.map((s) => s.readiness?.readinessScore).filter((r): r is number => r !== undefined);
   const averageReadiness = readinessScores.length ? Math.round(readinessScores.reduce((a, b) => a + b, 0) / readinessScores.length) : null;
@@ -591,4 +604,41 @@ export function generateWeekReview(block: TrainingBlock, sessions: WorkoutSessio
   if (!suggestions.length) suggestions.push("Performance matched expectations. Continue conservative progression into next week.");
 
   return { weekNumber: block.currentWeek, totalWeeks: block.lengthWeeks, completedWorkouts: completed.length, skippedWorkouts: skipped, plannedWorkouts: week.workouts.length, hardSetsCompleted: hardSets.length, averageRpe, averageSetRating, averageReadiness, isAllDone, suggestions };
+}
+
+export interface NextWeekAdjustment {
+  exerciseId: string;
+  exerciseName: string;
+  suggestion: "increase-load" | "decrease-load" | "hold" | "swap";
+  reason: string;
+}
+
+export function recommendNextWeekAdjustments(block: TrainingBlock, sessions: WorkoutSession[]): NextWeekAdjustment[] {
+  const review = generateWeekReview(block, sessions);
+  if (!review.isAllDone) return [];
+  const adjustments: NextWeekAdjustment[] = [];
+  const currentWeek = block.weeks.find((w) => w.weekNumber === block.currentWeek);
+  if (!currentWeek) return adjustments;
+
+  const weekSessions = sessions.filter((s) => s.workoutDayId && currentWeek.workouts.some((d) => d.id === s.workoutDayId) && s.status === "completed");
+  const allLoggedExercises = weekSessions.flatMap((s) => s.loggedExercises);
+
+  for (const log of allLoggedExercises) {
+    const sets = log.sets.filter((s) => !s.skipped && s.kind !== "warmup");
+    if (!sets.length) continue;
+    const avgRpe = safeAverageRpe(sets);
+    const avgFeel = sets.reduce((sum, s) => sum + (s.setRating ?? 3), 0) / sets.length;
+    let suggestion: NextWeekAdjustment["suggestion"] = "hold";
+    let reason = "Performance matched expectations.";
+    if (avgFeel >= 4.5 && avgRpe <= 7.5) {
+      suggestion = "increase-load";
+      reason = `Sets felt easy (avg ${avgFeel.toFixed(1)}/5) at manageable RPE — a small load increase is warranted.`;
+    } else if (avgFeel <= 2 || avgRpe >= 9.5) {
+      suggestion = "decrease-load";
+      reason = avgRpe >= 9.5 ? `Average RPE hit ${avgRpe.toFixed(1)} — reduce load to stay within target range.` : `Set feel averaged ${avgFeel.toFixed(1)}/5 — hold or reduce to restore quality.`;
+    }
+    adjustments.push({ exerciseId: log.exerciseId, exerciseName: log.exerciseId, suggestion, reason });
+  }
+
+  return adjustments;
 }
