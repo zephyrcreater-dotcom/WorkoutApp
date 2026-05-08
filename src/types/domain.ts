@@ -423,6 +423,7 @@ export interface TrainingWeek {
   workouts: WorkoutDay[];
   plannedVolume: Partial<Record<MuscleGroup, number>>;
   notes?: string;
+  isDraft?: boolean;
 }
 
 export interface WorkoutDay {
@@ -470,6 +471,7 @@ export interface PlannedExercise {
   notes?: string;
   substitutionIds: ID[];
   fulfillsRequirementId?: ID;
+  isExtra?: boolean;
   // Exercise swap tracking (set when user replaces a planned exercise)
   originalExerciseId?: ID;
   replacementExerciseId?: ID;
@@ -549,6 +551,7 @@ export interface LoggedExercise {
   notes?: string;
   weakPointTags: string[];
   offProgram?: boolean;
+  offProgramPlannedSets?: PlannedSet[];
 }
 
 export interface LoggedSet {
@@ -650,6 +653,7 @@ export interface Recommendation {
   action?: {
     exerciseId?: ID;
     setId?: ID;
+    targetSetNumber?: number;
     suggestedWeight?: number;
     suggestedReps?: number;
     suggestedRpe?: number;
@@ -658,6 +662,7 @@ export interface Recommendation {
   };
   createdAt: string;
   accepted?: boolean;
+  applied?: boolean;
 }
 
 export interface DashboardMetric {

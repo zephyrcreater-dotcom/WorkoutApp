@@ -1,5 +1,68 @@
 # ROADMAP.md
 
+## Codex V2 Final Stabilization — Next Phase
+
+**Goal:** Resolve all blocker bugs before beginning Training Intelligence v1 / Weight Estimator v1.
+
+### Priority order
+
+1. **Fix BUG-A — Choose For Me requirement cap enforcement**
+   - `chooseForMe()` in `WorkoutDayEditor` must never exceed `req.requiredExerciseCount`.
+   - `programGenerator.ts` must respect `SplitDayRequirement` slots, not just `muscleGroups`.
+   - Extras require explicit user action; Choose For Me never auto-adds them.
+   - Verification: requirements stay at or below cap after any generated plan.
+
+2. **Fix BUG-B — WeekEditor Discard Draft snapshot timing**
+   - Snapshot must be captured before any async `updateDb` edit fires.
+   - Consider using an `isMountedRef` or passing the week as an immutable snapshot prop.
+   - Discard must write snapshot back to DB + `isDraft=false`.
+   - Verification: add exercises, click Discard Draft, exercises are gone.
+
+3. **Fix BUG-C — Today hides workout card for unplanned weeks**
+   - `weekLocked` should use `!isWeekPlanned(todayPlan?.week)` OR `isWeekDraft(...)`, not just `isDraft`.
+   - `isWeekPlanned` already exists; wire it into TodayScreen.
+   - Verification: week with exercises but `isDraft` not set → no workout card shown.
+
+4. **Verify BUG-D — Recommendation scoping and setAdjustment correctness**
+   - Confirm `isOnSuggestionTarget` hides suggestion on non-target sets.
+   - Confirm setRating=5 + RPE ≤ target never recommends decreasing.
+
+5. **Verify BUG-E — Set tapping / Update Set mode**
+   - Confirm `setSelectedSetIndex(null)` clears stale edit mode after normal log.
+
+6. **Verify BUG-F — Continuous loop week copying**
+   - Confirm Upper exercises do not copy into Lower days in continuous-loop blocks.
+
+7. **After all 6 resolved: Training Intelligence v1 / Weight Estimator v1**
+   - See "V2 Next Iteration" section below for full scope.
+
+---
+
+## V2 Final Gating Hotfix — Completed
+
+- Today hides workout card and exercise list completely when current week is draft/locked.
+- WeekEditor has three explicit buttons: Save Week (clears draft), Exit Editor (keeps draft), Discard Draft (restores snapshot + clears draft).
+- `weekSnapshotRef` captures week workouts at editor-open time; Discard Draft restores from it.
+- Coach suggestion scoped to the single target set only (Set N suggestion shown only while on Set N+1; hidden on all other sets).
+- Suggestion wording rephrased: "Suggestion from Set N" / "Use X for this set" / "Apply to Current Set".
+- Applied suggestion shows compact inline "✓ Applied to this set" badge; full card dismissed.
+- Each logged set independently generates a new recommendation for its immediate next set; no cross-set blocking.
+- NumberField: `max` prop added; spinner arrows now call onChange immediately; blur clamps to [min, max].
+- Days/week input: min=1, max=7, spinner works.
+- `isWeekDraft`, `isWorkoutDayPlanned`, `isWeekPlanned` module-level helpers added as planned-state source of truth.
+
+## V2 Final Bugfix — Completed
+
+- Requirement counting: one exercise fills one slot. `isExtra` flag for exercises added beyond the cap. "Add Extra Anyway" confirmation modal.
+- `chooseForMe` now tags `fulfillsRequirementId` on every picked exercise.
+- Activating a new block archives any in-progress sessions.
+- Coach suggestion targets the correct next set (`targetSetNumber`). Applied state persists across navigation (`applied` flag in DB + `persistedAppliedRec` derived value).
+- "Update Set" stale mode fixed: `setSelectedSetIndex(null)` called in normal `logSet` path.
+- Today locked while week is draft: `WeekEditor` sets `isDraft=true` on mount, `false` on save. `TodayScreen` checks `weekLocked = weekBeingEdited || weekIsDraft`.
+- WeeklyOverview editable mode uses pill tabs (not 7-day grid) matching WeekEditor style.
+- `copyWeekExercises` mismatch guard tightened: checks `splitDayId` equality (covers undefined vs. ID) + focus label mismatch.
+- `setAdjustment.ts` fully rewritten: correct setFeel 1–5 matrix, Easy/Slightly-Easy never-decrease guarantee, `enforceDirectionCheck` guard in `buildRec`.
+
 ## V2 Hotfix Final — Completed
 
 - Block tab simplified: active block shows compact summary + "View current week" link; WeeklyOverview only shown for drafts.
@@ -88,10 +151,51 @@
 
 ---
 
+## Exercise Families and Variations (Design Note)
+
+Exercises currently exist as a flat list. The planned long-term model is a **family/variation hierarchy**:
+
+### Concept
+- **Exercise family**: the canonical movement (e.g., "Bench Press", "Squat", "Row")
+- **Variation**: a specific implementation of the family (e.g., "Incline Barbell Bench Press", "Low Bar Squat", "Seated Cable Row")
+- Families share muscle targeting, pattern classification, and swap eligibility
+- Variations have specific equipment, grip, range-of-motion, and difficulty modifiers
+
+### Why It Matters
+- Exercise swaps can target the same family with a different variation (e.g., swap DB Bench for Incline BB Bench — same chest family)
+- Volume counting can aggregate across variations of the same family
+- Autoregulation and progressive overload can track family-level strength trends even when the athlete rotates variations
+- "Substitution" becomes "pick another variation from this family" rather than a hand-curated list
+
+### Data Model Sketch
+```typescript
+// On Exercise
+familyId?: ID;           // links to an ExerciseFamily
+variationKey?: string;   // e.g. "incline", "close-grip", "paused"
+
+// New domain type
+interface ExerciseFamily {
+  id: ID;
+  name: string;           // "Bench Press"
+  muscleGroup: MuscleGroup;
+  primaryMuscles: MuscleGroup[];
+  movementPatterns: MovementPattern[];
+  notes?: string;
+}
+```
+
+### Implementation Notes
+- `ExerciseFamily` entries should be seeded for the major compound movements first (SBD + row + OHP + pull)
+- Existing exercises can be retroactively linked via a normalization pass in `normalizeDatabase`
+- The swap UI in LiveLogger should eventually show same-family alternatives
+- Program generator can randomize across family variations for variety
+
+---
+
 ## Deferred Backlog (No Timeline)
 
 - Full public CSV importer (infrastructure exists in `src/lib/importers/`, not yet wired to UI fully)
-- Exercise variation grouping
+- Exercise variation grouping (see Exercise Families section above)
 - Gym-specific conversion learning polish
 - Normalized vs observed e1RM charting
 - Advanced fatigue modeling

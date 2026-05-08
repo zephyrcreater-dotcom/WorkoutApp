@@ -8,19 +8,463 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ---
 
+## Current Handoff for Codex — V2 Hotfix Continuation
+
+> **Read this section first.** It summarises the current state of the branch and what needs to happen next before the app is stable enough to move into the Training Intelligence / Weight Estimator v1 phase.
+
+### App state
+
+Iron Orbit Training is in late V2 alpha/hotfix work. The app is deployed to Vercel and is testable end-to-end, but several blocker-class bugs remain from real gym testing that must be fixed before new features begin.
+
+### Current branch and build
+
+- **Branch:** `v2-final-bugfix`
+- **Uncommitted working-tree changes:** `src/App.tsx`, `src/types/domain.ts`, `HANDOFF.md`, `BUGS.md`, `ROADMAP.md`
+- **Lint:** passing (`eslint .`, 0 errors)
+- **Build:** passing (`tsc -b && vite build`, 1595 modules)
+
+### What was recently worked on (this branch)
+
+All work is in `src/App.tsx` and `src/types/domain.ts`. Changes are staged but not yet committed.
+
+| Area | What changed |
+|------|-------------|
+| **Requirement counting** | `countFulfilled` rewritten: explicit-first with `anyTagged` guard; counts capped at `req.requiredExerciseCount`. `isExtra` field on `PlannedExercise` for over-cap extras. |
+| **Choose For Me** | `chooseForMe` now tags `fulfillsRequirementId` on every picked exercise. |
+| **Add Extra Anyway** | Modal added when adding to a full requirement; extra exercises get `isExtra=true` and are never counted toward slots. |
+| **Activating a block** | `activateProgram` archives in-progress sessions before activating. |
+| **Coach suggestion** | Scoped to `effectiveSetIndex === lastNonSkippedSet.setNumber` (target set only). Wording: "Suggestion from Set N", "Use X for this set", "Apply to Current Set". Applied → compact badge. |
+| **Today draft gating** | `weekLocked` lifted to outer scope; `isWeekDraft()` used as source of truth. When locked, entire workout card/exercise list hidden; only planning-notice panel shown. |
+| **WeekEditor buttons** | Three buttons: **Save Week** (clears draft), **Exit Editor** (keeps draft), **Discard Draft** (restores snapshot). `weekSnapshotRef` captures workouts at mount. |
+| **NumberField spinner** | `max` prop added; `onChange` fires immediately on every valid change; blur clamps to `[min, max]`. Days/week: `min={1} max={7}`. |
+| **Source-of-truth helpers** | `isWeekDraft`, `isWorkoutDayPlanned`, `isWeekPlanned` added at module scope. |
+
+### Unresolved blocker bugs (for Codex to fix next)
+
+#### BUG-A — Choose For Me still overfills requirements
+
+**Symptom (from gym testing):** Requirements show chest 1/1, back 1/1, lats 1/1 after Choose For Me runs, but the generated plan contains multiple chest/back exercises beyond the cap (e.g., 2/1 or 3/1).
+
+**Root cause area:** `chooseForMe` in `WorkoutDayEditor` and/or the Block Builder program-generation path. The fix in `chooseForMe` only addresses the manual-editor path; the Block Builder generation path in `programGenerator.ts` (and the "Generate" call that populates week workout days during `generateProgram`) may still select exercises without respecting requirement caps.
+
+**Key rule:** Choose For Me must never create extras automatically. One exercise per requirement slot. Extras require explicit user action.
+
+**Relevant code:**
+- `chooseForMe()` in `WorkoutDayEditor` (~line 2400 area of App.tsx)
+- `generateProgram` / `programGenerator.ts`
+- `buildPlannedExerciseFromExercise` in `programmingLogic.ts`
+- `countFulfilled` + `reqProgress` in `WorkoutDayEditor`
+- `PlannedExercise.fulfillsRequirementId`, `PlannedExercise.isExtra`
+
+#### BUG-B — Discard Draft saves/promotes instead of discarding
+
+**Symptom:** Clicking "Discard Draft" in WeekEditor does not truly throw away the draft. The draft week exercises appear to be promoted to the real planned state instead of being discarded.
+
+**Root cause area:** `discardDraft()` in `WeekEditor` was implemented using a `weekSnapshotRef` that captures workouts at editor-open time and restores them. However:
+- If the snapshot is captured *after* WorkoutDayEditor has already auto-saved edits to the DB (which is possible since WorkoutDayEditor `updateDb` calls are async), the snapshot may already contain the edited state, not the pre-edit state.
+- The `isDraft=false` write in `discardDraft` may be racing with the `isDraft=true` write from the mount `useEffect`.
+
+**Expected behavior:** Discard Draft must restore the week to the state it had *before the editor was opened*, and mark `isDraft=false`. If the week had no prior saved state (brand-new week), discard should leave it empty/unplanned.
+
+**Relevant code:**
+- `WeekEditor` component, especially `weekSnapshotRef`, the mount `useEffect`, `saveAndClose`, `discardDraft`, and `onClose` in App.tsx (~line 3930 area)
+- `TrainingWeek.isDraft` in `domain.ts`
+
+#### BUG-C — Today shows workout card for unplanned week
+
+**Symptom:** Today correctly says "Week 4 has not been planned" and shows "Plan Week 4", but underneath still displays a workout card titled "Upper 1" (or similar) with exercise details.
+
+**Root cause area:** The `weekLocked` guard was added but the condition for *rendering the workout card at all* may not be gating correctly when `selectedDay.exercises.length > 0` but `isDraft` is not set (i.e., exercises exist from a previous partial planning attempt that was never marked as a draft). The `isWeekDraft` helper only checks `isDraft === true`; if a week has exercises but `isDraft` was never set (e.g., legacy data or a failed save path), the lock doesn't trigger.
+
+**Expected behavior:** If `isWeekPlanned()` returns false for the current week, Today must hide the workout card completely. Only show: "Week N not planned", "Plan Week N", "Go Off Program".
+
+**Relevant code:**
+- `TodayScreen` in App.tsx (~line 443 area)
+- `isWeekDraft`, `isWeekPlanned`, `isWorkoutDayPlanned` helpers (~line 205 area)
+- `weekLocked` derivation and JSX gating in `TodayScreen`
+- `getCurrentWorkoutForUser` in trainingMath/db
+
+#### BUG-D — Recommendation scoping needs verification
+
+**Intended behavior (implemented but not yet verified end-to-end):**
+- Set 1 rated Easy → recommendation "Suggestion from Set 1 / Use X for this set" appears only on Set 2.
+- Moving to Set 3 hides Set 1's suggestion.
+- Returning to Set 2 shows it again if not applied.
+- Applying shows compact `✓ Applied to this set` and removes the Apply button.
+- Each subsequent set generates its own independent recommendation.
+- setRating=5 + actual RPE ≤ target RPE must never recommend decreasing.
+
+**Needs:** Manual verification by Codex against `setAdjustment.ts` logic and `isOnSuggestionTarget` gating in LiveLogger.
+
+**Relevant code:**
+- `isOnSuggestionTarget` + suggestion rendering in `LiveLogger` (~line 1030 area)
+- `setAdjustment.ts` in `src/lib/algorithms/`
+- `persistedAppliedRec` derivation
+
+#### BUG-E — Set navigation / Update Set mode needs verification
+
+**Intended behavior (implemented but not yet verified):**
+- Tapping a logged set pre-fills the form with that set's values.
+- Logging normally advances the cursor without leaving "Update Set" mode active.
+- `setSelectedSetIndex(null)` is called on normal `logSet` path.
+
+**Needs:** Verification that the stale `selectedSetIndex` bug is truly resolved and no edge case re-introduces it.
+
+**Relevant code:**
+- `selectedSetIndex`, `effectiveSetIndex`, `isEditingPastSet` in `LiveLogger`
+- `logSet()` path, particularly the `setSelectedSetIndex(null)` call
+
+#### BUG-F — Continuous loop week copying needs verification
+
+**Intended behavior (implemented but not yet verified):**
+- `copyWeekExercises` blocks copy when `splitDayId` values differ OR `focus` labels differ.
+- Week 2 Lower day should not receive Week 1 Upper exercises.
+
+**Needs:** Verification against a real 1-day/week continuous-loop block in the app.
+
+**Relevant code:**
+- `copyWeekExercises()` in App.tsx (~line 3875 area)
+- `WeekEditor` mount `useEffect` pre-check
+
+### Confirmed product rules to preserve
+
+**Requirements**
+- One exercise fulfills exactly one requirement slot. `fulfillsRequirementId` is the primary source of truth.
+- Secondary muscles do not fulfill requirements (only `primaryMuscles` checked).
+- Requirement caps are hard limits by default. `countFulfilled` is capped at `req.requiredExerciseCount`.
+- Extra exercises require explicit "Add Extra Anyway" action (`isExtra=true`).
+- Choose For Me must never add extras automatically.
+
+**Week drafts**
+- `isDraft=true` while WeekEditor is open.
+- Exit Editor: keeps draft, closes editor.
+- Discard Draft: restores snapshot, sets `isDraft=false`, closes.
+- Save Week: sets `isDraft=false`, closes.
+- Today must not show incomplete/draft weeks as trainable.
+
+**Today**
+- If `isWeekDraft` or `!isWeekPlanned`, hide workout card completely.
+- "Go Off Program" is always available.
+
+**In-progress sessions**
+- Only one per user at a time.
+- Starting a new workout archives the previous in-progress session.
+
+**Recommendations**
+- setRating 5/Easy + actual RPE ≤ target RPE: never recommend decreasing.
+- Recommendation shown only on the immediate next set after the source set.
+- Applied state persists via `applied=true` in DB.
+- Each set generates its own independent recommendation.
+
+### Recommended next Codex priorities (in order)
+
+1. Fix BUG-A: requirement cap enforcement in Choose For Me and the program-generator path.
+2. Fix BUG-B: WeekEditor Discard Draft snapshot timing / restore correctness.
+3. Fix BUG-C: Today gating so `!isWeekPlanned` hides workout card regardless of `isDraft` flag.
+4. Verify BUG-D: recommendation scoping and `setAdjustment.ts` logic.
+5. Verify BUG-E: set tapping / Update Set mode.
+6. Verify BUG-F: continuous loop week copying.
+7. After all 6 are resolved: move to Training Intelligence v1 / Weight Estimator v1 (see ROADMAP.md).
+
+### Architecture reference
+
+| File | Purpose |
+|------|---------|
+| `src/App.tsx` | All screens and UI components (~5000 lines) — main editing target |
+| `src/types/domain.ts` | Core TypeScript domain model |
+| `src/lib/db.ts` | IndexedDB load/save + `normalizeDatabase` migration |
+| `src/lib/trainingMath.ts` | e1RM, RPE, readiness, set summaries, Week Review |
+| `src/lib/programGenerator.ts` | Block/week/day generation — relevant for BUG-A |
+| `src/lib/programmingLogic.ts` | `buildPlannedExerciseFromExercise` |
+| `src/lib/algorithms/setAdjustment.ts` | Per-set recommendation logic — relevant for BUG-D |
+| `src/lib/algorithms/loadPrescription.ts` | Weight estimator stub |
+| `src/data/seedData.ts` | Built-in exercises and split templates |
+
+---
+
 ## Current Project Status
 
-- **Branch:** `v2-gym-test-hotfix`
+- **Branch:** `v2-final-bugfix`
 - **Build:** Passing (`tsc -b && vite build`)
 - **Lint:** Passing (`eslint .`, no errors)
 
-Modified files in current working tree (from base):
+Modified files (cumulative on this branch, not yet committed):
 - `src/App.tsx`
-- `src/lib/algorithms/setAdjustment.ts`
-- `src/lib/programAnalysis.ts`
-- `src/lib/programmingLogic.ts`
-- `src/lib/trainingMath.ts`
 - `src/types/domain.ts`
+- `HANDOFF.md`, `BUGS.md`, `ROADMAP.md`
+
+---
+
+## V2 Final Gating Hotfix — Completed Work
+
+### 1. Today Screen — Workout Card Hidden While Week Is Draft
+
+**Problem:** Today showed a warning banner when `weekLocked` but still rendered the workout card, exercise list, navigation buttons, and "Edit Current Day" underneath it.
+
+**Fix:** `weekLocked` derivation lifted from the IIFE inside the panel to the outer `TodayScreen` scope, using `isWeekDraft(todayPlan?.week)`. When `weekLocked === true`, the entire workout section is replaced by a `border-ember/40` notice panel containing:
+- "Week N is being planned"
+- "Finish planning and save Week N in the Week Planner…"
+- "Continue Planning Week N" → navigates to Week tab
+- "Go Off Program" → starts an off-program session
+
+No draft exercises are shown. The normal card renders only when `!weekLocked`.
+
+`showEditDay` and `WorkoutDayView` are also gated behind `!weekLocked`.
+
+### 2. WeekEditor — Exit Editor / Discard Draft / Save Week
+
+**Problem:** The only buttons were "Done — Save Week N" (marked saved) and "Cancel" (called `onClose` silently). Cancel's behavior was ambiguous — it kept `isDraft=true` in the DB.
+
+**Fix:**
+
+Three explicit buttons:
+
+| Button | Behavior |
+|--------|----------|
+| **Save Week N** | Calls `updateDb` to set `isDraft=false`, then `onClose()`. Week is now trainable. |
+| **Exit Editor** | Calls `onClose()` only. Week stays `isDraft=true`; Today remains locked. |
+| **Discard Draft** | `confirm()` → restores `weekSnapshotRef.current` into DB + sets `isDraft=false` → `onClose()`. |
+
+**Snapshot mechanism:** `weekSnapshotRef = useRef<WorkoutDay[] | null>(null)`. On the first render (before any edits), the component deep-clones `week.workouts` via `JSON.parse(JSON.stringify(...))`. WorkoutDayEditor auto-saves each edit, so the snapshot preserves the state at editor-open time. "Discard Draft" writes this snapshot back to the DB.
+
+### 3. Planned-State Source of Truth
+
+Three module-level helpers added above `builderDraftKey`:
+
+```typescript
+function isWeekDraft(week): boolean  // true when week.isDraft === true
+function isWorkoutDayPlanned(day): boolean  // true when day has at least one exercise
+function isWeekPlanned(week): boolean  // true when not draft AND has at least one planned day
+```
+
+`TodayScreen` now uses `isWeekDraft(todayPlan?.week)` directly.
+
+### 4. Coach Suggestion — Scoped to Target Set
+
+**Problem:** `recommendation` was derived from `lastNonSkippedSet` on every render and displayed regardless of which set was currently selected. Set 1's suggestion showed on Set 3, 4, etc.
+
+**Fix:**
+
+```typescript
+const suggestionTargetIndex = lastNonSkippedSet ? lastNonSkippedSet.setNumber : -1;
+const isOnSuggestionTarget = effectiveSetIndex === suggestionTargetIndex;
+```
+
+`lastNonSkippedSet.setNumber` is 1-based. The target 0-based set index for showing the suggestion equals `setNumber` (since target = the set after the last logged set, i.e., index = count of logged sets = `setNumber`).
+
+Display gated on: `recommendation && !lastSetWasSkipped && isOnSuggestionTarget`.
+
+**Navigation behavior:**
+- Set 1 logged → `suggestionTargetIndex = 1` → show on Set 2 (index 1). ✓
+- User taps Set 3 (index 2) → `2 !== 1` → hidden. ✓
+- User returns to Set 2 → `1 === 1` → shown again if not applied. ✓
+
+### 5. Suggestion Wording — "Apply to Current Set"
+
+When showing on the target set, the language is now contextually correct:
+
+| Element | Old text | New text |
+|---------|----------|----------|
+| Label | "Coach suggestion" | "Suggestion from Set N" |
+| Title | "Increase next set" | "Use 80kg for this set" |
+| Button | "Apply 80kg to Set 3" | "Apply to Current Set" |
+| Applied state | Full card + "✓ Applied to Set 3" | Compact `✓ Applied to this set` badge |
+
+The full card is replaced by a small `bg-volt/10` inline badge when `isApplied`. No Apply button persists.
+
+### 6. New Per-Set Recommendations
+
+Each logged set calls `algNextSetAdjustment` independently. `persistedAppliedRec` matches by `action.setId === lastNonSkippedSet.id`, so Set 2's applied recommendation does not block Set 3 from showing Set 2's new recommendation.
+
+### 7. NumberField — Spinner + Clamping
+
+**Problem:** NumberField only called parent `onChange` on `onBlur`, so browser spinner arrows (↑/↓) changed the local display but never committed the new value to app state.
+
+**Fix:** Added `max?: number` prop. `onChange` handler now calls `onChange(parsed)` immediately for every valid change event (spinner arrows, keyboard, paste). `onBlur` clamps to `[min ?? value, max ?? value]` and commits the final clamped value.
+
+Days/week field: `<NumberField ... min={1} max={7} />`.
+
+### Files Modified (V2 Final Gating Hotfix)
+
+| File | Changes |
+|------|---------|
+| `src/App.tsx` | `useRef` added to React imports; `isWeekDraft`, `isWorkoutDayPlanned`, `isWeekPlanned` helpers; `TodayScreen` weekLocked lifted + full card hidden; `WeekEditor` snapshot ref + `discardDraft` + renamed buttons; LiveLogger suggestion `isOnSuggestionTarget` gate + rephrased wording + compact applied state; `NumberField` `max` prop + immediate onChange + blur clamping; Days/week `min={1} max={7}` |
+
+---
+
+## V2 Final Bugfix — Completed Work
+
+### 1. Requirement Counting Fix — One Exercise, One Slot
+
+**Problem:** `countFulfilled` used legacy muscle matching with parent-child hierarchy, causing a `lats` exercise to count for both a `"lats"` requirement AND a `"back"` requirement simultaneously. Result: display showed 3/1 or 2/1 for a fully-filled slot.
+
+**Fix:** New explicit-first logic with a strict legacy fallback:
+```typescript
+function countFulfilled(exercises, req): number {
+  const explicit = exercises.filter((p) => p.fulfillsRequirementId === req.id && !p.isExtra).length;
+  if (explicit > 0) return explicit;
+  // Legacy fallback ONLY if NO exercise in the day has any fulfillsRequirementId set
+  const anyTagged = exercises.some((p) => !!p.fulfillsRequirementId && !p.isExtra);
+  if (anyTagged) return 0;
+  // ... untagged muscle-matching path
+}
+```
+
+`reqProgress` caps each count at `req.requiredExerciseCount` to prevent overcounting display.
+
+### 2. Choose For Me Tags `fulfillsRequirementId`
+
+**Problem:** `chooseForMe()` never set `fulfillsRequirementId` on the exercises it picked. All generated exercises were untagged, falling into the legacy muscle-matching path — which caused double-counting.
+
+**Fix:** `chooseForMe()` now builds a `{ exercise, reqId }` pair list and tags `planned.fulfillsRequirementId = item.reqId` for every exercise it picks.
+
+### 3. Add Extra Anyway Modal
+
+**Problem:** No way to add a 4th exercise when a requirement cap was 3. The UI silently blocked adding more.
+
+**Fix:**
+- New `isExtra?: boolean` field on `PlannedExercise` (domain.ts).
+- New `pendingExtraExercise: Exercise | null` state in `WorkoutDayEditor`.
+- When `addExercise` detects `reqFull && !asExtra`, it calls `setPendingExtraExercise(exercise)` instead of proceeding.
+- A confirmation modal appears: "Add Extra Anyway?" with the requirement name, current fill count, and a note that extras don't count toward slots.
+- Extras get `isExtra = true`, `fulfillsRequirementId = undefined`.
+- `countFulfilled` and `reqProgress` skip `isExtra` exercises so they never inflate the count.
+- Extra exercises are displayed in the prescription list with an `extra` badge (grey pill) instead of a requirement badge.
+
+### 4. New Active Block Archives In-Progress Sessions
+
+**Problem:** Activating a new program from the Block Builder left any in-progress workout session alive. Today would still try to resume it, pointing at a block that was no longer active.
+
+**Fix:** Inside `activateProgram`, before setting `program.status = "active"`:
+```typescript
+draft.sessions.forEach((session) => {
+  if (session.userId === user.id && session.status === "in-progress") {
+    session.status = "abandoned";
+    session.updatedAt = nowIso();
+  }
+});
+```
+
+### 5. Coach Suggestion Applied to Correct Set
+
+**Problem:** `applySuggestion` targeted `planned?.plannedSets[currentSetIndex]` — but this is the set currently being edited, which is the *same* set just logged, not the *next* one.
+
+**Fix:** `logSet` tags the generated recommendation with `targetSetNumber = currentSetIndex + 2` (1-based next set):
+```typescript
+if (rec?.action) rec.action.targetSetNumber = currentSetIndex + 2;
+```
+`applySuggestion` uses `targetSetNumber` in the display label ("Apply 80kg to Set 3") and targets the `nextUnloggedPlanned` set for the `plannedWeight` write-through.
+
+### 6. Recommendation Persists Across Navigation
+
+**Problem:** `suggestionApplied` was React component state. Navigating away and back reset it to `false`, making the "Applied to next set" confirmation disappear.
+
+**Fix:**
+- `applySuggestion` now writes `rec.applied = true` to both `session.recommendations` and `db.recommendations` via `updateDb`.
+- New derived value `persistedAppliedRec` reads from `liveSession.recommendations` on each render:
+```typescript
+const persistedAppliedRec = lastNonSkippedSet
+  ? liveSession.recommendations.find((r) => r.action?.setId === lastNonSkippedSet.id && r.applied === true)
+  : undefined;
+```
+- The apply button checks `suggestionApplied || !!persistedAppliedRec` for applied state.
+- `applied?: boolean` and `targetSetNumber?: number` added to `Recommendation.action` in domain.ts.
+
+### 7. Update Set Stale Mode Bug Fixed
+
+**Problem:** After logging Set 1 normally, `currentSetIndex` advanced to 1. But `selectedSetIndex` (set to 0 when the user tapped Set 1's lineup item) was never cleared. On the next render, `selectedSetIndex (0) < currentSetIndex (1)` evaluated as true → `isEditingPastSet = true` → the form showed "Update Set" incorrectly.
+
+**Fix:** `logSet` calls `setSelectedSetIndex(null)` on the normal logging path, clearing the edit-in-place state.
+
+### 8. Today Screen Locked While Week Is Draft
+
+**Problem:** The Week Editor could be open in one tab while the user tried to start a workout from Today in another. The planned week was mid-edit (incomplete exercises, placeholder sets).
+
+**Fix:**
+- New `isDraft?: boolean` field on `TrainingWeek` (domain.ts).
+- `WeekEditor` mount `useEffect` sets `week.isDraft = true` in the DB.
+- `WeekEditor.saveAndClose` sets `week.isDraft = false` before calling `onClose`.
+- `TodayScreen` receives `editingWeekNumber?: number` prop (already threaded through App-level state).
+- Lock logic:
+```typescript
+const weekBeingEdited = editingWeekNumber !== undefined && editingWeekNumber === currentWeekNumber;
+const weekIsDraft = todayPlan?.week?.isDraft === true;
+const weekLocked = weekBeingEdited || weekIsDraft;
+```
+- When locked: Start Workout button is disabled; a warning banner shows "Week N is being planned — finish planning before starting a workout"; a "Continue Planning Week N" button navigates to the Week tab.
+
+### 9. Week Editor Day Selector Matches Draft Block Style
+
+**Problem:** WeekEditor used pill tabs for day selection, but the Program tab's Weekly Overview (editable mode) used a 7-day calendar grid. The same WorkoutDayEditor was presented differently depending on which path opened it.
+
+**Fix:** `WeeklyOverview` with `editable=true` now renders pill tabs (`Day N – SplitName` format) instead of the 7-day grid. The grid is only used in read-only mode.
+
+### 10. Continuous Loop Week Copy — Tighter Mismatch Guard
+
+**Problem:** `copyWeekExercises` only blocked copying when `sourceDay.splitDayId && targetDay.splitDayId && sourceDay.splitDayId !== targetDay.splitDayId`. This missed two failure cases:
+- One day has `splitDayId` and the other doesn't (undefined vs. ID comparison was always false).
+- Both days have no `splitDayId` but different `focus` labels (e.g., "Push" → "Pull").
+
+**Fix:**
+```typescript
+// Block if split day identities differ
+if (sourceDay.splitDayId !== targetDay.splitDayId) return;
+// Block if one has a split assignment and the other doesn't
+if (!!sourceDay.splitDayId !== !!targetDay.splitDayId) return;
+// Block if focus labels differ
+if (sourceDay.focus && targetDay.focus && sourceDay.focus !== targetDay.focus) return;
+```
+The pre-check in `WeekEditor`'s `useEffect` was updated to mirror the same guard conditions.
+
+### Domain Changes (V2 Final Bugfix)
+
+```typescript
+// PlannedExercise
+isExtra?: boolean;   // exercises added beyond requirement cap
+
+// TrainingWeek
+isDraft?: boolean;   // true while WeekEditor is open
+
+// Recommendation.action
+targetSetNumber?: number;  // which set (1-based) the rec targets
+applied?: boolean;         // true once applySuggestion was called
+```
+
+### Files Modified (V2 Final Bugfix)
+
+| File | Changes |
+|------|---------|
+| `src/types/domain.ts` | `PlannedExercise.isExtra`, `TrainingWeek.isDraft`, `Recommendation.action.targetSetNumber`, `Recommendation.applied` |
+| `src/App.tsx` | `countFulfilled` explicit-first with anyTagged guard; `reqProgress` capped + `extraExercises`; `pendingExtraExercise` state + modal; `addExercise` full requirement guard + extra path; `chooseForMe` tags `fulfillsRequirementId`; `activateProgram` archives in-progress sessions; `logSet` tags `targetSetNumber` + calls `setSelectedSetIndex(null)`; `persistedAppliedRec` derivation; `applySuggestion` persists `applied=true` in DB; recommendation UI checks `persistedAppliedRec`; `TodayScreen` week-draft locking; `WeekEditor` `isDraft` tracking; `WeeklyOverview` editable pill tabs; `copyWeekExercises` tighter mismatch guard |
+| `src/lib/algorithms/setAdjustment.ts` | Rewritten: setFeel 1–5 matrix with correct Easy/5 never-decreases rule; RPE delta and missedReps combined correctly; `fatiguePerSet` computation; `enforceDirectionCheck` guard in `buildRec` |
+
+---
+
+## V2 Gym-Test Hotfix 2 Changes
+
+**CSS / Layout:**
+- `styles.css`: `overflow-x: hidden` → `overflow-x: clip` on `html, body, #root`. Fixes vertical scroll being blocked on some browsers.
+
+**Today Screen:**
+- "Edit Current Day" only shown when `selectedDay.exercises.length > 0` (week must be planned).
+- No-block state: "Go Off Program" renamed → "Start Individual Workout".
+- "Go Off Program" / "Start Individual Workout" now opens an **Off-Program Builder** instead of immediately creating a blank session. Builder: pick exercises, set targets (sets/reps/RPE), see last-logged weight, then Start. "Start Empty Session" still available.
+
+**Logger:**
+- Skip Set button opens a reason picker (chips: Fatigue, Pain, Poor form, Time, Other + skip without reason). Reason stored in set notes.
+- Set lineup: all logged sets (including skipped) are now tappable. Tapping a skipped set pre-fills from the planned set targets.
+- `setRating=5` can no longer trigger a load reduction. Guards added to `missedReps` and `formPoor` branches in `setAdjustment.ts`.
+
+**Week Tab:**
+- `planningWeekNumber` lifted to App-level `editingWeekNumber` state. Week Editor persists across tab navigation.
+- Day tabs in Week Editor now use `Day N – SplitName` format (position-indexed, always unique).
+- Each day card now has an "Edit" button (hidden for completed sessions) that opens an inline WorkoutDayEditor.
+
+**Library:**
+- Custom exercises (owned by user) now show a pencil Edit button. Clicking pre-fills the Custom Exercise form. "Add Exercise" becomes "Save Changes" while editing.
+
+**Block Builder:**
+- Removed the "Flow" info panel (Library > Block > Today). Not useful in practice.
 
 ---
 

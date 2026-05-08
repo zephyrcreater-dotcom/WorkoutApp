@@ -13,7 +13,9 @@ body,
 #root {
   min-height: 100%;
   max-width: 100%;
-  overflow-x: hidden;
+  /* clip avoids the browser quirk where overflow-x:hidden on html/body also
+     disables the scroll port, trapping vertical scroll. */
+  overflow-x: clip;
 }
 
 body {
