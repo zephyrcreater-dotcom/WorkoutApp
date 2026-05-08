@@ -2,6 +2,16 @@
 
 ## Known Bugs
 
+### Mobile Layout
+
+**B-MOB-1 — Horizontal overflow / half-screen cutoff on mobile (HIGH PRIORITY)**
+- Status: Reported from gym testing. Screenshots pending.
+- Some screens (Today, Block, Week) have content cut off horizontally on narrow viewports. Likely caused by fixed-width containers or grid columns that don't collapse.
+- Partial mitigation applied: body/root should not overflow-x. Check `src/styles.css` for `overflow-x: hidden` on body. Inspect flex/grid containers in TodayScreen, LiveLogger, and WeekEditor for hard-coded widths.
+- Full fix requires screenshots to identify the exact elements. Tracked here for next gym-test pass.
+
+---
+
 ### Build / Tooling
 
 **B0.1 — `@humanfs/core` ESLint broken publish**
@@ -78,6 +88,23 @@
 - Week Review visible at top of Week tab when week is complete.
 - `recommendNextWeekAdjustments()` stub added to trainingMath.ts.
 - Zero-weight guard in `logSet()` catches both weight=0+reps>0 and weight=0+reps=0.
+
+## Resolved In V2 Gym-Test Hotfix
+
+- **Block name pre-populates:** `defaultRequest.name` was already `""`. `TextField` now accepts a `placeholder` prop; block name field shows `"e.g. Powerbuilding Block"` placeholder.
+- **Prescription number inputs (backspace broken):** `NumberField` now uses local string state; parent value only commits on blur. Allows clearing, editing, and typing freely. Sanitization (sets ≥ 1, RPE 0.5 increments) happens on blur via parent callback.
+- **Recommendation "increase to 120" when already at 120:** `setAdjustment.ts` now compares `suggestedWeight` to `loggedSet.actualWeight` after rounding. If equal, title becomes "Maintain load" and no "Apply" button is shown.
+- **Skip last set auto-advance:** `skipSet()` now checks `isCurrentSetLastPlannedSet`. If last set is skipped: advances to next exercise (or finishes workout if final exercise). No extra Next Exercise or Finish Exercise click needed.
+- **Set lineup tappable on mobile:** Completed set items in the lineup are now tappable. Tapping a completed set pre-fills the weight/reps/RPE/rating form fields with that set's actual values (for reference). Completed sets remain in the log.
+- **Edit Current Day in Today:** "Edit Current Day" toggle button added to Today. Opens `WorkoutDayEditor` for the current planned day inline. Changes apply to the current day/week only.
+- **Go Off Program in Today:** "Go Off Program" button added to Today (and on empty block states). Creates an off-program `WorkoutSession` with `offProgram: true`, no `workoutDayId`, and empty `loggedExercises`. Navigates to LiveLogger.
+- **LiveLogger off-program empty state:** LiveLogger handles sessions with no exercises: shows "Off-Program Session" prompt with Add Exercise button. No phantom exercises or error state.
+- **Off-program session type field:** `WorkoutSession.offProgram?: boolean` added to domain.ts. Sessions created via "Go Off Program" are flagged.
+- **Week Editor continuous-loop copy:** `copyWeekExercises()` now checks `splitDayId` compatibility before copying. Upper exercises are not copied to Lower days. WeekEditor shows a banner when split days differ.
+- **WeekEditor context:** Day tabs now show split day name if available. Per-day header shows split day name and a note when the previous week's day has a different split day.
+- **Exercise swap metadata:** `PlannedExercise` extended with `originalExerciseId`, `replacementExerciseId`, `swappedAt`, `swapScope` fields in domain.ts. UI for recording swaps is a future TODO.
+- **Custom exercise movement patterns:** Hidden by default under "Advanced Options" toggle in LibraryScreen custom exercise form.
+- **Mobile horizontal overflow:** Added `overflow-x: hidden; max-width: 100%` to `html, body, #root` in `styles.css` as global protection.
 
 ## Resolved In V2 Iteration 2
 

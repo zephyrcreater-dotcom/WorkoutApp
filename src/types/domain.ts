@@ -470,6 +470,11 @@ export interface PlannedExercise {
   notes?: string;
   substitutionIds: ID[];
   fulfillsRequirementId?: ID;
+  // Exercise swap tracking (set when user replaces a planned exercise)
+  originalExerciseId?: ID;
+  replacementExerciseId?: ID;
+  swappedAt?: string;
+  swapScope?: "day" | "week" | "session";
 }
 
 export interface PlannedSet {
@@ -510,6 +515,7 @@ export interface WorkoutSession {
   loggedExercises: LoggedExercise[];
   notes?: string;
   recommendations: Recommendation[];
+  offProgram?: boolean;
 }
 
 export interface ExercisePerformanceLog {
