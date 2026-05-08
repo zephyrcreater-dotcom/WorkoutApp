@@ -131,10 +131,22 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     return { recommendation: undefined, fatigueFactor, reason };
   }
 
-  const suggestedWeight =
+  let suggestedWeight =
     multiplier === 0
       ? 0
       : roundToExerciseIncrement(fatiguedBase * multiplier, exercise, user.unit);
+
+  // After rounding, if the suggestion equals the actual weight it is not an increase.
+  if (
+    suggestedWeight > 0 &&
+    suggestedWeight === loggedSet.actualWeight &&
+    (title === "Small increase available" || title === "Consider a small increase")
+  ) {
+    title = "Maintain load";
+    reason = `After rounding to the nearest increment, the suggested weight matches your current load (${loggedSet.actualWeight} ${user.unit}). No load change needed.`;
+    // No suggestedWeight action needed — holding is the message, not an apply button
+    suggestedWeight = 0;
+  }
 
   const recommendation: Recommendation = {
     id: createId("rec"),

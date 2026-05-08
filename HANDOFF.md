@@ -10,8 +10,8 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ## Current Project Status
 
-- **Branch:** `v2-hotfix-today-readiness-sbd`
-- **Build:** Passing (`tsc -b && vite build`, 1595 modules, no errors or warnings)
+- **Branch:** `v2-gym-test-hotfix`
+- **Build:** Passing (`tsc -b && vite build`)
 - **Lint:** Passing (`eslint .`, no errors)
 
 Modified files in current working tree (from base):
@@ -57,6 +57,54 @@ Modified files in current working tree (from base):
 npm run lint    # passes
 npm run build   # passes — tsc -b && vite build, 1595 modules transformed
 ```
+
+---
+
+## V2 Gym-Test Hotfix — Completed Work
+
+### Key Product Decisions
+
+**Edit Current Day vs Go Off Program** (Today screen):
+- "Edit Current Day" opens `WorkoutDayEditor` inline for the active planned day. Changes apply to that day/week only. Does not alter completed history.
+- "Go Off Program" creates a free session (`offProgram: true`, no `workoutDayId`). User adds exercises via the logger's Add Exercise flow. Logged work saves to session/exercise history. Does not modify the active block or future weeks.
+
+**Off-program sessions** are identified by `WorkoutSession.offProgram === true`. They have no `programId`, `blockId`, or `workoutDayId`. All `LoggedExercise` items in the session have `offProgram: true`.
+
+**Skip last set auto-advance**: `skipSet()` now checks `isCurrentSetLastPlannedSet`. If the skipped set is the last planned set of the current exercise, it automatically navigates to the next exercise or finishes the workout. No extra click needed.
+
+**Set lineup tappable on mobile**: Completed set items in the lineup have `cursor-pointer` and an `onClick` handler. Tapping pre-fills the Weight/Reps/RPE/rating form fields with that set's actual values for reference. The completed set remains in the log; this is a reference/copy feature, not a re-log.
+
+**Prescription number inputs fixed**: `NumberField` now uses local string state. The input allows free typing (including backspace and clear). The parent `onChange` is only called on blur. RPE sanitization (`sanitizeRpe`) runs on the parent's blur callback. Preview text ("3 sets · 8 reps · RPE 7") stays in sync because it reads from the db-persisted value, which updates on blur.
+
+**Recommendation "increase" label fix**: `setAdjustment.ts` compares `suggestedWeight` (after rounding to increment) to `loggedSet.actualWeight`. If they are equal and the title was "Small increase available" or "Consider a small increase", the title becomes "Maintain load" and no Apply button is shown.
+
+**Continuous-loop week copy**: `copyWeekExercises()` skips any workout day where `sourceDay.splitDayId !== targetDay.splitDayId`. WeekEditor shows a banner when copying was skipped due to split day mismatch. Day tabs show the split day name from the split template.
+
+**Exercise swap metadata**: `PlannedExercise` now has `originalExerciseId?`, `replacementExerciseId?`, `swappedAt?`, `swapScope?` fields in domain.ts. These are ready for future swap-tracking UI. No write path exists yet — tracked as TODO.
+
+**Movement patterns hidden**: Custom exercise form hides movement patterns under an "Advanced Options" toggle. `SplitDayEditor` already did this; LibraryScreen now matches.
+
+**Block name placeholder**: Block Builder name field shows `"e.g. Powerbuilding Block"` placeholder. Default is empty string — no pre-population.
+
+**Mobile overflow protection**: `overflow-x: hidden; max-width: 100%` added to `html, body, #root` in `styles.css`. Specific element-level overflow issues require screenshots for targeted fixes.
+
+### Files Modified (V2 Gym-Test Hotfix)
+
+| File | Changes |
+|------|---------|
+| `src/types/domain.ts` | `WorkoutSession.offProgram?: boolean`; `PlannedExercise` swap metadata fields |
+| `src/lib/algorithms/setAdjustment.ts` | Fix "increase" label when `suggestedWeight === actualWeight` after rounding |
+| `src/App.tsx` | `TextField` placeholder prop; `NumberField` blur-commit pattern; `TodayScreen` Edit Current Day + Go Off Program; `LiveLogger` off-program empty session guard; `skipSet()` last-set auto-advance; set lineup tappable items; custom exercise Advanced Options for movement patterns; `copyWeekExercises()` split day compatibility; `WeekEditor` split day context + copy label |
+| `src/styles.css` | Global overflow-x protection |
+| `BUGS.md` | New bugs section for gym-test hotfix; mobile overflow noted as high-priority |
+| `HANDOFF.md` | This section |
+
+### Intentionally Deferred (V2 Gym-Test Hotfix)
+
+- Exercise swap write path — data model ready, no UI for recording a swap yet.
+- Off-program session display in archive/history — marked `offProgram: true` in db, history UI doesn't yet show the flag visually.
+- Specific mobile overflow element fixes — need screenshots.
+- Weight Estimator v2, cloud sync, algorithm overhaul — out of scope for this pass.
 
 ---
 

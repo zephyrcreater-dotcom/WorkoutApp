@@ -15,11 +15,13 @@ import {
   Home,
   Library,
   LogOut,
+  Pencil,
   Plus,
   RefreshCcw,
   Save,
   Settings,
   ShieldAlert,
+  Shuffle,
   SlidersHorizontal,
   Star,
   Timer,
@@ -439,6 +441,7 @@ function TodayScreen({
   const selectedDay = todayPlan?.day;
   const activeBlock = activeProgram?.blocks[0];
   const inProgressSession = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress");
+  const [showEditDay, setShowEditDay] = useState(false);
 
   function startWorkout(day?: WorkoutDay) {
     if (!day) return;
@@ -497,6 +500,30 @@ function TodayScreen({
     });
   }
 
+  function goOffProgram() {
+    if (!confirm("Log an off-program workout for today? This will not change your active block or future weeks.")) return;
+    const session: WorkoutSession = {
+      id: createId("session"),
+      userId: user.id,
+      gymId: user.activeGymId,
+      name: "Off-Program Workout",
+      status: "in-progress",
+      startedAt: nowIso(),
+      updatedAt: nowIso(),
+      currentExerciseIndex: 0,
+      currentSetIndex: 0,
+      loggedExercises: [],
+      recommendations: [],
+      offProgram: true,
+    };
+    void updateDb((draft) => {
+      draft.sessions.unshift(session);
+      return draft;
+    });
+    setActiveSessionId(session.id);
+    setScreen("logger");
+  }
+
   return (
     <div className="space-y-5">
       <PageTitle eyebrow="Today" title="Next actionable workout from your active block." />
@@ -504,6 +531,10 @@ function TodayScreen({
         <Panel title="No Active Block" icon={CalendarDays}>
           <EmptyState title="No active block yet" detail="Build and activate a block before starting scheduled training." />
           <button className="btn-primary mt-4 w-full" onClick={() => setScreen("programs")}>Open Block Builder</button>
+          <button className="btn-secondary mt-2 w-full" onClick={goOffProgram}>
+            <Shuffle className="h-4 w-4" />
+            Go Off Program
+          </button>
         </Panel>
       )}
       {activeProgram && !selectedDay && (
@@ -513,6 +544,10 @@ function TodayScreen({
             detail="Today is no longer tied to the calendar. It has reached the end of the active block sequence."
           />
           <button className="btn-secondary mt-4 w-full" onClick={() => setScreen("programs")}>Open Block Overview</button>
+          <button className="btn-secondary mt-2 w-full" onClick={goOffProgram}>
+            <Shuffle className="h-4 w-4" />
+            Go Off Program
+          </button>
         </Panel>
       )}
       {activeProgram && selectedDay && (
@@ -555,6 +590,34 @@ function TodayScreen({
             <button className="btn-secondary" onClick={() => updateActiveBlockProgress("next")}>Move To Next Day</button>
             <button className="btn-secondary border-ember/40 text-orange-100" onClick={() => updateActiveBlockProgress("skip")}>Skip This Workout</button>
           </div>
+          {selectedDay.status !== "rest" && (
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              <button
+                className="btn-secondary"
+                onClick={() => setShowEditDay((v) => !v)}
+              >
+                <Pencil className="h-4 w-4" />
+                {showEditDay ? "Done Editing" : "Edit Current Day"}
+              </button>
+              <button className="btn-secondary" onClick={goOffProgram}>
+                <Shuffle className="h-4 w-4" />
+                Go Off Program
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+      {showEditDay && selectedDay && activeProgram && (
+        <section className="panel p-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div>
+              <p className="label text-volt">Editing this planned day</p>
+              <h3 className="font-black">{selectedDay.name}</h3>
+              <p className="text-xs text-iron-400">Changes apply to this day and week only. Completed workout history is not affected.</p>
+            </div>
+            <button className="btn-secondary" onClick={() => setShowEditDay(false)}>Done</button>
+          </div>
+          <WorkoutDayEditor db={db} user={user} program={activeProgram} day={selectedDay} updateDb={updateDb} />
         </section>
       )}
       {selectedDay && selectedDay.status !== "rest" && <WorkoutDayView db={db} user={user} day={selectedDay} />}
@@ -649,11 +712,103 @@ function LiveLogger({
     if (session && !activeExerciseId) setActiveExerciseId(session.loggedExercises[session.currentExerciseIndex || 0]?.id);
   }, [activeExerciseId, session]);
 
-  if (!session || !activeExerciseLog || !exercise) {
+  if (!session) {
     return (
       <Panel title="No Active Workout" icon={Timer}>
         <EmptyState title="Start a workout first" detail="Open Today and start one of your templates or generated program days." />
       </Panel>
+    );
+  }
+
+  // Off-program or brand-new empty session: no exercises yet — let the user add them
+  if (!session.loggedExercises.length || !activeExerciseLog || !exercise) {
+    const isEmptySession = !session.loggedExercises.length;
+    return (
+      <div className="space-y-5">
+        <PageTitle eyebrow="Today" title={isEmptySession ? "Off-Program Session" : "No exercise selected"} />
+        {isEmptySession && (
+          <Panel title="Build your workout" icon={Dumbbell}>
+            <p className="mb-3 text-sm text-iron-300">
+              This is an off-program session. Add exercises below to start logging. Nothing will change in your active block or future weeks.
+            </p>
+            <EmptyState title="No exercises yet" detail="Tap Add Exercise to begin." />
+          </Panel>
+        )}
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button className="btn-primary" onClick={() => setShowAddExercisePicker(true)}>
+            <Plus className="h-4 w-4" /> Add Exercise
+          </button>
+          <button
+            className="btn-secondary border-ember/40 text-orange-100"
+            onClick={() => {
+              void updateDb((draft) => {
+                const target = draft.sessions.find((item) => item.id === session.id);
+                if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
+                return draft;
+              });
+              setActiveSessionId(undefined);
+              setScreen("today");
+            }}
+          >
+            Cancel
+          </button>
+        </div>
+        {showAddExercisePicker && (
+          <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
+            <section className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <h3 className="text-xl font-black">Add exercise</h3>
+                <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
+              </div>
+              <ExercisePicker
+                db={db}
+                user={user}
+                onPick={(ex) => {
+                  setShowAddExercisePicker(false);
+                  setPendingOffProgramExercise(ex);
+                }}
+              />
+            </section>
+          </div>
+        )}
+        {pendingOffProgramExercise && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+            <div className="panel w-full max-w-sm space-y-4 p-6">
+              <h3 className="text-xl font-black">Add {pendingOffProgramExercise.name}</h3>
+              <div className="space-y-2">
+                <button
+                  className="btn-primary w-full"
+                  onClick={() => {
+                    const ex = pendingOffProgramExercise;
+                    void updateDb((draft) => {
+                      const target = draft.sessions.find((item) => item.id === session.id);
+                      if (!target) return draft;
+                      const newLog: LoggedExercise = {
+                        id: createId("logex"),
+                        exerciseId: ex.id,
+                        order: target.loggedExercises.length + 1,
+                        sets: [],
+                        weakPointTags: [],
+                        offProgram: true,
+                      };
+                      target.loggedExercises.push(newLog);
+                      target.currentExerciseIndex = target.loggedExercises.length - 1;
+                      target.currentSetIndex = 0;
+                      target.updatedAt = nowIso();
+                      return draft;
+                    });
+                    setActiveExerciseId(undefined);
+                    setPendingOffProgramExercise(undefined);
+                  }}
+                >
+                  Add to Session
+                </button>
+                <button className="btn-ghost w-full" onClick={() => setPendingOffProgramExercise(undefined)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     );
   }
 
@@ -766,6 +921,9 @@ function LiveLogger({
 
   function skipSet() {
     if (isPastLastPlannedSet) return;
+    const wasLastSet = isCurrentSetLastPlannedSet;
+    const shouldAdvanceExercise = wasLastSet && hasMoreExercises;
+    const shouldFinishWorkout = wasLastSet && !hasMoreExercises;
     const skippedSet: LoggedSet = {
       id: createId("set"),
       kind: nextPlannedSet?.kind || "working",
@@ -789,13 +947,27 @@ function LiveLogger({
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
       if (log) log.sets.push(skippedSet);
       if (target) {
-        target.currentExerciseIndex = activeExerciseIndex;
-        target.currentSetIndex = log?.sets.length || 0;
+        if (shouldAdvanceExercise) {
+          target.currentExerciseIndex = activeExerciseIndex + 1;
+          target.currentSetIndex = 0;
+        } else {
+          target.currentExerciseIndex = activeExerciseIndex;
+          target.currentSetIndex = log?.sets.length || 0;
+        }
         target.updatedAt = nowIso();
+        if (shouldFinishWorkout) finishWorkoutInDraft(draft, user, target);
       }
       return draft;
     });
     setSetDraft(emptySetDraft(nextPlannedSet, skippedSet, `${liveExerciseLog.id}:${currentSetIndex + 1}`));
+    if (shouldAdvanceExercise) {
+      const nextLog = liveSession.loggedExercises[activeExerciseIndex + 1];
+      if (nextLog) setActiveExerciseId(nextLog.id);
+    }
+    if (shouldFinishWorkout) {
+      setActiveSessionId(undefined);
+      setScreen("week");
+    }
   }
 
   function addSet() {
@@ -1085,14 +1257,31 @@ function LiveLogger({
                 {plannedSets.map((set, index) => {
                   const actual = liveExerciseLog.sets[index];
                   const isCurrent = index === currentSetIndex && !actual;
+                  const isCompletedSet = !!actual && !actual.skipped;
                   return (
-                    <div key={set.id} className={`rounded-lg border p-3 ${isCurrent ? "border-volt bg-volt/10" : actual ? "border-volt/30 bg-white/[0.07]" : "border-white/10 bg-white/[0.035]"}`}>
+                    <div
+                      key={set.id}
+                      className={`rounded-lg border p-3 transition ${isCurrent ? "border-volt bg-volt/10" : actual ? "border-volt/30 bg-white/[0.07]" : "border-white/10 bg-white/[0.035]"} ${isCompletedSet ? "cursor-pointer active:bg-white/10" : ""}`}
+                      role={isCompletedSet ? "button" : undefined}
+                      tabIndex={isCompletedSet ? 0 : undefined}
+                      onClick={isCompletedSet ? () => {
+                        setSetDraft((prev) => ({
+                          ...prev,
+                          actualWeight: actual.actualWeight ? String(actual.actualWeight) : "",
+                          actualReps: actual.actualReps ? String(actual.actualReps) : "",
+                          actualRpe: actual.actualRpe ? String(actual.actualRpe) : "",
+                          setRating: actual.setRating ?? 3 as SetRating,
+                          notes: actual.notes || "",
+                        }));
+                      } : undefined}
+                      onKeyDown={isCompletedSet ? (e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); } : undefined}
+                    >
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="font-black">Set {index + 1} - {actual?.skipped ? "Skipped" : actual ? "Complete" : isCurrent ? "Current" : "Pending"}</p>
-                        <p className="text-xs text-iron-400">{set.kind}</p>
+                        <p className="font-black">Set {index + 1} — {actual?.skipped ? "Skipped" : actual ? "Complete" : isCurrent ? "Current" : "Pending"}</p>
+                        <p className="text-xs text-iron-400">{set.kind}{isCompletedSet ? " · tap to load" : ""}</p>
                       </div>
-                      <p className="mt-1 text-sm text-iron-300">Planned: {set.plannedWeight || "-"} {user.unit} x {set.targetReps} @ RPE {set.targetRpe || "?"}</p>
-                      {actual && <p className="mt-1 text-sm text-volt">Actual: {actual.skipped ? "Skipped" : `${actual.actualWeight} ${user.unit} x ${actual.actualReps} @ RPE ${actual.actualRpe || "?"}`}</p>}
+                      <p className="mt-1 text-sm text-iron-300">Planned: {set.plannedWeight || "-"} {user.unit} × {set.targetReps} @ RPE {set.targetRpe || "?"}</p>
+                      {actual && <p className="mt-1 text-sm text-volt">Actual: {actual.skipped ? "Skipped" : `${actual.actualWeight} ${user.unit} × ${actual.actualReps} @ RPE ${actual.actualRpe || "?"}`}</p>}
                     </div>
                   );
                 })}
@@ -1425,7 +1614,7 @@ function BuilderScreen({
             <button className={`btn-secondary ${buildMode === "suggested" ? "border-volt/60 text-volt" : ""}`} onClick={() => setBuildMode("suggested")}>Suggest Full Program</button>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
-            <TextField label="Block name" value={request.name} onChange={(name) => setRequest((draft) => ({ ...draft, name }))} />
+            <TextField label="Block name" placeholder="e.g. Powerbuilding Block" value={request.name} onChange={(name) => setRequest((draft) => ({ ...draft, name }))} />
             <SelectField label="Split template" value={selectedSplitId} options={db.splitTemplates.map((split) => split.id)} labels={Object.fromEntries(db.splitTemplates.map((split) => [split.id, `${split.name} (${split.daysPerWeek}d)`]))} onChange={(id) => { setSelectedSplitId(id); setRequest((draft) => ({ ...draft, splitTemplateId: id })); }} />
             <SelectField label="Block type" value={request.blockType} options={["accumulation", "hypertrophy", "strength", "intensification", "peaking", "deload", "custom"]} onChange={(blockType) => setRequest((draft) => ({ ...draft, blockType: blockType as BlockType }))} />
             <NumberField label="Weeks" value={request.blockLengthWeeks} onChange={(blockLengthWeeks) => setRequest((draft) => ({ ...draft, blockLengthWeeks }))} />
@@ -2400,6 +2589,7 @@ function LibraryScreen({
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [gymSpecificFilter, setGymSpecificFilter] = useState<string>("all");
   const [progressExerciseId, setProgressExerciseId] = useState<string | undefined>();
+  const [showAdvancedExercise, setShowAdvancedExercise] = useState(false);
   const [draft, setDraft] = useState({
     name: "",
     notes: "",
@@ -2600,10 +2790,22 @@ function LibraryScreen({
                   </div>
                 </div>
                 <div>
-                  <p className="label mb-2">Movement patterns</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {movementOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.movementPatterns.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftPattern(item)}>{item}</button>)}
-                  </div>
+                  <button
+                    className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-300 transition hover:bg-white/[0.07]"
+                    onClick={() => setShowAdvancedExercise((v) => !v)}
+                  >
+                    Advanced Options {draft.movementPatterns.length > 0 ? `(${draft.movementPatterns.length} patterns)` : ""}
+                    <ChevronRight className={`h-3 w-3 transition ${showAdvancedExercise ? "rotate-90" : ""}`} />
+                  </button>
+                  {showAdvancedExercise && (
+                    <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-3">
+                      <p className="label mb-2">Movement patterns</p>
+                      <p className="mb-2 text-xs text-iron-500">Optional. Used internally for program generation suggestions.</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        {movementOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.movementPatterns.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftPattern(item)}>{item}</button>)}
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div>
                   <p className="label mb-2">Allowed units</p>
@@ -3194,13 +3396,18 @@ function GymScreen({
 }
 
 // Deep-copy a week's exercises to a target week, assigning fresh IDs and clearing plannedWeight.
-// This is the default "copy from previous week" operation when planning a new week.
-function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: { workouts: WorkoutDay[] }): void {
+// Returns true if at least one day was copied.
+// Skips any day where source and target have different splitDayIds (e.g. Upper vs Lower in
+// continuous-loop mode) — exercises from the wrong split day must not bleed into a different day.
+function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: { workouts: WorkoutDay[] }): boolean {
+  let anyCopied = false;
   targetWeek.workouts.forEach((targetDay, dayIdx) => {
     const sourceDay = sourceWeek.workouts[dayIdx];
     if (!sourceDay || sourceDay.exercises.length === 0) return;
     // Only copy if the target day has no exercises yet
     if (targetDay.exercises.length > 0) return;
+    // Don't copy if the split days differ — e.g., Upper exercises must not go to a Lower day
+    if (sourceDay.splitDayId && targetDay.splitDayId && sourceDay.splitDayId !== targetDay.splitDayId) return;
     targetDay.exercises = sourceDay.exercises.map((ex, exIdx) => ({
       ...ex,
       id: createId("pex"),
@@ -3211,7 +3418,9 @@ function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: {
         plannedWeight: undefined,
       })),
     }));
+    anyCopied = true;
   });
+  return anyCopied;
 }
 
 function WeekEditor({
@@ -3227,14 +3436,25 @@ function WeekEditor({
 }) {
   const week = block.weeks.find((w) => w.weekNumber === weekNumber);
   const prevWeek = block.weeks.find((w) => w.weekNumber === weekNumber - 1);
+  const splitTemplate = db.splitTemplates.find((s) => s.id === block.splitTemplateId);
   const [selectedDayIdx, setSelectedDayIdx] = useState(0);
   const [copied, setCopied] = useState(false);
+  const [copiedFromPrev, setCopiedFromPrev] = useState(false);
 
-  // On mount: if the target week has no exercises and a previous week exists, copy from it.
+  // On mount: if the target week has no exercises and a previous week exists, copy from it
+  // only where the split days match (e.g. do NOT copy Upper into Lower for continuous loop).
   useEffect(() => {
     if (!week || copied) return;
     const hasAnyExercises = week.workouts.some((d) => d.exercises.length > 0);
     if (!hasAnyExercises && prevWeek) {
+      // Pre-check whether anything would actually be copied
+      const wouldCopy = prevWeek.workouts.some((sourceDay, idx) => {
+        const targetDay = week.workouts[idx];
+        if (!sourceDay || sourceDay.exercises.length === 0) return false;
+        if (targetDay && targetDay.exercises.length > 0) return false;
+        if (sourceDay.splitDayId && targetDay?.splitDayId && sourceDay.splitDayId !== targetDay.splitDayId) return false;
+        return true;
+      });
       void updateDb((draft) => {
         const draftBlock = draft.programs.find((p) => p.id === program.id)?.blocks.find((b) => b.id === block.id);
         if (!draftBlock) return draft;
@@ -3244,6 +3464,7 @@ function WeekEditor({
         return draft;
       });
       setCopied(true);
+      setCopiedFromPrev(wouldCopy);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3260,13 +3481,20 @@ function WeekEditor({
   }
 
   const selectedDay = week.workouts[selectedDayIdx] as WorkoutDay | undefined;
+  // Resolve split day for context display
+  const selectedDaySplitDay = selectedDay?.splitDayId
+    ? splitTemplate?.days.find((d) => d.id === selectedDay.splitDayId)
+    : undefined;
 
   function saveAndClose() {
     // Changes are already persisted to db via WorkoutDayEditor's updateDb calls.
     onClose();
   }
 
-  const copiedFromLabel = !copied && prevWeek ? null : prevWeek ? `Copied from Week ${weekNumber - 1}` : null;
+  // True when split days differ and nothing was copied for the selected day
+  const prevDayForSelected = prevWeek?.workouts[selectedDayIdx];
+  const splitDayMismatch = prevDayForSelected?.splitDayId && selectedDay?.splitDayId &&
+    prevDayForSelected.splitDayId !== selectedDay.splitDayId;
 
   return (
     <div className="space-y-5">
@@ -3276,9 +3504,14 @@ function WeekEditor({
         <h2 className="mt-1 font-black">{program.name}</h2>
         <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-iron-300">
           <span>Week {weekNumber} of {block.lengthWeeks}</span>
-          {copiedFromLabel && (
+          {copiedFromPrev && prevWeek && (
             <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-iron-400">
-              <Copy className="mr-1 inline h-3 w-3" />{copiedFromLabel}
+              <Copy className="mr-1 inline h-3 w-3" />Copied from Week {weekNumber - 1}
+            </span>
+          )}
+          {copied && !copiedFromPrev && prevWeek && (
+            <span className="rounded-full bg-ember/20 px-2 py-0.5 text-xs text-orange-300">
+              Split days differ — exercises not copied from Week {weekNumber - 1}
             </span>
           )}
         </div>
@@ -3292,15 +3525,18 @@ function WeekEditor({
       {/* Day selector tabs */}
       {week.workouts.length > 1 && (
         <div className="flex flex-wrap gap-2">
-          {week.workouts.map((day, idx) => (
-            <button
-              key={day.id}
-              className={`rounded-lg px-3 py-1.5 text-xs font-bold ${selectedDayIdx === idx ? "bg-volt text-iron-950" : "bg-white/[0.05] text-iron-400 hover:bg-white/10"}`}
-              onClick={() => setSelectedDayIdx(idx)}
-            >
-              {day.scheduledDay || `Day ${idx + 1}`}
-            </button>
-          ))}
+          {week.workouts.map((day, idx) => {
+            const daySplitDay = day.splitDayId ? splitTemplate?.days.find((d) => d.id === day.splitDayId) : undefined;
+            return (
+              <button
+                key={day.id}
+                className={`rounded-lg px-3 py-1.5 text-xs font-bold ${selectedDayIdx === idx ? "bg-volt text-iron-950" : "bg-white/[0.05] text-iron-400 hover:bg-white/10"}`}
+                onClick={() => setSelectedDayIdx(idx)}
+              >
+                {daySplitDay?.name || day.scheduledDay || `Day ${idx + 1}`}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -3311,7 +3547,10 @@ function WeekEditor({
             <div>
               <p className="label">Editing day</p>
               <h3 className="font-black">{selectedDay.name}</h3>
-              <p className="text-sm text-iron-400">{selectedDay.focus}</p>
+              <p className="text-sm text-iron-400">
+                {selectedDaySplitDay ? `${selectedDaySplitDay.name} — ` : ""}{selectedDay.focus}
+                {splitDayMismatch ? " · different split day from prior week" : ""}
+              </p>
             </div>
           </div>
           <WorkoutDayEditor db={db} user={user} program={program} day={selectedDay} updateDb={updateDb} />
@@ -4055,20 +4294,37 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function TextField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function TextField({ label, value, placeholder, onChange }: { label: string; value: string; placeholder?: string; onChange: (value: string) => void }) {
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="field mt-2" value={value} onChange={(event) => onChange(event.target.value)} />
+      <input className="field mt-2" placeholder={placeholder} value={value} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
 
-function NumberField({ label, value, step, onChange }: { label: string; value: number; step?: number; onChange: (value: number) => void }) {
+function NumberField({ label, value, step, min, onChange }: { label: string; value: number; step?: number; min?: number; onChange: (value: number) => void }) {
+  const [localValue, setLocalValue] = useState(String(value));
+  useEffect(() => { setLocalValue(String(value)); }, [value]);
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="field mt-2" type="number" step={step} value={value} onChange={(event) => onChange(Number(event.target.value))} />
+      <input
+        className="field mt-2"
+        type="number"
+        step={step}
+        min={min}
+        value={localValue}
+        onChange={(event) => setLocalValue(event.target.value)}
+        onBlur={() => {
+          const parsed = Number(localValue);
+          if (localValue !== "" && !isNaN(parsed)) {
+            onChange(parsed);
+          } else {
+            setLocalValue(String(value));
+          }
+        }}
+      />
     </div>
   );
 }
