@@ -24,25 +24,47 @@
 ### Blocker — Must Fix Before v2 Stable
 
 **BUG-A — Choose For Me still overfills requirements (HIGH)**
-- Status: Partially fixed (manual-editor path updated); program-generation path still suspect.
-- Symptom: After Choose For Me, requirements show 2/1 or 3/1 (e.g., chest 2/1). The cap is not enforced when exercises are generated via the Block Builder or Week Planner generator path.
-- Root cause: `chooseForMe()` in `WorkoutDayEditor` was updated to tag `fulfillsRequirementId`, but `programGenerator.ts` selects exercises independently using `muscleGroups`/`targetMuscles`, not `requirements`. Generated plans can include multiple exercises for the same requirement slot.
-- Rule to enforce: One exercise per requirement slot. Choose For Me must never add extras. `isExtra=true` requires explicit "Add Extra Anyway". Secondary muscles do not fulfill requirements.
-- Relevant files: `src/App.tsx` → `chooseForMe()`, `countFulfilled`, `WorkoutDayEditor`; `src/lib/programGenerator.ts`; `src/lib/programmingLogic.ts`.
+- Status: Fixed in V2 Final Stabilization; needs real-data manual verification.
+- Fix: `WorkoutDayEditor.chooseForMe()` and `programGenerator.ts` now both treat `SplitDayRequirement` entries as hard slots. Generated exercises are tagged with `fulfillsRequirementId`, secondary muscles do not fill slots, and neither path creates extras automatically.
+- Rule preserved: One exercise per requirement slot. `isExtra=true` requires explicit "Add Extra Anyway".
+- Relevant files: `src/App.tsx` → `chooseForMe()`, `countFulfilled`, `WorkoutDayEditor`; `src/lib/programGenerator.ts`; `src/types/domain.ts`.
 
 **BUG-B — Discard Draft saves/promotes instead of discarding (HIGH)**
-- Status: Discard Draft implementation merged but not yet verified in testing.
-- Symptom: Clicking "Discard Draft" in WeekEditor appears to promote the draft week to real planned state instead of discarding it. Exercises added during the draft session are retained.
-- Root cause: `weekSnapshotRef` is captured synchronously on first render, but `WorkoutDayEditor` calls `updateDb` asynchronously on every edit. If the first edit fires before the snapshot is captured, the snapshot already contains the edited state. Additionally, the `isDraft=false` write in `discardDraft` may race with the `isDraft=true` write from the mount `useEffect`.
-- Rule: Discard must restore the exact state that existed before the editor opened, or leave the week empty/unplanned if no prior state existed. `isDraft=false` after discard.
-- Relevant files: `src/App.tsx` → `WeekEditor`, `weekSnapshotRef`, `discardDraft()`, mount `useEffect`; `src/types/domain.ts` → `TrainingWeek.isDraft`.
+- Status: Fixed in V2 Final Stabilization; needs real-data manual verification.
+- Fix: Removed the fragile render-time ref snapshot. `TrainingWeek.savedWorkoutsBeforeDraft` now captures the saved baseline before draft edits/copying. Save clears the baseline and marks saved; Exit preserves draft; Discard restores the baseline or leaves the week empty/unplanned.
+- Rule preserved: Draft is not planned truth until Save Week.
+- Relevant files: `src/App.tsx` → `WeekEditor`; `src/types/domain.ts` → `TrainingWeek.isDraft`, `TrainingWeek.savedWorkoutsBeforeDraft`.
 
 **BUG-C — Today shows workout card for unplanned/draft week (HIGH)**
-- Status: `weekLocked` guard was added; still shows workout card in some paths.
-- Symptom: Today shows "Week 4 has not been planned" but still renders a workout card ("Upper 1") with exercises underneath it.
-- Root cause: `isWeekDraft()` only checks `isDraft === true`. If a week has exercises but `isDraft` was never set (legacy data, partial planning session that didn't call the save path, or a failed async write), `weekLocked` stays false and the card renders. The guard needs to also check `!isWeekPlanned(week)`.
-- Rule: If `!isWeekPlanned(todayPlan?.week)`, hide workout card entirely. Show only planning notice + "Plan Week N" + "Go Off Program".
+- Status: Fixed in V2 Final Stabilization; needs real-data manual verification.
+- Fix: Today now gates on `weekBeingEdited || isWeekDraft(todayPlan?.week) || !isWeekPlanned(todayPlan?.week)`. Draft or unplanned weeks render only the planning notice and off-program action, not the workout card or exercise list.
+- Rule preserved: If `!isWeekPlanned(todayPlan?.week)`, hide workout card entirely.
 - Relevant files: `src/App.tsx` → `TodayScreen`, `weekLocked` derivation, `isWeekDraft`, `isWeekPlanned` helpers (~line 205).
+
+**BUG-G — Planned exercise swapping/editing is too destructive (HIGH)**
+- Status: Fixed in code; needs manual verification.
+- Symptom: In Edit Current Day and Week Editor, users must remove exercises to re-open the picker. Swapping a single planned exercise is awkward.
+- Fix: `WorkoutDayEditor` now exposes `Edit Exercise`, `Swap Exercise`, and `Remove Exercise` per planned exercise. Swap replaces only the selected row, preserves prescription fields, and warns/marks extra if the replacement no longer satisfies the prior requirement slot.
+
+**BUG-H — Easy/5 recommendation path still misses increases in some real flows (HIGH)**
+- Status: Fixed in code; needs manual verification.
+- Symptom: Easy/5 after a manual starting weight, or after a prior applied decrease, can fail to produce the next-set increase/maintain recommendation.
+- Fix: Recommendation generation now separates the logged source set from the actual next target set, persists target-set identity, and no longer suppresses Easy/5 increase-or-maintain suggestions because of fatigue gating.
+
+**BUG-I — Manual weight carry-forward is inconsistent (HIGH)**
+- Status: Fixed in code; needs manual verification.
+- Symptom: When a set begins with no planned/suggested weight and the user enters one manually, the next set can fall back to blank or stale planned weight instead of the last actual weight.
+- Fix: `emptySetDraft` now uses explicit target-set planned/recommended weight when present; otherwise it carries the previous actual weight forward as the next-set baseline.
+
+**BUG-J — Week planned/completed truth is still too loose (HIGH)**
+- Status: Fixed in code; needs manual verification.
+- Symptom: Empty week shells can look planned, and selected historical weeks can be labeled completed just because they are not the current week.
+- Fix: Week status now distinguishes `unplanned`, `planned`, and `completed` from shared helpers instead of shell existence or “not current week” UI shortcuts.
+
+**BUG-K — End-of-block flow suggests non-existent next weeks (HIGH)**
+- Status: Fixed in code; needs manual verification.
+- Symptom: Finishing the last week/day can still point the user toward planning Week 4 for a 3-week block.
+- Fix: Completed blocks now clamp to a Block Complete state, suppress non-existent next-week prompts, and surface `Review Block`, `Archive Block / Finish Block`, `Repeat Block`, and `Start New Block` actions.
 
 **BUG-D — Recommendation scoping needs end-to-end verification (MEDIUM)**
 - Status: Implementation merged, not yet verified in live testing.

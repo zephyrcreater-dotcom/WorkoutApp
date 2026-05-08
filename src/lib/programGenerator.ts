@@ -21,6 +21,7 @@ import type {
   Program,
   ProgramBuildMode,
   SplitDay,
+  SplitDayRequirement,
   SplitLoopMode,
   TrainingDatabase,
   TrainingGoal,
@@ -52,6 +53,27 @@ const goalDefaults: Record<TrainingGoal, string[]> = {
   conditioning: ["ex_treadmill_walk", "ex_plank", "ex_leg_press", "ex_lat_pulldown"],
   maintenance: ["ex_squat_comp", "ex_bench_comp", "ex_rdl", "ex_lat_pulldown", "ex_plank"]
 };
+
+const parentMuscleChildren: Partial<Record<MuscleGroup, MuscleGroup[]>> = {
+  back: ["lats", "upper-back", "mid-back", "traps", "spinal-erectors"],
+  chest: ["upper-chest", "lower-chest"],
+  quads: ["quads"],
+  hamstrings: ["hamstrings"],
+  glutes: ["glutes"],
+  biceps: ["biceps"],
+  triceps: ["triceps"]
+};
+
+function exerciseFulfillsRequirement(exercise: Exercise, req: SplitDayRequirement): boolean {
+  if (exercise.primaryMuscles.includes(req.targetMuscle)) return true;
+  const children = parentMuscleChildren[req.targetMuscle] ?? [];
+  return children.length > 0 && exercise.primaryMuscles.some((muscle) => children.includes(muscle));
+}
+
+interface SelectedExerciseSlot {
+  exercise: Exercise;
+  requirementId?: ID;
+}
 
 export function generateSplitFromText(params: {
   daysPerWeek: number;
@@ -103,7 +125,7 @@ function chooseExercisesForDay(
   exercises: Exercise[],
   weeklyCounts: { heavy: number; lowBack: number },
   splitDay?: SplitDay
-): Exercise[] {
+): SelectedExerciseSlot[] {
   const defaults = goalDefaults[request.goal];
   const compoundSettings = request.compoundSettings || defaultCompoundSettings;
   const selectedLifts = request.priorityExerciseIds
@@ -140,26 +162,64 @@ function chooseExercisesForDay(
     return false;
   });
   const ordered = [...priorityForThisDay, ...pool].filter((exercise) => exerciseAllowedByCompoundSettings(exercise, compoundSettings));
-  const result: Exercise[] = [];
+  const uniqueOrdered = [...new Map(ordered.map((item) => [item.id, item])).values()];
+  const result: SelectedExerciseSlot[] = [];
+  const usedIds = new Set<ID>();
   let compounds = 0;
-  for (const exercise of [...new Map(ordered.map((item) => [item.id, item])).values()]) {
+
+  function canUseExercise(exercise: Exercise): boolean {
+    const sbd = isSbdExercise(exercise);
+    const heavy = isHeavyCompound(exercise);
+    const lowBack = isLowBackFatigueExercise(exercise);
+    if (usedIds.has(exercise.id)) return false;
+    if (sbd && compounds >= compoundSettings.maxCompoundsPerWorkout) return false;
+    if (sbd && heavy && weeklyCounts.heavy >= compoundSettings.maxHeavyCompoundsPerWeek) return false;
+    if (lowBack && weeklyCounts.lowBack >= compoundSettings.maxLowBackFatigueMovementsPerWeek) return false;
+    return true;
+  }
+
+  function addExercise(exercise: Exercise, requirementId?: ID): void {
     const compound = isCompound(exercise);
     const sbd = isSbdExercise(exercise);
     const heavy = isHeavyCompound(exercise);
     const lowBack = isLowBackFatigueExercise(exercise);
-    if (sbd && compounds >= compoundSettings.maxCompoundsPerWorkout) continue;
-    if (sbd && heavy && weeklyCounts.heavy >= compoundSettings.maxHeavyCompoundsPerWeek) continue;
-    if (lowBack && weeklyCounts.lowBack >= compoundSettings.maxLowBackFatigueMovementsPerWeek) continue;
-    result.push(exercise);
+    result.push({ exercise, requirementId });
+    usedIds.add(exercise.id);
     if (sbd && compound) compounds += 1;
     if (sbd && heavy) weeklyCounts.heavy += 1;
     if (lowBack) weeklyCounts.lowBack += 1;
+  }
+
+  if (splitDay?.requirements?.length) {
+    for (const req of [...splitDay.requirements].sort((a, b) => a.priority - b.priority)) {
+      for (let slot = 0; slot < req.requiredExerciseCount; slot += 1) {
+        const strictPick = uniqueOrdered.find(
+          (exercise) =>
+            canUseExercise(exercise) &&
+            exerciseFulfillsRequirement(exercise, req) &&
+            (!req.movementPattern || exercise.movementPattern === req.movementPattern || exercise.movementPatterns?.includes(req.movementPattern))
+        );
+        const relaxedPick = strictPick ?? uniqueOrdered.find(
+          (exercise) =>
+            canUseExercise(exercise) &&
+            exerciseFulfillsRequirement(exercise, req) &&
+            (!req.movementPattern || exercise.movementPattern === req.movementPattern || exercise.movementPatterns?.includes(req.movementPattern))
+        );
+        if (relaxedPick) addExercise(relaxedPick, req.id);
+      }
+    }
+    return result;
+  }
+
+  for (const exercise of uniqueOrdered) {
+    if (!canUseExercise(exercise)) continue;
+    addExercise(exercise);
     if (result.length >= (request.goal === "general-health" ? 4 : 6)) break;
   }
   return result;
 }
 
-function plannedExerciseFor(exercise: Exercise, order: number, user: UserProfile, db: TrainingDatabase, request: ProgramRequest, weekNumber = 1): PlannedExercise {
+function plannedExerciseFor(exercise: Exercise, order: number, user: UserProfile, db: TrainingDatabase, request: ProgramRequest, weekNumber = 1, requirementId?: ID): PlannedExercise {
   const isPriorityLift = request.priorityExerciseIds.includes(exercise.id);
   const prescription = getExercisePrescription({ exercise, goal: request.goal, blockType: request.blockType, order, isPriority: isPriorityLift });
   const plannedSet = { id: createId("pset"), kind: "working" as const, setNumber: 1, targetReps: prescription.reps, repRange: { min: Math.max(1, prescription.reps - 2), max: prescription.reps + 2 }, targetRpe: prescription.rpe, targetRir: Math.max(0, Math.round(10 - prescription.rpe)) };
@@ -171,6 +231,7 @@ function plannedExerciseFor(exercise: Exercise, order: number, user: UserProfile
     order,
     restSeconds: prescription.restSeconds,
     substitutionIds: exercise.substitutionIds,
+    fulfillsRequirementId: requirementId,
     notes: `${isPriorityLift ? "Priority lift. " : ""}${prescription.note} ${suggested.explanation}`,
     plannedSets: Array.from({ length: prescription.sets }, (_, index) => clonePlannedSetWithProgression({
       ...plannedSet,
@@ -206,7 +267,7 @@ export function generateProgram(user: UserProfile, db: TrainingDatabase, request
         targetMuscles: splitDay?.muscleGroups || [],
         movementPatterns: splitDay?.movementPatterns || [],
         status: "planned",
-        exercises: dayExercises.map((exercise, order) => plannedExerciseFor(exercise, order + 1, user, db, request, weekIndex + 1)),
+        exercises: dayExercises.map((item, order) => plannedExerciseFor(item.exercise, order + 1, user, db, request, weekIndex + 1, item.requirementId)),
         notes: splitDay?.notes || request.notes
       };
     });
