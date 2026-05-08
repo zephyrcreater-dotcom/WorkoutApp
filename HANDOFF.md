@@ -12,13 +12,25 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 > **Read this section first.** It summarises the current state of the branch and what needs to happen next before the app is stable enough to move into the Training Intelligence / Weight Estimator v1 phase.
 
+### Next-session handoff
+
+- **Branch:** `v2.1-BugHotfix`
+- **Project state:** Late V2 stabilization. The app is in blocker-fix mode only; do not start V3 or Weight Estimator v1 until this stabilization pass is manually verified.
+- **What was fixed in the latest session:** direct planned-exercise swap/edit controls in `WorkoutDayEditor`; Easy/5 recommendation path and recommendation identity cleanup; manual weight carry-forward from the previous actual set; stricter week planned/completed truth; completed-block handling with Block Complete actions instead of fake next-week prompts.
+- **Files changed in the latest session:** `src/App.tsx`, `src/lib/algorithms/setAdjustment.ts`, `src/lib/blockProgression.ts`, `src/lib/trainingMath.ts`, `src/types/domain.ts`, `HANDOFF.md`, `BUGS.md`, `ROADMAP.md`.
+- **Manual testing still needed:** swap a single exercise in Today/Week editor and confirm only that row changes; Easy/5 after a manual starting weight; Easy/5 after applying a prior decrease; unplanned Week 2/3 truth; final-week block completion flow.
+- **Known remaining bugs/TODOs:** end-to-end verification for recommendation scoping, stale set edit mode, and continuous-loop week copying; mobile overflow screenshots still needed; generator/library follow-ups stay deferred until V3 prep.
+- **Lint / build:** passing (`eslint .`, `tsc -b && vite build`).
+- **Recommended next step after merging:** run the manual stabilization scenarios in the browser, then merge once the gym-flow checks pass.
+- **Reminder:** V3 Training Intelligence v1 should begin only after V2 stabilization is verified and no workout-blocking bug remains.
+
 ### App state
 
 Iron Orbit Training is in late V2 alpha/hotfix work. The app is deployed to Vercel and is testable end-to-end, but several blocker-class bugs remain from real gym testing that must be fixed before new features begin.
 
 ### Current branch and build
 
-- **Branch:** `v2-final-bugfix`
+- **Branch:** `v2.1-BugHotfix`
 - **Uncommitted working-tree changes:** `src/App.tsx`, `src/types/domain.ts`, `HANDOFF.md`, `BUGS.md`, `ROADMAP.md`
 - **Lint:** passing (`eslint .`, 0 errors)
 - **Build:** passing (`tsc -b && vite build`, 1595 modules)
@@ -39,50 +51,37 @@ All work is in `src/App.tsx` and `src/types/domain.ts`. Changes are staged but n
 | **NumberField spinner** | `max` prop added; `onChange` fires immediately on every valid change; blur clamps to `[min, max]`. Days/week: `min={1} max={7}`. |
 | **Source-of-truth helpers** | `isWeekDraft`, `isWorkoutDayPlanned`, `isWeekPlanned` added at module scope. |
 
-### Unresolved blocker bugs (for Codex to fix next)
+### V2 Final Stabilization Pass — 2026-05-08
 
-#### BUG-A — Choose For Me still overfills requirements
+This pass focused only on blocker stabilization before Weight Estimator v1.
 
-**Symptom (from gym testing):** Requirements show chest 1/1, back 1/1, lats 1/1 after Choose For Me runs, but the generated plan contains multiple chest/back exercises beyond the cap (e.g., 2/1 or 3/1).
+| Area | What changed |
+|------|--------------|
+| **Requirement caps** | `programGenerator.ts` now fills `SplitDay.requirements` as hard slots and tags `fulfillsRequirementId`; generated plans no longer add extra same-muscle exercises when requirements are full. |
+| **Choose For Me** | `WorkoutDayEditor.chooseForMe()` now uses derived requirements, fills each requirement only up to `requiredExerciseCount`, honors requirement movement pattern when present, and reports unfilled slots instead of adding extras. |
+| **Draft source of truth** | `TrainingWeek.savedWorkoutsBeforeDraft` stores the saved baseline when Week Editor opens. Save clears draft metadata; Exit preserves draft; Discard restores the baseline or empties the unsaved week. |
+| **Today gating** | Today uses the shared `isWeekDraft`/`isWeekPlanned` helpers. If a week is draft or unplanned, the workout card and exercise list are hidden completely. |
+| **Week overview UI** | The richer weekday card selector was restored for editable weekly overview and Week Editor day selection. |
 
-**Root cause area:** `chooseForMe` in `WorkoutDayEditor` and/or the Block Builder program-generation path. The fix in `chooseForMe` only addresses the manual-editor path; the Block Builder generation path in `programGenerator.ts` (and the "Generate" call that populates week workout days during `generateProgram`) may still select exercises without respecting requirement caps.
+### Current V2 stabilization focus
 
-**Key rule:** Choose For Me must never create extras automatically. One exercise per requirement slot. Extras require explicit user action.
+- Preserve the working Choose For Me requirement-cap fix in both the editor and generator paths.
+- Add direct exercise swap/edit controls anywhere planned exercises are edited.
+- Debug Easy/5 next-set recommendations, especially after manual-weight entry and after prior applied decreases.
+- Make manual weight carry-forward use the previous actual set unless an explicit recommendation overrides it.
+- Tighten week planned/completed truth so empty week shells are neither planned nor completed.
+- Clamp end-of-block behavior so the app shows Block Complete instead of drifting into non-existent Week 4 planning.
+- After this pass, the project should be ready for V3 Training Intelligence v1 unless a workout-blocking bug remains.
 
-**Relevant code:**
-- `chooseForMe()` in `WorkoutDayEditor` (~line 2400 area of App.tsx)
-- `generateProgram` / `programGenerator.ts`
-- `buildPlannedExerciseFromExercise` in `programmingLogic.ts`
-- `countFulfilled` + `reqProgress` in `WorkoutDayEditor`
-- `PlannedExercise.fulfillsRequirementId`, `PlannedExercise.isExtra`
+### Current verification
 
-#### BUG-B — Discard Draft saves/promotes instead of discarding
+- **Lint:** passing (`eslint .`)
+- **Build:** passing (`tsc -b && vite build`)
+- **Browser smoke:** app loaded on local dev server at `http://127.0.0.1:5175/`; Today and Week page rendered after the changes.
 
-**Symptom:** Clicking "Discard Draft" in WeekEditor does not truly throw away the draft. The draft week exercises appear to be promoted to the real planned state instead of being discarded.
+### Remaining follow-up
 
-**Root cause area:** `discardDraft()` in `WeekEditor` was implemented using a `weekSnapshotRef` that captures workouts at editor-open time and restores them. However:
-- If the snapshot is captured *after* WorkoutDayEditor has already auto-saved edits to the DB (which is possible since WorkoutDayEditor `updateDb` calls are async), the snapshot may already contain the edited state, not the pre-edit state.
-- The `isDraft=false` write in `discardDraft` may be racing with the `isDraft=true` write from the mount `useEffect`.
-
-**Expected behavior:** Discard Draft must restore the week to the state it had *before the editor was opened*, and mark `isDraft=false`. If the week had no prior saved state (brand-new week), discard should leave it empty/unplanned.
-
-**Relevant code:**
-- `WeekEditor` component, especially `weekSnapshotRef`, the mount `useEffect`, `saveAndClose`, `discardDraft`, and `onClose` in App.tsx (~line 3930 area)
-- `TrainingWeek.isDraft` in `domain.ts`
-
-#### BUG-C — Today shows workout card for unplanned week
-
-**Symptom:** Today correctly says "Week 4 has not been planned" and shows "Plan Week 4", but underneath still displays a workout card titled "Upper 1" (or similar) with exercise details.
-
-**Root cause area:** The `weekLocked` guard was added but the condition for *rendering the workout card at all* may not be gating correctly when `selectedDay.exercises.length > 0` but `isDraft` is not set (i.e., exercises exist from a previous partial planning attempt that was never marked as a draft). The `isWeekDraft` helper only checks `isDraft === true`; if a week has exercises but `isDraft` was never set (e.g., legacy data or a failed save path), the lock doesn't trigger.
-
-**Expected behavior:** If `isWeekPlanned()` returns false for the current week, Today must hide the workout card completely. Only show: "Week N not planned", "Plan Week N", "Go Off Program".
-
-**Relevant code:**
-- `TodayScreen` in App.tsx (~line 443 area)
-- `isWeekDraft`, `isWeekPlanned`, `isWorkoutDayPlanned` helpers (~line 205 area)
-- `weekLocked` derivation and JSX gating in `TodayScreen`
-- `getCurrentWorkoutForUser` in trainingMath/db
+- Full manual gym-flow verification is still recommended for requirement caps, Discard Draft, and Today gating against real local user data.
 
 #### BUG-D — Recommendation scoping needs verification
 
@@ -184,7 +183,7 @@ All work is in `src/App.tsx` and `src/types/domain.ts`. Changes are staged but n
 
 ## Current Project Status
 
-- **Branch:** `v2-final-bugfix`
+- **Branch:** `v2.1-BugHotfix`
 - **Build:** Passing (`tsc -b && vite build`)
 - **Lint:** Passing (`eslint .`, no errors)
 

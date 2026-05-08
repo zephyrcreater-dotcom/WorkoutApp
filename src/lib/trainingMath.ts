@@ -565,14 +565,20 @@ export interface WeekReview {
   suggestions: string[];
 }
 
-export function isBlockWeekComplete(block: TrainingBlock, sessions: WorkoutSession[]): boolean {
-  const currentWeek = block.weeks.find((w) => w.weekNumber === block.currentWeek);
-  if (!currentWeek) return false;
-  return currentWeek.workouts.every((day) => {
+export function isTrainingWeekComplete(week: TrainingBlock["weeks"][number] | undefined, block: TrainingBlock, sessions: WorkoutSession[]): boolean {
+  if (!week) return false;
+  const trainingDays = week.workouts.filter((day) => day.status !== "rest");
+  if (!trainingDays.length) return false;
+  return trainingDays.every((day) => {
     const isSkipped = block.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped";
     const isCompleted = sessions.some((s) => s.workoutDayId === day.id && s.status === "completed");
     return isSkipped || isCompleted;
   });
+}
+
+export function isBlockWeekComplete(block: TrainingBlock, sessions: WorkoutSession[]): boolean {
+  const currentWeek = block.weeks.find((w) => w.weekNumber === block.currentWeek);
+  return isTrainingWeekComplete(currentWeek, block, sessions);
 }
 
 export function generateWeekReview(block: TrainingBlock, sessions: WorkoutSession[]): WeekReview {

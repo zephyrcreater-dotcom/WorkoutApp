@@ -58,16 +58,6 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   if (setFeel >= 5) {
     if (rpeDelta <= 0) {
       // Easy AND at/below target RPE → increase (or maintain if no practical increment)
-      const fatigueAllowsIncrease =
-        fatigueProfile.systemicFatigue <= 3 || setsCompletedThisExercise <= 1;
-      if (!fatigueAllowsIncrease) {
-        return {
-          recommendation: undefined,
-          fatigueFactor,
-          adjustedTargetWeight: roundToExerciseIncrement(fatiguedBase, exercise, unitLabel),
-          reason: "Set felt easy but this movement builds fatigue quickly — hold load and reassess next set.",
-        };
-      }
       const multiplier = rpeDelta <= -1.5 ? 1.025 : 1.0125;
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * multiplier, exercise, unitLabel);
       if (suggestedWeight <= currentWeight) {
@@ -108,16 +98,6 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   if (setFeel === 4) {
     if (rpeDelta < 0) {
       // Slightly easy AND below target RPE → small increase
-      const fatigueAllowsIncrease =
-        fatigueProfile.systemicFatigue <= 3 || setsCompletedThisExercise <= 1;
-      if (!fatigueAllowsIncrease) {
-        return {
-          recommendation: undefined,
-          fatigueFactor,
-          adjustedTargetWeight: roundToExerciseIncrement(fatiguedBase, exercise, unitLabel),
-          reason: "Set felt slightly easy but fatigue is building — hold load for now.",
-        };
-      }
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 1.0125, exercise, unitLabel);
       if (suggestedWeight <= currentWeight) {
         return buildMaintain({

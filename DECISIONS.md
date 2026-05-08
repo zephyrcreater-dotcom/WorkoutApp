@@ -61,6 +61,7 @@
 - Historical blocks are currently represented as archived `Program` records.
 - Programs include `changeLog` for generation/edit/duplication history.
 - Blocks include `priorityExerciseIds` in addition to display names.
+- Week planning uses `TrainingWeek.isDraft` plus `TrainingWeek.savedWorkoutsBeforeDraft` as the single source of truth for draft vs saved state. Draft workouts are not trainable until Save Week clears the draft metadata.
 - Split favorites are stored as `favoriteUserIds` on `SplitTemplate`.
 - Planned set prescriptions are now future-ready with optional set number, rep range, target RIR, and percentage-of-top-set fields.
 

@@ -54,6 +54,7 @@ function applyCursor(block: TrainingBlock, entry?: SequenceEntry, completedIds: 
   const completedSet = new Set(block.completedWorkoutDayIds);
   const skippedSet = new Set(block.skippedWorkoutDayIds);
   block.nextWorkoutDayId = sequence.slice(activeIndex + 1).find((item) => !isDone(item, completedSet, skippedSet))?.day.id;
+  block.status = entry ? "active" : "completed";
 }
 
 export function syncActiveBlockProgress(block: TrainingBlock, completedSessions: WorkoutSession[] = []): BlockWorkoutCursor | undefined {

@@ -1,40 +1,50 @@
 # ROADMAP.md
 
-## Codex V2 Final Stabilization — Next Phase
+## Codex V2 Final Stabilization — Current Status
 
 **Goal:** Resolve all blocker bugs before beginning Training Intelligence v1 / Weight Estimator v1.
 
 ### Priority order
 
 1. **Fix BUG-A — Choose For Me requirement cap enforcement**
+   - Status: Fixed in code; needs real-data manual verification.
    - `chooseForMe()` in `WorkoutDayEditor` must never exceed `req.requiredExerciseCount`.
    - `programGenerator.ts` must respect `SplitDayRequirement` slots, not just `muscleGroups`.
    - Extras require explicit user action; Choose For Me never auto-adds them.
    - Verification: requirements stay at or below cap after any generated plan.
 
 2. **Fix BUG-B — WeekEditor Discard Draft snapshot timing**
-   - Snapshot must be captured before any async `updateDb` edit fires.
-   - Consider using an `isMountedRef` or passing the week as an immutable snapshot prop.
-   - Discard must write snapshot back to DB + `isDraft=false`.
+   - Status: Fixed in code; needs real-data manual verification.
+   - `TrainingWeek.savedWorkoutsBeforeDraft` is captured before draft edits/copying.
+   - Discard restores that saved baseline or empties an unsaved week, then clears draft metadata.
    - Verification: add exercises, click Discard Draft, exercises are gone.
 
 3. **Fix BUG-C — Today hides workout card for unplanned weeks**
-   - `weekLocked` should use `!isWeekPlanned(todayPlan?.week)` OR `isWeekDraft(...)`, not just `isDraft`.
-   - `isWeekPlanned` already exists; wire it into TodayScreen.
+   - Status: Fixed in code; needs real-data manual verification.
+   - `weekLocked` uses `!isWeekPlanned(todayPlan?.week)` and `isWeekDraft(...)`.
    - Verification: week with exercises but `isDraft` not set → no workout card shown.
 
-4. **Verify BUG-D — Recommendation scoping and setAdjustment correctness**
-   - Confirm `isOnSuggestionTarget` hides suggestion on non-target sets.
-   - Confirm setRating=5 + RPE ≤ target never recommends decreasing.
+4. **Add direct planned-exercise swap/edit controls**
+   - Status: Fixed in code; needs manual verification.
+   - Keep the working Choose For Me cap enforcement intact.
+   - `WorkoutDayEditor` now allows single-exercise swap without deleting the whole day.
+   - Preserve sets/reps/RPE when swapping where reasonable.
 
-5. **Verify BUG-E — Set tapping / Update Set mode**
-   - Confirm `setSelectedSetIndex(null)` clears stale edit mode after normal log.
+5. **Debug Easy/5 recommendations and manual weight carry-forward**
+   - Status: Fixed in code; needs manual verification.
+   - Use the previous actual set as the next-set baseline unless a planned/recommended target set weight exists.
+   - Recommendation identity should follow source set plus target set.
+   - Confirm Easy/5 produces increase-or-maintain, including after prior applied decreases.
 
-6. **Verify BUG-F — Continuous loop week copying**
-   - Confirm Upper exercises do not copy into Lower days in continuous-loop blocks.
+6. **Fix week planned/completed truth and end-of-block state**
+   - Status: Fixed in code; needs manual verification.
+   - Empty week shells must stay unplanned.
+   - Last week/day of a block must not trigger Week `N+1` planning prompts past `block.lengthWeeks`.
+   - Show Block Complete review/archive/repeat/new-block actions instead.
 
 7. **After all 6 resolved: Training Intelligence v1 / Weight Estimator v1**
-   - See "V2 Next Iteration" section below for full scope.
+   - Next step after code merge: manual verification of the V2 stabilization scenarios.
+   - Only begin V3 after the stabilization checks pass and no workout-blocking bug remains.
 
 ---
 

@@ -424,6 +424,7 @@ export interface TrainingWeek {
   plannedVolume: Partial<Record<MuscleGroup, number>>;
   notes?: string;
   isDraft?: boolean;
+  savedWorkoutsBeforeDraft?: WorkoutDay[];
 }
 
 export interface WorkoutDay {
@@ -653,6 +654,7 @@ export interface Recommendation {
   action?: {
     exerciseId?: ID;
     setId?: ID;
+    targetPlannedSetId?: ID;
     targetSetNumber?: number;
     suggestedWeight?: number;
     suggestedReps?: number;
