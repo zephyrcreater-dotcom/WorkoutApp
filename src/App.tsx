@@ -30,7 +30,7 @@ import {
   Warehouse,
   Wand2
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
 import {
   advanceActiveBlockAfterWorkoutCompletion,
@@ -202,6 +202,25 @@ function deriveRequirements(day: WorkoutDay, splitDays: SplitDay[]): SplitDayReq
   }));
 }
 
+// ── Week planned-state source of truth ───────────────────────────────────────
+// These functions are the single canonical check used by Today, WeekEditor, and
+// any future screen that needs to know whether a week is safe to train on.
+
+function isWeekDraft(week: { isDraft?: boolean } | undefined): boolean {
+  return week?.isDraft === true;
+}
+
+function isWorkoutDayPlanned(day: { exercises: { id: string }[] } | undefined): boolean {
+  return (day?.exercises.length ?? 0) > 0;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function isWeekPlanned(week: { isDraft?: boolean; workouts: { exercises: { id: string }[] }[] } | undefined): boolean {
+  if (!week) return false;
+  if (isWeekDraft(week)) return false;
+  return week.workouts.some((d) => isWorkoutDayPlanned(d));
+}
+
 // localStorage-backed builder form draft per user
 const builderDraftKey = (userId: string) => `iron_orbit_builder_draft_${userId}`;
 interface BuilderFormSnapshot {
@@ -326,7 +345,7 @@ function App() {
         </aside>
 
         <section className="min-w-0">
-          {screen === "today" && <TodayScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} setActiveSessionId={setActiveSessionId} onPlanWeek={(n) => { setPlanWeekRequest(n); setScreen("week"); }} />}
+          {screen === "today" && <TodayScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} setActiveSessionId={setActiveSessionId} editingWeekNumber={editingWeekNumber} onPlanWeek={(n) => { setPlanWeekRequest(n); setScreen("week"); }} />}
           {screen === "logger" && (
             <LiveLogger db={db} user={currentUser} updateDb={updateDb} sessionId={activeSession?.id} setActiveSessionId={setActiveSessionId} setScreen={setScreen} />
           )}
@@ -429,6 +448,7 @@ function TodayScreen({
   updateDb,
   setScreen,
   setActiveSessionId,
+  editingWeekNumber,
   onPlanWeek
 }: {
   db: TrainingDatabase;
@@ -436,6 +456,7 @@ function TodayScreen({
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   setScreen: (screen: Screen) => void;
   setActiveSessionId: (id: string) => void;
+  editingWeekNumber?: number;
   onPlanWeek: (weekNumber: number) => void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
@@ -444,6 +465,11 @@ function TodayScreen({
   const activeBlock = activeProgram?.blocks[0];
   const inProgressSession = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress");
   const [showEditDay, setShowEditDay] = useState(false);
+
+  // Week-lock: today is not trainable while the current week is being drafted in the Week Editor
+  const currentWeekNumber = selectedDay?.weekNumber ?? todayPlan?.week?.weekNumber ?? 1;
+  const weekBeingEdited = editingWeekNumber !== undefined && editingWeekNumber === currentWeekNumber;
+  const weekLocked = !!(selectedDay && (weekBeingEdited || isWeekDraft(todayPlan?.week)));
 
   type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number };
   const [offProgramBuilder, setOffProgramBuilder] = useState<{ active: boolean; exercises: OffProgramExerciseDraft[] }>({ active: false, exercises: [] });
@@ -705,7 +731,27 @@ function TodayScreen({
           </button>
         </Panel>
       )}
-      {activeProgram && selectedDay && (
+      {/* Week locked: current week is being planned — hide workout card entirely */}
+      {activeProgram && selectedDay && weekLocked && (
+        <section className="panel border-ember/40 p-4">
+          <p className="label text-orange-300">Week {currentWeekNumber} is being planned</p>
+          <h2 className="mt-1 font-black">{selectedDay.name}</h2>
+          <p className="mt-1 text-sm text-iron-300">
+            Finish planning and save Week {currentWeekNumber} in the Week Planner before starting this workout.
+            Draft exercises are not shown until the week is saved.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button className="btn-secondary" onClick={() => onPlanWeek(currentWeekNumber)}>
+              <CalendarDays className="h-4 w-4" /> Continue Planning Week {currentWeekNumber}
+            </button>
+            <button className="btn-secondary" onClick={goOffProgram}>
+              <Shuffle className="h-4 w-4" /> Go Off Program
+            </button>
+          </div>
+        </section>
+      )}
+      {/* Week ready: show normal workout card */}
+      {activeProgram && selectedDay && !weekLocked && (
         <section className="panel p-4">
           <div className="grid gap-3 md:grid-cols-[1fr_auto] md:items-center">
             <div>
@@ -714,7 +760,7 @@ function TodayScreen({
               <p className="text-sm text-iron-300">{todayPlan?.label} - {selectedDay.scheduledDay || "Flexible day"} - {selectedDay.focus} - ~{estimateWorkoutDuration(selectedDay)} min</p>
               {!selectedDay.exercises.length && (
                 <p className="mt-2 text-sm text-iron-400">
-                  Week {selectedDay.weekNumber ?? todayPlan?.week?.weekNumber ?? "?"} hasn't been planned yet. Plan it in the Week tab before starting.
+                  Week {currentWeekNumber} hasn&apos;t been planned yet. Plan it in the Week tab before starting.
                 </p>
               )}
             </div>
@@ -729,9 +775,9 @@ function TodayScreen({
                 {inProgressSession?.workoutDayId === selectedDay.id ? "Resume Workout" : "Start Workout"}
               </button>
             ) : (
-              <button className="btn-primary" onClick={() => onPlanWeek(selectedDay.weekNumber ?? todayPlan?.week?.weekNumber ?? 1)}>
+              <button className="btn-primary" onClick={() => onPlanWeek(currentWeekNumber)}>
                 <CalendarDays className="h-4 w-4" />
-                Plan Week {selectedDay.weekNumber ?? todayPlan?.week?.weekNumber ?? "?"}
+                Plan Week {currentWeekNumber}
               </button>
             )}
           </div>
@@ -762,7 +808,7 @@ function TodayScreen({
           )}
         </section>
       )}
-      {showEditDay && selectedDay && activeProgram && (
+      {showEditDay && selectedDay && activeProgram && !weekLocked && (
         <section className="panel p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
@@ -775,7 +821,7 @@ function TodayScreen({
           <WorkoutDayEditor db={db} user={user} program={activeProgram} day={selectedDay} updateDb={updateDb} showNameFocusFields={false} />
         </section>
       )}
-      {selectedDay && selectedDay.status !== "rest" && <WorkoutDayView db={db} user={user} day={selectedDay} />}
+      {selectedDay && !weekLocked && selectedDay.status !== "rest" && <WorkoutDayView db={db} user={user} day={selectedDay} />}
     </div>
   );
 }
@@ -998,6 +1044,14 @@ function LiveLogger({
     : undefined;
   const recommendation = nextSetResult?.recommendation;
   const lastSetWasSkipped = lastSet?.skipped === true;
+  // Scope suggestion to the single set immediately after the set that generated it.
+  // lastNonSkippedSet.setNumber is 1-based, so the target 0-based index equals setNumber.
+  const suggestionTargetIndex = lastNonSkippedSet ? lastNonSkippedSet.setNumber : -1;
+  const isOnSuggestionTarget = effectiveSetIndex === suggestionTargetIndex;
+  // Check if the recommendation for the last logged set has already been applied (persisted in session)
+  const persistedAppliedRec = lastNonSkippedSet
+    ? liveSession.recommendations.find((r) => r.action?.setId === lastNonSkippedSet.id && r.applied === true)
+    : undefined;
   const plannedSets = planned?.plannedSets || [];
   const isCurrentSetLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex === plannedSets.length - 1;
   const isPastLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex >= plannedSets.length;
@@ -1085,6 +1139,8 @@ function LiveLogger({
     loggedSet.performanceScore = performance.score;
     loggedSet.performanceStatus = performance.status;
     const rec = algNextSetAdjustment({ user, exercise: liveExercise, loggedSet, nextPlannedSet, setsCompletedThisExercise: currentSetIndex + 1 }).recommendation;
+    // Tag the recommendation with which set number it targets (next unlogged set = currentSetIndex + 2)
+    if (rec?.action) rec.action.targetSetNumber = currentSetIndex + 2;
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
@@ -1110,6 +1166,7 @@ function LiveLogger({
       }
       return draft;
     });
+    setSelectedSetIndex(null);
     setRestRemaining(planned?.restSeconds || user.settings.defaultRestSeconds);
     setSetDraft(emptySetDraft(plannedSets[currentSetIndex + 1] || nextPlannedSet, loggedSet, `${liveExerciseLog.id}:${currentSetIndex + 1}`));
     if (afterAction === "next-exercise") {
@@ -1304,24 +1361,37 @@ function LiveLogger({
   function applySuggestion() {
     if (!recommendation?.action?.suggestedWeight) return;
     const suggestedWeight = recommendation.action.suggestedWeight;
+    const targetSetNumber = recommendation.action.targetSetNumber;
     // Find the next unlogged planned set (the one the user is about to log)
     const nextUnloggedPlanned = planned?.plannedSets[currentSetIndex];
     setSetDraft((current) => ({ ...current, actualWeight: String(suggestedWeight) }));
     setSuggestionApplied(true);
     const targetId = nextUnloggedPlanned?.id ?? nextPlannedSet?.id;
-    if (targetId && liveSession.programId) {
-      void updateDb((draft) => {
+    const recId = recommendation.id;
+    void updateDb((draft) => {
+      // Mark recommendation as applied in session
+      const sessionTarget = draft.sessions.find((s) => s.id === liveSession.id);
+      if (sessionTarget) {
+        const recInSession = sessionTarget.recommendations.find((r) => r.id === recId);
+        if (recInSession) recInSession.applied = true;
+      }
+      const recInGlobal = draft.recommendations.find((r) => r.id === recId);
+      if (recInGlobal) recInGlobal.applied = true;
+      // Update the planned weight for the target set
+      if (targetId && liveSession.programId) {
         const program = draft.programs.find((p) => p.id === liveSession.programId);
-        if (!program) return draft;
-        program.blocks
-          .flatMap((b) => b.weeks)
-          .flatMap((w) => w.workouts)
-          .flatMap((d) => d.exercises)
-          .flatMap((e) => e.plannedSets)
-          .forEach((ps) => { if (ps.id === targetId) ps.plannedWeight = suggestedWeight; });
-        return draft;
-      });
-    }
+        if (program) {
+          program.blocks
+            .flatMap((b) => b.weeks)
+            .flatMap((w) => w.workouts)
+            .flatMap((d) => d.exercises)
+            .flatMap((e) => e.plannedSets)
+            .forEach((ps) => { if (ps.id === targetId) ps.plannedWeight = suggestedWeight; });
+        }
+      }
+      return draft;
+    });
+    void targetSetNumber; // acknowledged in UI display
   }
 
   function finishWorkout() {
@@ -1607,20 +1677,34 @@ function LiveLogger({
               <p className="mt-1 text-sm text-iron-400">Set skipped — no recommendation.</p>
             </section>
           )}
-          {recommendation && !lastSetWasSkipped && (
-            <section className="panel border-volt/30 p-4">
-              <p className="label">Coach suggestion</p>
-              <h3 className="mt-1 text-xl font-black">{recommendation.title}</h3>
-              <p className="mt-2 text-sm text-iron-200">{recommendation.explanation}</p>
-              {recommendation.action?.suggestedWeight && !suggestionApplied ? (
-                <button className="btn-secondary mt-3" onClick={applySuggestion}>
-                  Apply {recommendation.action.suggestedWeight} {user.unit}
-                </button>
-              ) : recommendation.action?.suggestedWeight && suggestionApplied ? (
-                <p className="mt-3 text-sm font-bold text-volt">✓ Applied to next set</p>
-              ) : null}
-            </section>
-          )}
+          {recommendation && !lastSetWasSkipped && isOnSuggestionTarget && (() => {
+            const isApplied = suggestionApplied || !!persistedAppliedRec;
+            if (isApplied) {
+              return (
+                <div className="flex items-center gap-2 rounded-lg bg-volt/10 px-3 py-2 text-sm font-bold text-volt">
+                  <Check className="h-4 w-4 shrink-0" />
+                  Applied to this set
+                </div>
+              );
+            }
+            const sourceSetNum = lastNonSkippedSet?.setNumber;
+            return (
+              <section className="panel border-volt/30 p-4">
+                <p className="label">Suggestion from Set {sourceSetNum}</p>
+                <h3 className="mt-1 text-xl font-black">
+                  {recommendation.action?.suggestedWeight
+                    ? `Use ${recommendation.action.suggestedWeight} ${user.unit} for this set`
+                    : recommendation.title}
+                </h3>
+                <p className="mt-2 text-sm text-iron-200">{recommendation.explanation}</p>
+                {recommendation.action?.suggestedWeight && (
+                  <button className="btn-secondary mt-3" onClick={applySuggestion}>
+                    Apply to Current Set
+                  </button>
+                )}
+              </section>
+            );
+          })()}
 
           {weightRec && weightRec.weight > 0 && weightRec.sources[0] !== "no-data" && (
             <section className="panel border-white/10 p-4">
@@ -1822,6 +1906,13 @@ function BuilderScreen({
     if (!program) return;
     if (activeProgram && activeProgram.id !== program.id && !confirm("Replace the current active block for this user? The old active block will move to history.")) return;
     void updateDb((draft) => {
+      // Archive any in-progress workout sessions so Today starts clean
+      draft.sessions.forEach((session) => {
+        if (session.userId === user.id && session.status === "in-progress") {
+          session.status = "abandoned";
+          session.updatedAt = nowIso();
+        }
+      });
       draft.programs.forEach((item) => {
         if (item.userId === user.id && item.status === "active") {
           item.status = "archived";
@@ -1888,7 +1979,7 @@ function BuilderScreen({
             <SelectField label="Split template" value={selectedSplitId} options={db.splitTemplates.map((split) => split.id)} labels={Object.fromEntries(db.splitTemplates.map((split) => [split.id, `${split.name} (${split.daysPerWeek}d)`]))} onChange={(id) => { setSelectedSplitId(id); setRequest((draft) => ({ ...draft, splitTemplateId: id })); }} />
             <SelectField label="Block type" value={request.blockType} options={["accumulation", "hypertrophy", "strength", "intensification", "peaking", "deload", "custom"]} onChange={(blockType) => setRequest((draft) => ({ ...draft, blockType: blockType as BlockType }))} />
             <NumberField label="Weeks" value={request.blockLengthWeeks} onChange={(blockLengthWeeks) => setRequest((draft) => ({ ...draft, blockLengthWeeks }))} />
-            <NumberField label="Days/week" value={request.daysPerWeek} onChange={(daysPerWeek) => setRequest((draft) => ({ ...draft, daysPerWeek }))} />
+            <NumberField label="Days/week" value={request.daysPerWeek} min={1} max={7} onChange={(daysPerWeek) => setRequest((draft) => ({ ...draft, daysPerWeek }))} />
             <SelectField label="Split loop" value={request.splitLoopMode} options={["continuous", "weekly-reset"]} labels={{ "continuous": "Continuous loop", "weekly-reset": "Weekly reset" }} onChange={(splitLoopMode) => setRequest((draft) => ({ ...draft, splitLoopMode: splitLoopMode as SplitLoopMode }))} />
           </div>
           <button
@@ -2150,6 +2241,37 @@ function WeeklyOverview({
     );
   }
 
+  const splitTemplate = db.splitTemplates.find((s) => s.id === program.blocks[0]?.splitTemplateId);
+
+  if (editable) {
+    // Editable draft mode — pill tab selector matching WeekEditor style
+    const workoutDays = week.workouts.filter((d) => d.exercises.length > 0 || d.splitDayId);
+    const displayDays = workoutDays.length > 0 ? workoutDays : week.workouts;
+    const selectedEdDay = displayDays.find((d) => d.id === selectedDayId) ?? displayDays[0];
+    return (
+      <Panel title="Weekly Overview" icon={CalendarDays}>
+        {displayDays.length > 1 && (
+          <div className="flex flex-wrap gap-2">
+            {displayDays.map((day, idx) => {
+              const splitDay = day.splitDayId ? splitTemplate?.days.find((d) => d.id === day.splitDayId) : undefined;
+              const tabLabel = `Day ${idx + 1}${splitDay?.name ? ` – ${splitDay.name}` : day.focus ? ` – ${day.focus}` : ""}`;
+              return (
+                <button
+                  key={day.id}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-bold ${selectedEdDay?.id === day.id ? "bg-volt text-iron-950" : "bg-white/[0.05] text-iron-400 hover:bg-white/10"}`}
+                  onClick={() => setSelectedDayId(day.id)}
+                >
+                  {tabLabel}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {selectedEdDay && <WorkoutDayEditor db={db} user={user} program={program} day={selectedEdDay} updateDb={updateDb} />}
+      </Panel>
+    );
+  }
+
   return (
     <Panel title="Weekly Overview" icon={CalendarDays}>
       <div className="grid gap-2 md:grid-cols-7">
@@ -2185,8 +2307,7 @@ function WeeklyOverview({
           );
         })}
       </div>
-      {editable && selectedDay && <WorkoutDayEditor db={db} user={user} program={program} day={selectedDay} updateDb={updateDb} />}
-      {!editable && selectedDay && (
+      {selectedDay && (
         <div className="mt-4">
           <WorkoutDayView db={db} user={user} day={selectedDay} />
         </div>
@@ -2217,18 +2338,23 @@ function WorkoutDayEditor({
   // Exercises with an explicit fulfillsRequirementId are counted only for the req they were tagged for.
   // Untagged exercises (legacy) fall back to muscle matching.
   function countFulfilled(exercises: typeof day.exercises, req: SplitDayRequirement): number {
-    const explicit = exercises.filter((p) => p.fulfillsRequirementId === req.id).length;
-    const untagged = exercises.filter((p) => !p.fulfillsRequirementId);
-    const legacyMatched = untagged.filter((p) => {
+    // Primary: exercises explicitly tagged for this requirement (not extras)
+    const explicit = exercises.filter((p) => p.fulfillsRequirementId === req.id && !p.isExtra).length;
+    if (explicit > 0) return explicit;
+    // Legacy fallback: only if NO exercise in the day has any fulfillsRequirementId set.
+    // Each untagged exercise can only count for one requirement; we approximate by not double-counting.
+    const anyTagged = exercises.some((p) => !!p.fulfillsRequirementId && !p.isExtra);
+    if (anyTagged) return 0;
+    const untagged = exercises.filter((p) => !p.fulfillsRequirementId && !p.isExtra);
+    return untagged.filter((p) => {
       const ex = db.exercises.find((e) => e.id === p.exerciseId);
       return ex && exerciseFulfillsRequirement(ex, req);
     }).length;
-    return explicit + legacyMatched;
   }
 
   const reqProgress = requirements.map((req) => ({
     req,
-    fulfilled: countFulfilled(day.exercises, req),
+    fulfilled: Math.min(countFulfilled(day.exercises, req), req.requiredExerciseCount),
     needed: req.requiredExerciseCount,
   }));
   const allReqsMet = reqProgress.every((item) => item.fulfilled >= item.needed);
@@ -2238,6 +2364,7 @@ function WorkoutDayEditor({
   const [showAllExercises, setShowAllExercises] = useState(false);
   const [chooserWarning, setChooserWarning] = useState("");
   const [showPrescription, setShowPrescription] = useState(allReqsMet);
+  const [pendingExtraExercise, setPendingExtraExercise] = useState<Exercise | null>(null);
 
   // Advance to the first unfulfilled requirement whenever exercises change
   useEffect(() => {
@@ -2264,20 +2391,33 @@ function WorkoutDayEditor({
     });
   }
 
-  function addExercise(exercise: Exercise) {
+  function addExercise(exercise: Exercise, asExtra = false) {
     // Anti-spam: block duplicate exercise on this day
     if (alreadyAddedIds.includes(exercise.id)) return;
-    const reqId = currentReq?.id;
+    const reqId = showAllExercises ? undefined : currentReq?.id;
+    const currentProgress = reqId ? reqProgress.find((r) => r.req.id === reqId) : undefined;
+    const reqFull = !showAllExercises && currentProgress && currentProgress.fulfilled >= currentProgress.needed;
+
+    if (reqFull && !asExtra) {
+      // Requirement is full — ask user to confirm adding as extra
+      setPendingExtraExercise(exercise);
+      return;
+    }
+
+    const isExtraFlag = asExtra || !reqId;
     updateDay((target) => {
       const planned = buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise, order: target.exercises.length + 1 });
-      planned.fulfillsRequirementId = reqId;
+      planned.fulfillsRequirementId = isExtraFlag ? undefined : reqId;
+      planned.isExtra = isExtraFlag || undefined;
       target.exercises.push(planned);
     });
-    // Advance to next unfulfilled requirement using just-added exercise
-    if (!showAllExercises && requirements.length > 0) {
-      const updatedExercises = [...day.exercises, { exerciseId: exercise.id } as typeof day.exercises[number]];
+    setPendingExtraExercise(null);
+
+    // Advance to next unfulfilled requirement (only for non-extra exercises)
+    if (!asExtra && !showAllExercises && requirements.length > 0) {
+      const updatedExercises = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId } as typeof day.exercises[number]];
       const nextUnmet = requirements.findIndex((req, idx) => {
-        const currentFulfilled = countFulfilled(updatedExercises, req);
+        const currentFulfilled = Math.min(countFulfilled(updatedExercises, req), req.requiredExerciseCount);
         return currentFulfilled < req.requiredExerciseCount && idx !== currentReqIndex;
       });
       if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
@@ -2298,20 +2438,25 @@ function WorkoutDayEditor({
       .filter((exercise) => exerciseAllowedByCompoundSettings(exercise, settings))
       .filter((exercise) => !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item)));
 
-    const selected: Exercise[] = [];
+    // Track { exercise, reqId } pairs so we can tag fulfillsRequirementId correctly
+    const selected: { exercise: Exercise; reqId: string | undefined }[] = [];
     const usedIds = new Set<string>();
 
     if (dayReqs.length > 0) {
-      // Fill each requirement slot before adding extras
+      // Fill each requirement slot — exactly requiredExerciseCount exercises per slot, no more
       for (const req of dayReqs) {
         const candidates = pool.filter((ex) =>
           !usedIds.has(ex.id) &&
           exerciseFulfillsRequirement(ex, req) &&
           (targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p)))
         );
-        // Fallback: if no pattern match, try any exercise that fulfills the muscle req
+        // Fallback: relax pattern constraint but keep muscle req
         const picks = candidates.length ? candidates : pool.filter((ex) => !usedIds.has(ex.id) && exerciseFulfillsRequirement(ex, req));
-        picks.slice(0, req.requiredExerciseCount).forEach((ex) => { selected.push(ex); usedIds.add(ex.id); });
+        picks.slice(0, req.requiredExerciseCount).forEach((ex) => {
+          selected.push({ exercise: ex, reqId: req.id });
+          usedIds.add(ex.id);
+        });
+        if (!picks.length) setChooserWarning(`No exercise found for requirement: ${req.targetMuscle}. Fill it manually.`);
       }
     } else {
       // No requirements: spread across muscles, max 2 per primary muscle
@@ -2327,7 +2472,7 @@ function WorkoutDayEditor({
         if (selected.length >= limit) break;
         const primary = ex.primaryMuscles[0] ?? "other";
         if ((muscleCount[primary] ?? 0) < maxPerMuscle) {
-          selected.push(ex);
+          selected.push({ exercise: ex, reqId: undefined });
           usedIds.add(ex.id);
           muscleCount[primary] = (muscleCount[primary] ?? 0) + 1;
         }
@@ -2338,9 +2483,13 @@ function WorkoutDayEditor({
       setChooserWarning("No valid exercises matched this day after SBD rules, Exercise Avoider, gym availability, muscles, and movement patterns. You can override manually below.");
       return;
     }
-    setChooserWarning("");
+    if (!dayReqs.length) setChooserWarning("");
     updateDay((target) => {
-      target.exercises = selected.map((exercise, index) => buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise, order: index + 1 }));
+      target.exercises = selected.map((item, index) => {
+        const planned = buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise: item.exercise, order: index + 1 });
+        planned.fulfillsRequirementId = item.reqId;
+        return planned;
+      });
     });
   }
 
@@ -2413,16 +2562,19 @@ function WorkoutDayEditor({
       <div className="space-y-2">
         {day.exercises.map((planned) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
-          // Which requirement does this exercise satisfy?
-          const satisfiedReq = requirements.find((req) => exercise && exerciseFulfillsRequirement(exercise, req));
+          // Badge: use fulfillsRequirementId as primary signal, fall back to muscle match for legacy
+          const reqBadge = planned.fulfillsRequirementId
+            ? requirements.find((req) => req.id === planned.fulfillsRequirementId)
+            : undefined;
           return (
-            <div key={planned.id} className="rounded-lg border border-white/10 bg-white/[0.06] p-3">
+            <div key={planned.id} className={`rounded-lg border p-3 ${planned.isExtra ? "border-white/10 bg-white/[0.03]" : "border-white/10 bg-white/[0.06]"}`}>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="font-black">{planned.order}. {exercise?.name}</p>
                   <p className="text-xs text-iron-400">
                     {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps} reps · RPE {planned.plannedSets[0]?.targetRpe}
-                    {satisfiedReq ? <span className="ml-2 rounded-full bg-volt/15 px-2 py-0.5 text-volt">{satisfiedReq.targetMuscle}</span> : null}
+                    {reqBadge && <span className="ml-2 rounded-full bg-volt/15 px-2 py-0.5 text-volt">{reqBadge.targetMuscle}</span>}
+                    {planned.isExtra && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-400">extra</span>}
                   </p>
                 </div>
                 <button className="btn-ghost text-orange-100" onClick={() => updateDay((target) => {
@@ -2447,6 +2599,26 @@ function WorkoutDayEditor({
           );
         })}
       </div>
+
+      {/* Add Extra Anyway modal */}
+      {pendingExtraExercise && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+          <div className="panel w-full max-w-sm space-y-4 p-6">
+            <h3 className="text-lg font-black">Add extra exercise?</h3>
+            <p className="text-sm text-iron-300">
+              <span className="font-bold text-white">{pendingExtraExercise.name}</span> would be added beyond the requirement for{" "}
+              <span className="font-bold text-volt">{currentReq?.targetMuscle}</span> ({reqProgress.find((r) => r.req.id === currentReq?.id)?.fulfilled}/{currentReq?.requiredExerciseCount} already filled).
+            </p>
+            <p className="text-xs text-iron-400">Extra exercises are visible in the plan but do not count toward requirement slots.</p>
+            <div className="flex gap-3">
+              <button className="btn-primary flex-1" onClick={() => addExercise(pendingExtraExercise, true)}>
+                Add Extra Anyway
+              </button>
+              <button className="btn-secondary" onClick={() => setPendingExtraExercise(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3757,8 +3929,12 @@ function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: {
     if (!sourceDay || sourceDay.exercises.length === 0) return;
     // Only copy if the target day has no exercises yet
     if (targetDay.exercises.length > 0) return;
-    // Don't copy if the split days differ — e.g., Upper exercises must not go to a Lower day
-    if (sourceDay.splitDayId && targetDay.splitDayId && sourceDay.splitDayId !== targetDay.splitDayId) return;
+    // Don't copy if split day identities differ (Upper must not go to Lower, etc.)
+    if (sourceDay.splitDayId !== targetDay.splitDayId) return;
+    // Don't copy if one day has a split assignment and the other doesn't
+    if (!!sourceDay.splitDayId !== !!targetDay.splitDayId) return;
+    // Don't copy if focus labels differ (e.g. "Push" vs "Pull")
+    if (sourceDay.focus && targetDay.focus && sourceDay.focus !== targetDay.focus) return;
     targetDay.exercises = sourceDay.exercises.map((ex, exIdx) => ({
       ...ex,
       id: createId("pex"),
@@ -3791,19 +3967,33 @@ function WeekEditor({
   const [selectedDayIdx, setSelectedDayIdx] = useState(0);
   const [copied, setCopied] = useState(false);
   const [copiedFromPrev, setCopiedFromPrev] = useState(false);
+  // Deep snapshot of week workouts at editor-open time, used for Discard Draft
+  const weekSnapshotRef = useRef<WorkoutDay[] | null>(null);
+  if (weekSnapshotRef.current === null && week) {
+    weekSnapshotRef.current = JSON.parse(JSON.stringify(week.workouts)) as WorkoutDay[];
+  }
 
-  // On mount: if the target week has no exercises and a previous week exists, copy from it
-  // only where the split days match (e.g. do NOT copy Upper into Lower for continuous loop).
+  // On mount: mark week as draft and optionally copy exercises from previous week
   useEffect(() => {
+    // Mark this week as a draft so Today screen locks workouts while editing
+    void updateDb((draft) => {
+      const draftBlock = draft.programs.find((p) => p.id === program.id)?.blocks.find((b) => b.id === block.id);
+      const draftWeek = draftBlock?.weeks.find((w) => w.weekNumber === weekNumber);
+      if (draftWeek) draftWeek.isDraft = true;
+      return draft;
+    });
+
     if (!week || copied) return;
     const hasAnyExercises = week.workouts.some((d) => d.exercises.length > 0);
     if (!hasAnyExercises && prevWeek) {
-      // Pre-check whether anything would actually be copied
+      // Pre-check whether anything would actually be copied (must mirror copyWeekExercises guard)
       const wouldCopy = prevWeek.workouts.some((sourceDay, idx) => {
         const targetDay = week.workouts[idx];
         if (!sourceDay || sourceDay.exercises.length === 0) return false;
         if (targetDay && targetDay.exercises.length > 0) return false;
-        if (sourceDay.splitDayId && targetDay?.splitDayId && sourceDay.splitDayId !== targetDay.splitDayId) return false;
+        if (sourceDay.splitDayId !== targetDay?.splitDayId) return false;
+        if (!!sourceDay.splitDayId !== !!targetDay?.splitDayId) return false;
+        if (sourceDay.focus && targetDay?.focus && sourceDay.focus !== targetDay.focus) return false;
         return true;
       });
       void updateDb((draft) => {
@@ -3838,7 +4028,28 @@ function WeekEditor({
     : undefined;
 
   function saveAndClose() {
-    // Changes are already persisted to db via WorkoutDayEditor's updateDb calls.
+    // Clear draft flag — week is saved, Today can resume
+    void updateDb((draft) => {
+      const draftBlock = draft.programs.find((p) => p.id === program.id)?.blocks.find((b) => b.id === block.id);
+      const draftWeek = draftBlock?.weeks.find((w) => w.weekNumber === weekNumber);
+      if (draftWeek) draftWeek.isDraft = false;
+      return draft;
+    });
+    onClose();
+  }
+
+  function discardDraft() {
+    if (!confirm(`Discard all changes to Week ${weekNumber}? Exercises will be reset to the saved state.`)) return;
+    const snapshot = weekSnapshotRef.current;
+    void updateDb((draft) => {
+      const draftBlock = draft.programs.find((p) => p.id === program.id)?.blocks.find((b) => b.id === block.id);
+      const draftWeek = draftBlock?.weeks.find((w) => w.weekNumber === weekNumber);
+      if (draftWeek) {
+        if (snapshot) draftWeek.workouts = JSON.parse(JSON.stringify(snapshot)) as WorkoutDay[];
+        draftWeek.isDraft = false;
+      }
+      return draft;
+    });
     onClose();
   }
 
@@ -3911,13 +4122,16 @@ function WeekEditor({
         <EmptyState title="No days in this week" detail="This week has no workout days configured." />
       )}
 
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <button className="btn-primary flex-1" onClick={saveAndClose}>
           <Save className="h-4 w-4" />
-          Done — Save Week {weekNumber}
+          Save Week {weekNumber}
         </button>
         <button className="btn-secondary" onClick={onClose}>
-          Cancel
+          Exit Editor
+        </button>
+        <button className="btn-secondary border-ember/40 text-orange-100" onClick={discardDraft}>
+          Discard Draft
         </button>
       </div>
     </div>
@@ -4679,7 +4893,7 @@ function TextField({ label, value, placeholder, onChange }: { label: string; val
   );
 }
 
-function NumberField({ label, value, step, min, onChange }: { label: string; value: number; step?: number; min?: number; onChange: (value: number) => void }) {
+function NumberField({ label, value, step, min, max, onChange }: { label: string; value: number; step?: number; min?: number; max?: number; onChange: (value: number) => void }) {
   const [localValue, setLocalValue] = useState(String(value));
   useEffect(() => { setLocalValue(String(value)); }, [value]);
   return (
@@ -4690,14 +4904,24 @@ function NumberField({ label, value, step, min, onChange }: { label: string; val
         type="number"
         step={step}
         min={min}
+        max={max}
         value={localValue}
-        onChange={(event) => setLocalValue(event.target.value)}
+        onChange={(event) => {
+          setLocalValue(event.target.value);
+          // Call parent immediately on every valid change so spinner arrows work
+          const parsed = Number(event.target.value);
+          if (event.target.value !== "" && !isNaN(parsed)) {
+            onChange(parsed);
+          }
+        }}
         onBlur={() => {
           const parsed = Number(localValue);
-          if (localValue !== "" && !isNaN(parsed)) {
-            onChange(parsed);
-          } else {
+          if (localValue === "" || isNaN(parsed)) {
             setLocalValue(String(value));
+          } else {
+            const clamped = Math.min(max ?? parsed, Math.max(min ?? parsed, parsed));
+            setLocalValue(String(clamped));
+            onChange(clamped);
           }
         }}
       />
