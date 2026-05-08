@@ -88,10 +88,51 @@
 
 ---
 
+## Exercise Families and Variations (Design Note)
+
+Exercises currently exist as a flat list. The planned long-term model is a **family/variation hierarchy**:
+
+### Concept
+- **Exercise family**: the canonical movement (e.g., "Bench Press", "Squat", "Row")
+- **Variation**: a specific implementation of the family (e.g., "Incline Barbell Bench Press", "Low Bar Squat", "Seated Cable Row")
+- Families share muscle targeting, pattern classification, and swap eligibility
+- Variations have specific equipment, grip, range-of-motion, and difficulty modifiers
+
+### Why It Matters
+- Exercise swaps can target the same family with a different variation (e.g., swap DB Bench for Incline BB Bench — same chest family)
+- Volume counting can aggregate across variations of the same family
+- Autoregulation and progressive overload can track family-level strength trends even when the athlete rotates variations
+- "Substitution" becomes "pick another variation from this family" rather than a hand-curated list
+
+### Data Model Sketch
+```typescript
+// On Exercise
+familyId?: ID;           // links to an ExerciseFamily
+variationKey?: string;   // e.g. "incline", "close-grip", "paused"
+
+// New domain type
+interface ExerciseFamily {
+  id: ID;
+  name: string;           // "Bench Press"
+  muscleGroup: MuscleGroup;
+  primaryMuscles: MuscleGroup[];
+  movementPatterns: MovementPattern[];
+  notes?: string;
+}
+```
+
+### Implementation Notes
+- `ExerciseFamily` entries should be seeded for the major compound movements first (SBD + row + OHP + pull)
+- Existing exercises can be retroactively linked via a normalization pass in `normalizeDatabase`
+- The swap UI in LiveLogger should eventually show same-family alternatives
+- Program generator can randomize across family variations for variety
+
+---
+
 ## Deferred Backlog (No Timeline)
 
 - Full public CSV importer (infrastructure exists in `src/lib/importers/`, not yet wired to UI fully)
-- Exercise variation grouping
+- Exercise variation grouping (see Exercise Families section above)
 - Gym-specific conversion learning polish
 - Normalized vs observed e1RM charting
 - Advanced fatigue modeling

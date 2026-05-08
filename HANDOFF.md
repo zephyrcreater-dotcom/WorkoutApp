@@ -10,17 +10,42 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ## Current Project Status
 
-- **Branch:** `v2-gym-test-hotfix`
+- **Branch:** `v2-gym-test-hotfix-2`
 - **Build:** Passing (`tsc -b && vite build`)
 - **Lint:** Passing (`eslint .`, no errors)
 
-Modified files in current working tree (from base):
+Modified files from `v2-gym-test-hotfix`:
 - `src/App.tsx`
 - `src/lib/algorithms/setAdjustment.ts`
-- `src/lib/programAnalysis.ts`
-- `src/lib/programmingLogic.ts`
-- `src/lib/trainingMath.ts`
-- `src/types/domain.ts`
+- `src/styles.css`
+
+---
+
+## V2 Gym-Test Hotfix 2 Changes
+
+**CSS / Layout:**
+- `styles.css`: `overflow-x: hidden` → `overflow-x: clip` on `html, body, #root`. Fixes vertical scroll being blocked on some browsers.
+
+**Today Screen:**
+- "Edit Current Day" only shown when `selectedDay.exercises.length > 0` (week must be planned).
+- No-block state: "Go Off Program" renamed → "Start Individual Workout".
+- "Go Off Program" / "Start Individual Workout" now opens an **Off-Program Builder** instead of immediately creating a blank session. Builder: pick exercises, set targets (sets/reps/RPE), see last-logged weight, then Start. "Start Empty Session" still available.
+
+**Logger:**
+- Skip Set button opens a reason picker (chips: Fatigue, Pain, Poor form, Time, Other + skip without reason). Reason stored in set notes.
+- Set lineup: all logged sets (including skipped) are now tappable. Tapping a skipped set pre-fills from the planned set targets.
+- `setRating=5` can no longer trigger a load reduction. Guards added to `missedReps` and `formPoor` branches in `setAdjustment.ts`.
+
+**Week Tab:**
+- `planningWeekNumber` lifted to App-level `editingWeekNumber` state. Week Editor persists across tab navigation.
+- Day tabs in Week Editor now use `Day N – SplitName` format (position-indexed, always unique).
+- Each day card now has an "Edit" button (hidden for completed sessions) that opens an inline WorkoutDayEditor.
+
+**Library:**
+- Custom exercises (owned by user) now show a pencil Edit button. Clicking pre-fills the Custom Exercise form. "Add Exercise" becomes "Save Changes" while editing.
+
+**Block Builder:**
+- Removed the "Flow" info panel (Library > Block > Today). Not useful in practice.
 
 ---
 

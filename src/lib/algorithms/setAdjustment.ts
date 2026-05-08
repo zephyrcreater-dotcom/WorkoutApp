@@ -61,14 +61,16 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     title = "Reduce next set";
     reason = `Actual RPE was ${Math.abs(rpeDelta).toFixed(1)} above target, or set feel was 2/5. Reduce by ~3–5%.`;
     shouldReturn = true;
-  } else if (missedReps && rpeDelta < 1) {
-    // Reps short but RPE manageable — likely technique, not fatigue
+  } else if (missedReps && rpeDelta < 1 && setFeel < 5) {
+    // Reps short but RPE manageable — likely technique, not fatigue.
+    // Skipped when setFeel=5: athlete rated it easy despite short reps; hold and reassess.
     multiplier = 0.975;
     priority = "low";
     title = "Slight reduction or hold";
     reason = "Reps were below plan but RPE was manageable. Small reduction or hold — check setup and execution.";
     shouldReturn = true;
-  } else if (formPoor) {
+  } else if (formPoor && setFeel < 5) {
+    // Skip form-reduction when feel is 5 — athlete may have been fine and just tapped wrong.
     multiplier = 0.975;
     title = "Protect technique";
     reason = "Form quality was poor. Hold or slightly reduce load — prioritize movement pattern over load.";

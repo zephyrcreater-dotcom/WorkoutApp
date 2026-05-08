@@ -89,6 +89,21 @@
 - `recommendNextWeekAdjustments()` stub added to trainingMath.ts.
 - Zero-weight guard in `logSet()` catches both weight=0+reps>0 and weight=0+reps=0.
 
+## Resolved In V2 Gym-Test Hotfix 2
+
+- **Scroll blocked on mobile (B-MOB-1):** Changed `overflow-x: hidden` → `overflow-x: clip` on `html, body, #root` in `styles.css`. `clip` prevents horizontal overflow without affecting the scroll port (which `hidden` silently did on some browsers).
+- **"Edit Current Day" shown for unplanned days:** Added `selectedDay.exercises.length > 0` guard. Button now only appears when the week has been planned for that day.
+- **"Go Off Program" on no-block state:** Renamed to "Start Individual Workout" for clarity. Behavior unchanged.
+- **Week Editor state lost on tab switch:** `planningWeekNumber` lifted from `WeekProgressScreen` local state to App-level `editingWeekNumber` prop. The Week Editor now survives navigating to Today and back.
+- **Week Editor duplicate "Day 1" labels:** Day tabs now use `Day N – SplitName` format. Position index (`N`) is always unique; split name is appended when available.
+- **Skipped sets not tappable in set lineup:** Changed `isCompletedSet = !!actual && !actual.skipped` → `isLoggedSet = !!actual`. Skipped sets are now tappable. Tapping a skipped set pre-fills the form from the planned set (weight/reps/RPE targets), not from actuals (which are 0).
+- **setRating=5 could still recommend decrease:** Added `setFeel < 5` guard to the `missedReps` and `formPoor` decrease branches in `setAdjustment.ts`. A "very easy" rating now bypasses all load-reduction paths.
+- **Skip set has no reason:** "Skip Set" button now toggles a reason picker instead of directly skipping. Quick reason chips: Fatigue, Pain, Poor form, Time, Other, or skip without reason. Chosen reason is stored in set notes.
+- **Off-program session starts blank:** "Go Off Program" / "Start Individual Workout" now opens a pre-workout builder. Users can pick multiple exercises, configure target sets/reps/RPE for each (with last-logged weight shown), then Start. "Start Empty Session" option still available for quick starts.
+- **Custom exercises cannot be edited:** Edit button (pencil icon) added to custom exercise rows in Library. Opens the Custom Exercise form pre-filled with the exercise's current values. "Add Exercise" becomes "Save Changes" when editing.
+- **Week tab exercises read-only:** Each day card in the Week tab now has an "Edit" button (hidden for completed sessions). Opens an inline WorkoutDayEditor below the day card. Changes are auto-saved.
+- **Block Builder Flow box:** Removed the "Flow" Panel (Library > Block > Today) from BuilderScreen. The concept is now self-evident from the UI structure.
+
 ## Resolved In V2 Gym-Test Hotfix
 
 - **Block name pre-populates:** `defaultRequest.name` was already `""`. `TextField` now accepts a `placeholder` prop; block name field shows `"e.g. Powerbuilding Block"` placeholder.
