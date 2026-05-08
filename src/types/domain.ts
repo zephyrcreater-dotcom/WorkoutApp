@@ -549,6 +549,7 @@ export interface LoggedExercise {
   notes?: string;
   weakPointTags: string[];
   offProgram?: boolean;
+  offProgramPlannedSets?: PlannedSet[];
 }
 
 export interface LoggedSet {
