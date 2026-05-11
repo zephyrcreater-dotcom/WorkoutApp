@@ -49,6 +49,16 @@
   - Missing accessory categories.
   - Fatigue clustering.
 
+## V3 Phase 1 Exercise Metadata Foundation Decisions
+
+- `axialFatigue` is an optional 7th dimension on `ExerciseFatigueProfile`. It captures spinal/axial loading stress separately from low-back fatigue. Exercises like competition squat and deadlift have "high"; most upper-body and machine movements have "low".
+- `"trunk-flexion"` and `"ankle-extension"` were added to `MovementPattern` to cover cable crunches/hanging leg raises and calf raises respectively, avoiding overuse of "isolation" for exercises with distinct movement patterns.
+- `exerciseMetadata.ts` contains only pure functions — no DB access, no side effects. All functions take an `Exercise` and return a derived value with safe defaults, so callers can use them unconditionally without checking if metadata fields exist.
+- `normalizeExerciseMetadata` derives all missing fields from existing exercise properties at runtime. It is NOT used for migration (that stays in `normalizeDatabase`); it's for runtime use when callers want guaranteed completeness.
+- `fatigueProfileToTag` converts the 7-dimension profile back to a simple "low"/"moderate"/"high" scalar by taking the worst-case dimension across the profile. This allows legacy code using scalar fatigue tags to continue working.
+- `roleHints` in the spec maps to the existing `defaultRoleByGoal` field — they are functionally identical. `getRoleHint` reads from `defaultRoleByGoal`; no rename was done to avoid breaking existing generator code.
+- For exercises with invalid `movementPattern: "isolation"` that have a more specific pattern (curls → "elbow-flexion", triceps extensions → "elbow-extension", leg curls → "knee-extension"), the original field was updated and the duplicate removed. This is correct — "isolation" was a placeholder, not an intentional pattern value.
+
 ## V3.1C Exercise Metadata Architecture Decisions
 
 - `exerciseFamily` is a plain string label (e.g., `"bench_press"`, `"squat"`) that groups closely related movements; it is not a normalized FK. Diversity penalties in the generator use it as a soft constraint.

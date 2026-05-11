@@ -8,6 +8,51 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ---
 
+## Current Handoff for Codex — V3 Phase 1: Exercise Metadata Foundation
+
+### What landed in V3 Phase 1
+
+**Philosophy:** All existing metadata fields and generator logic are preserved. This pass adds a 7th fatigue dimension, two new movement patterns, a pure helper module, and full seed coverage — so every exercise in the library now has training-aware metadata.
+
+**Domain changes (`src/types/domain.ts`):**
+- `MovementPattern` extended with: `"trunk-flexion"`, `"ankle-extension"`
+- `ExerciseFatigueProfile.axialFatigue?: FatigueLevel` — 7th optional dimension (spinal/axial loading)
+
+**New module: `src/lib/exerciseMetadata.ts`**
+Pure helper functions with safe defaults — all work correctly even when an exercise has no explicit metadata:
+- `getExerciseFamily(exercise)` — returns `exerciseFamily` or derives it from category/movementPattern
+- `getMovementPattern(exercise)` — returns `movementPattern` with "isolation" fallback
+- `getFatigueProfile(exercise)` — returns all 7 dimensions with safe defaults
+- `getSpecificity(exercise)` — returns squat/bench/deadlift 0–1 with 0 defaults
+- `getPrescriptionProfile(exercise)` — returns rep/RPE/set ranges with conservative defaults
+- `getRoleHint(exercise, goalType)` — checks `defaultRoleByGoal` then falls back to `inferBaseExerciseRole`
+- `isHighFatigueExercise(exercise)` — true when systemic or local fatigue is "high" or "very_high"
+- `isLowBackFatigueExercise(exercise)` — true when lowBackFatigue or axialFatigue is "high" or "very_high"
+- `isPressingFamily(exercise)` — true for bench/press family exercises
+- `isSbdMainLift(exercise)` — true for competition squat/bench/deadlift
+- `normalizeExerciseMetadata(exercise)` — derives all missing fields at runtime from existing properties
+- `fatigueProfileToTag(fp)` — converts 7-dimension profile to "low"/"moderate"/"high" scalar tag
+
+**Seed coverage (`src/data/seedData.ts`):**
+All ~60 exercises now have full metadata. Previously 17 had metadata; the remaining ~43 were added this pass. Every exercise now has `exerciseFamily`, `variationGroup`, `fatigueProfile` (with `axialFatigue`), `prescriptionProfile`, `defaultRoleByGoal`, and where appropriate `specificity` and updated `movementPattern`.
+
+**Migration (`src/lib/db.ts`):**
+- `normalizeDatabase` now patches `axialFatigue` onto stored fatigueProfiles that were persisted before this pass
+
+### Key rules preserved
+- All changes are backward-compatible; no existing data or generator logic was modified.
+- `normalizeDatabase` handles migration for stored exercises missing `axialFatigue`.
+- `exerciseMetadata.ts` functions are pure — no side effects, no DB reads.
+
+### Lint/build
+- **Lint:** passing (`eslint .`, 0 errors)
+- **Build:** passing (`tsc -b && vite build`)
+
+### Recommended next step
+- V3 Phase 2: Wire `exerciseMetadata.ts` helpers into the generator and progression logic. Specifically: use `getFatigueProfile` for day-level fatigue budgeting, use `getPrescriptionProfile` overrides for next-week progression suggestions, and use `getExerciseFamily` for family-level volume tracking.
+
+---
+
 ## Current Handoff for Codex — V3.1C Exercise Metadata Hardening
 
 ### What landed in V3.1C

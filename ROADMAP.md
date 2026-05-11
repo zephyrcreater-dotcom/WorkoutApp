@@ -1,5 +1,19 @@
 # ROADMAP.md
 
+## V3 Phase 1: Exercise Metadata Foundation — Completed
+
+- Added `axialFatigue?: FatigueLevel` as 7th dimension to `ExerciseFatigueProfile`.
+- Extended `MovementPattern` with `"trunk-flexion"` and `"ankle-extension"`.
+- Created `src/lib/exerciseMetadata.ts` — pure helper module: `normalizeExerciseMetadata`, `getExerciseFamily`, `getMovementPattern`, `getFatigueProfile`, `getSpecificity`, `getPrescriptionProfile`, `getRoleHint`, `isHighFatigueExercise`, `isLowBackFatigueExercise`, `isPressingFamily`, `isSbdMainLift`, `fatigueProfileToTag`.
+- Extended all ~60 seed exercises with full metadata (exerciseFamily, variationGroup, fatigueProfile with axialFatigue, prescriptionProfile, defaultRoleByGoal).
+- `normalizeDatabase` in db.ts now patches `axialFatigue` onto stored fatigueProfiles missing it.
+
+## Next Recommended Step
+
+1. Wire `exerciseMetadata.ts` helpers into the generator for family-level fatigue budgeting and diversity.
+2. Use `getPrescriptionProfile` for next-week progression suggestions.
+3. Add unit tests for `exerciseMetadata.ts` helper functions.
+
 ## V3.1C Exercise Metadata Hardening — Completed
 
 - Added `ExerciseFatigueProfile`, `ExerciseSpecificity`, `ExercisePrescriptionProfile` interfaces to domain types.
