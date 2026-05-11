@@ -1,5 +1,35 @@
 # ROADMAP.md
 
+## V3 Phase 2: Goal/Block Programming Rules — Completed
+
+- Added `goalOverride?: TrainingGoal` to `TrainingBlock`; `getGoalUsed()` resolves `blockGoalOverride ?? splitGoal ?? programGoal`.
+- Added `getWeekProgressionModifier()` in `programmingRules.ts`: goal/block/week-aware RPE, reps, and set modifiers. Replaces the old flat `lateBlock +0.5 RPE` hack.
+- Fixed `getRequirementSlotPlan` chest slot 1 for bodybuilding (was falling through to `hypertrophy_accessory` instead of `primary_compound`).
+- `scoreExerciseForSlot` now adjusts scores by goal: bodybuilding/powerbuilding isolation bonus in later slots; maintenance/general-health penalty for high-fatigue exercises.
+- `getGoalUsed()` wired into `chooseForMe`, `buildPlannedExerciseFromExercise`, `programGenerator.ts`, and `programAnalysis.ts`.
+- `programAnalysis.ts` uses `effectiveGoal` (block-override-aware) for all conditional warnings.
+- Added powerbuilding advisory warning when a day has no isolation or machine work.
+
+## Next Recommended Step
+
+1. V3 Phase 3: Wire `getFatigueProfile()` from `exerciseMetadata.ts` into the fatigue budget in `programmingRules.ts` for 7-dimension fatigue accounting.
+2. Add block-editor UI for setting `block.goalOverride` so users can explicitly define a phase goal.
+3. Add unit tests for `getWeekProgressionModifier` and `getGoalUsed`.
+
+## V3 Phase 1: Exercise Metadata Foundation — Completed
+
+- Added `axialFatigue?: FatigueLevel` as 7th dimension to `ExerciseFatigueProfile`.
+- Extended `MovementPattern` with `"trunk-flexion"` and `"ankle-extension"`.
+- Created `src/lib/exerciseMetadata.ts` — pure helper module: `normalizeExerciseMetadata`, `getExerciseFamily`, `getMovementPattern`, `getFatigueProfile`, `getSpecificity`, `getPrescriptionProfile`, `getRoleHint`, `isHighFatigueExercise`, `isLowBackFatigueExercise`, `isPressingFamily`, `isSbdMainLift`, `fatigueProfileToTag`.
+- Extended all ~60 seed exercises with full metadata (exerciseFamily, variationGroup, fatigueProfile with axialFatigue, prescriptionProfile, defaultRoleByGoal).
+- `normalizeDatabase` in db.ts now patches `axialFatigue` onto stored fatigueProfiles missing it.
+
+## Next Recommended Step
+
+1. Wire `exerciseMetadata.ts` helpers into the generator for family-level fatigue budgeting and diversity.
+2. Use `getPrescriptionProfile` for next-week progression suggestions.
+3. Add unit tests for `exerciseMetadata.ts` helper functions.
+
 ## V3.1C Exercise Metadata Hardening — Completed
 
 - Added `ExerciseFatigueProfile`, `ExerciseSpecificity`, `ExercisePrescriptionProfile` interfaces to domain types.

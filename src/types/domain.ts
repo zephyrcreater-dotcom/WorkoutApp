@@ -89,13 +89,18 @@ export type MovementPattern =
   | "isolation"
   | "knee-extension"
   | "hip-extension"
+  | "elbow-flexion"
+  | "elbow-extension"
   | "shoulder-abduction"
   | "spinal-extension"
   | "trunk-stability"
+  | "trunk-flexion"
+  | "ankle-extension"
   | "carry"
   | "brace"
   | "locomotion"
-  | "mobility";
+  | "mobility"
+  | "conditioning";
 export type EquipmentCategory =
   | "barbell"
   | "dumbbell"
@@ -273,7 +278,7 @@ export interface GymExerciseVariant {
   updatedAt: string;
 }
 
-// Rich exercise metadata interfaces (V3.1C)
+// Rich exercise metadata interfaces (V3.1C / V3 Phase 1)
 export interface ExerciseFatigueProfile {
   systemicFatigue: FatigueLevel;
   localFatigue: FatigueLevel;
@@ -281,6 +286,7 @@ export interface ExerciseFatigueProfile {
   lowBackFatigue: FatigueLevel;
   pressingFatigue: FatigueLevel;
   gripFatigue: FatigueLevel;
+  axialFatigue?: FatigueLevel;
 }
 
 export interface ExerciseSpecificity {
@@ -445,6 +451,7 @@ export interface TrainingBlock {
   startDate: string;
   goalDate?: string;
   meetDate?: string;
+  goalOverride?: TrainingGoal;
   targetRpeProgression: number[];
   volumeProgression: number[];
   deloadFrequencyWeeks?: number;

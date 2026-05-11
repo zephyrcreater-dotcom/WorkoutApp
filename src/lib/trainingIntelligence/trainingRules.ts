@@ -327,6 +327,14 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
   custom: {},
 };
 
+export function getGoalUsed(
+  programGoal: TrainingGoal,
+  blockGoalOverride?: TrainingGoal,
+  splitGoal?: TrainingGoal
+): TrainingGoal {
+  return blockGoalOverride ?? splitGoal ?? programGoal;
+}
+
 export function mapTrainingGoal(goal?: TrainingGoal): IntelligenceGoalType {
   switch (goal) {
     case "powerlifting":

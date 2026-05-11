@@ -8,6 +8,105 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ---
 
+## Current Handoff for Codex — V3 Phase 2: Goal/Block Programming Rules
+
+### What landed in V3 Phase 2
+
+**Philosophy:** The goal hierarchy is now enforced throughout the generator and prescription engine. `block.goalOverride` takes precedence over `block.goal`, which takes precedence over `program.goal`. All exercise selection, slot planning, scoring, and prescription logic resolves `goalUsed` before computing anything.
+
+**Domain changes (`src/types/domain.ts`):**
+- Added `goalOverride?: TrainingGoal` to `TrainingBlock` — explicit block-level goal that overrides the program-level goal for all training logic.
+
+**New helper (`trainingRules.ts`):**
+- `getGoalUsed(programGoal, blockGoalOverride?, splitGoal?)` — resolves the effective training goal for a block. Returns `blockGoalOverride ?? splitGoal ?? programGoal`.
+
+**Week progression engine (`programmingRules.ts`):**
+- Added `getWeekProgressionModifier({ goalType, blockType, weekIndex, totalWeeks, exerciseRole, fatigueTag })` — returns `{ rpeAdjust, repsAdjust, setsAdjust }` for the given week position.
+  - Deload: −1 RPE, −1 set for all roles.
+  - Peaking main lifts: up to +1.5 RPE across the block, rep reduction in weeks 3+.
+  - Bodybuilding/powerbuilding: +0.5 RPE ramp, +1 rep in week 1 for accessories, optional set reduction for high-fatigue exercises in final week.
+  - Powerlifting: +1.0 RPE ramp for main lifts with rep reduction at 60%+ progression; +0.5 RPE for accessories.
+  - Maintenance/general-health: flat (no progression).
+- `getPrescriptionForExerciseSlot` now applies `weekMod` instead of the old simple `lateBlock +0.5 RPE` logic.
+
+**Exercise selection improvements (`programmingRules.ts`):**
+- Fixed `getRequirementSlotPlan` chest slot 1 for bodybuilding: previously fell through to `hypertrophy_accessory` for slot 1; now returns `primary_compound` with broad category preference.
+- `scoreExerciseForSlot` goal-aware bonuses/penalties:
+  - Bodybuilding slot ≥1: +10 for `hypertrophy_accessory`, `isolation`, `pump_accessory`.
+  - Powerbuilding slot ≥2: +8 for `hypertrophy_accessory`, `isolation`.
+  - Maintenance/general-health: −10 for `high`-fatigue exercises outside `main_lift` role.
+- Powerbuilding slot 3+ (chest/back) returns `hypertrophy_accessory` (same as bodybuilding) instead of plain `isolation`.
+
+**Goal resolution wired everywhere:**
+- `App.tsx` `chooseForMe()`: resolves `goalUsed = getGoalUsed(program.goal, block?.goalOverride ?? block?.goal)` and passes it to all `getRequirementSlotPlan` / `scoreExerciseForSlot` calls.
+- `App.tsx` `buildPlannedExerciseFromExercise()`: resolves `goalUsed` and uses it for prescription and weight recommendation.
+- `programGenerator.ts`: Added `blockGoalOverride?` to `ProgramRequest`; `chooseExercisesForDay` and `plannedExerciseFor` resolve `goalUsed = getGoalUsed(request.goal, request.blockGoalOverride)`.
+- `programAnalysis.ts`: `effectiveGoal = block?.goalOverride ?? block?.goal ?? program.goal` drives all goal-conditional warnings (bodybuilding diversity, general-health patterns, maintenance volume, squat pattern, posterior chain).
+
+**Advisory warnings (`programAnalysis.ts`):**
+- Powerbuilding advisory: warns when a day has ≥4 exercises but no isolation or machine compound exercise (encourages accessory variety).
+- All existing goal-conditional warnings (`general-health`, `bodybuilding`, `maintenance`) now use `effectiveGoal` instead of `program.goal`, so block-level goal overrides take effect.
+
+### Key rules preserved
+- All existing logic is backward-compatible. `goalOverride` is optional; if absent, falls back to `block.goal` then `program.goal`.
+- Advisory warnings remain advisory — no auto-rewrites.
+- Requirement counts and user-selected splits are still respected.
+
+### Lint/build
+- **Lint:** passing
+- **Build:** passing
+
+### Recommended next step
+- V3 Phase 3: Wire `exerciseMetadata.ts` helpers (`getExerciseFamily`, `getFatigueProfile`) into the fatigue budget in `programmingRules.ts` for richer day-level fatigue accounting using the 7-dimension profile.
+- Add `blockGoalOverride` UI to block editor so users can explicitly set a training phase goal.
+
+---
+
+## Prior Handoff — V3 Phase 1: Exercise Metadata Foundation
+
+### What landed in V3 Phase 1
+
+**Philosophy:** All existing metadata fields and generator logic are preserved. This pass adds a 7th fatigue dimension, two new movement patterns, a pure helper module, and full seed coverage — so every exercise in the library now has training-aware metadata.
+
+**Domain changes (`src/types/domain.ts`):**
+- `MovementPattern` extended with: `"trunk-flexion"`, `"ankle-extension"`
+- `ExerciseFatigueProfile.axialFatigue?: FatigueLevel` — 7th optional dimension (spinal/axial loading)
+
+**New module: `src/lib/exerciseMetadata.ts`**
+Pure helper functions with safe defaults — all work correctly even when an exercise has no explicit metadata:
+- `getExerciseFamily(exercise)` — returns `exerciseFamily` or derives it from category/movementPattern
+- `getMovementPattern(exercise)` — returns `movementPattern` with "isolation" fallback
+- `getFatigueProfile(exercise)` — returns all 7 dimensions with safe defaults
+- `getSpecificity(exercise)` — returns squat/bench/deadlift 0–1 with 0 defaults
+- `getPrescriptionProfile(exercise)` — returns rep/RPE/set ranges with conservative defaults
+- `getRoleHint(exercise, goalType)` — checks `defaultRoleByGoal` then falls back to `inferBaseExerciseRole`
+- `isHighFatigueExercise(exercise)` — true when systemic or local fatigue is "high" or "very_high"
+- `isLowBackFatigueExercise(exercise)` — true when lowBackFatigue or axialFatigue is "high" or "very_high"
+- `isPressingFamily(exercise)` — true for bench/press family exercises
+- `isSbdMainLift(exercise)` — true for competition squat/bench/deadlift
+- `normalizeExerciseMetadata(exercise)` — derives all missing fields at runtime from existing properties
+- `fatigueProfileToTag(fp)` — converts 7-dimension profile to "low"/"moderate"/"high" scalar tag
+
+**Seed coverage (`src/data/seedData.ts`):**
+All ~60 exercises now have full metadata. Previously 17 had metadata; the remaining ~43 were added this pass. Every exercise now has `exerciseFamily`, `variationGroup`, `fatigueProfile` (with `axialFatigue`), `prescriptionProfile`, `defaultRoleByGoal`, and where appropriate `specificity` and updated `movementPattern`.
+
+**Migration (`src/lib/db.ts`):**
+- `normalizeDatabase` now patches `axialFatigue` onto stored fatigueProfiles that were persisted before this pass
+
+### Key rules preserved
+- All changes are backward-compatible; no existing data or generator logic was modified.
+- `normalizeDatabase` handles migration for stored exercises missing `axialFatigue`.
+- `exerciseMetadata.ts` functions are pure — no side effects, no DB reads.
+
+### Lint/build
+- **Lint:** passing (`eslint .`, 0 errors)
+- **Build:** passing (`tsc -b && vite build`)
+
+### Recommended next step
+- V3 Phase 2: Wire `exerciseMetadata.ts` helpers into the generator and progression logic. Specifically: use `getFatigueProfile` for day-level fatigue budgeting, use `getPrescriptionProfile` overrides for next-week progression suggestions, and use `getExerciseFamily` for family-level volume tracking.
+
+---
+
 ## Current Handoff for Codex — V3.1C Exercise Metadata Hardening
 
 ### What landed in V3.1C

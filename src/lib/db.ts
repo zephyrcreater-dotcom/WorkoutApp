@@ -179,6 +179,11 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       if (!exercise.exerciseFamily && builtIn.exerciseFamily) { exercise.exerciseFamily = builtIn.exerciseFamily; changed = true; }
       if (!exercise.variationGroup && builtIn.variationGroup) { exercise.variationGroup = builtIn.variationGroup; changed = true; }
       if (!exercise.fatigueProfile && builtIn.fatigueProfile) { exercise.fatigueProfile = builtIn.fatigueProfile; changed = true; }
+      // V3 Phase 1: patch axialFatigue onto stored fatigueProfile if missing
+      if (exercise.fatigueProfile && builtIn.fatigueProfile && exercise.fatigueProfile.axialFatigue === undefined && builtIn.fatigueProfile.axialFatigue !== undefined) {
+        exercise.fatigueProfile = { ...exercise.fatigueProfile, axialFatigue: builtIn.fatigueProfile.axialFatigue };
+        changed = true;
+      }
       if (!exercise.specificity && builtIn.specificity) { exercise.specificity = builtIn.specificity; changed = true; }
       if (!exercise.prescriptionProfile && builtIn.prescriptionProfile) { exercise.prescriptionProfile = builtIn.prescriptionProfile; changed = true; }
       if (!exercise.defaultRoleByGoal && builtIn.defaultRoleByGoal) { exercise.defaultRoleByGoal = builtIn.defaultRoleByGoal; changed = true; }

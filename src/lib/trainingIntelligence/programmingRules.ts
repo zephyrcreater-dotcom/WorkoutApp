@@ -58,6 +58,64 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+export interface WeekProgressionModifier {
+  rpeAdjust: number;
+  repsAdjust: number;
+  setsAdjust: number;
+}
+
+export function getWeekProgressionModifier(input: {
+  goalType: TrainingGoal;
+  blockType: BlockType;
+  weekIndex: number;
+  totalWeeks: number;
+  exerciseRole: ExerciseRole;
+  fatigueTag: ExerciseFatigueTag;
+}): WeekProgressionModifier {
+  const { goalType, blockType, weekIndex, totalWeeks, exerciseRole, fatigueTag } = input;
+  const isMain = exerciseRole === "main_lift" || exerciseRole === "primary_compound";
+  const isDeload = blockType === "deload";
+  const isPeaking = blockType === "peaking";
+  const isVolume = blockType === "accumulation" || blockType === "hypertrophy";
+  const isLastWeek = weekIndex >= totalWeeks - 1;
+  const progression = totalWeeks > 1 ? weekIndex / (totalWeeks - 1) : 0;
+
+  if (isDeload) return { rpeAdjust: -1, repsAdjust: 0, setsAdjust: -1 };
+
+  if (isPeaking && isMain) {
+    return {
+      rpeAdjust: Math.round(progression * 1.5 * 2) / 2,
+      repsAdjust: weekIndex >= 2 ? -1 : 0,
+      setsAdjust: 0,
+    };
+  }
+
+  if (goalType === "maintenance" || goalType === "general-health") {
+    return { rpeAdjust: 0, repsAdjust: 0, setsAdjust: 0 };
+  }
+
+  let rpeAdjust = 0;
+  let repsAdjust = 0;
+  let setsAdjust = 0;
+
+  if (goalType === "bodybuilding" || goalType === "powerbuilding") {
+    rpeAdjust = Math.round(progression * 0.5 * 2) / 2;
+    if (isVolume && weekIndex === 0 && !isMain) repsAdjust = 1;
+    if (isLastWeek && isVolume && fatigueTag === "high") setsAdjust = -1;
+  } else if (goalType === "powerlifting") {
+    if (isMain) {
+      rpeAdjust = Math.round(progression * 1.0 * 2) / 2;
+      repsAdjust = progression > 0.6 ? -1 : 0;
+    } else {
+      rpeAdjust = Math.round(progression * 0.5 * 2) / 2;
+    }
+  } else {
+    rpeAdjust = Math.round(progression * 0.5 * 2) / 2;
+  }
+
+  return { rpeAdjust, repsAdjust, setsAdjust };
+}
+
 export function getExerciseFatigueTag(exercise: Exercise): ExerciseFatigueTag {
   if ((exercise.fatigueRating ?? 0) >= 4 || exercise.isSBDMainLift || exercise.exerciseCategory === "sbd") return "high";
   if ((exercise.fatigueRating ?? 0) >= 2 || exercise.exerciseCategory === "main_compound" || exercise.exerciseCategory === "secondary_compound") {
@@ -195,12 +253,15 @@ export function getRequirementSlotPlan(input: {
   const preferredPatterns = input.movementPattern ? [input.movementPattern] : fallbackPatternsForMuscle(input.targetMuscle);
 
   if (input.targetMuscle === "chest" || input.targetMuscle === "upper-chest" || input.targetMuscle === "lower-chest") {
-    if (slot === 1 && (specificGoal || input.dayFocus === "strength" || strengthBlock)) {
+    if (slot === 1) {
+      const wantsMainLift = specificGoal || input.dayFocus === "strength" || strengthBlock;
       return {
-        role: targets.specificity === "high" ? "main_lift" : "primary_compound",
+        role: wantsMainLift && targets.specificity === "high" ? "main_lift" : "primary_compound",
         preferredPatterns: ["horizontal-press", ...preferredPatterns],
-        preferredCategories: ["sbd", "main_compound"],
-        preferredFatigue: "high",
+        preferredCategories: wantsMainLift
+          ? ["sbd", "main_compound", "secondary_compound"]
+          : ["main_compound", "secondary_compound", "sbd"],
+        preferredFatigue: wantsMainLift ? "high" : "moderate",
         allowHighFatigue: true,
       };
     }
@@ -214,7 +275,7 @@ export function getRequirementSlotPlan(input: {
       };
     }
     return {
-      role: input.goalType === "bodybuilding" ? "hypertrophy_accessory" : "isolation",
+      role: input.goalType === "bodybuilding" || input.goalType === "powerbuilding" ? "hypertrophy_accessory" : "isolation",
       preferredPatterns: ["isolation", ...preferredPatterns],
       preferredCategories: ["isolation", "machine_compound", "secondary_compound"],
       preferredFatigue: "low",
@@ -385,6 +446,11 @@ export function scoreExerciseForSlot(input: {
   if (!slotPlan.allowHighFatigue && fatigue === "high") score -= 24;
   if (blockType === "peaking" && fatigue === "high" && slotPlan.role !== "main_lift") score -= 20;
   if (goalType === "bodybuilding" && baseRole === "main_lift") score -= 12;
+  if (goalType === "bodybuilding" && input.slotIndex >= 1 &&
+    (baseRole === "hypertrophy_accessory" || baseRole === "isolation" || baseRole === "pump_accessory")) score += 10;
+  if ((goalType === "maintenance" || goalType === "general-health") && fatigue === "high" && slotPlan.role !== "main_lift") score -= 10;
+  if (goalType === "powerbuilding" && input.slotIndex >= 2 &&
+    (baseRole === "hypertrophy_accessory" || baseRole === "isolation")) score += 8;
 
   const sameMovement = selectedExercises.filter((item) => item.movementPattern === exercise.movementPattern).length;
   const sameCategory = selectedExercises.filter((item) => item.exerciseCategory === exercise.exerciseCategory).length;
@@ -463,7 +529,14 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
 
   const targets = getTrainingTargets(goalType, blockType, exercise.exerciseCategory);
   const fatigueTag = getExerciseFatigueTag(exercise);
-  const lateBlock = blockLengthWeeks > 1 && weekNumber >= blockLengthWeeks;
+  const weekMod = getWeekProgressionModifier({
+    goalType,
+    blockType,
+    weekIndex: Math.max(0, weekNumber - 1),
+    totalWeeks: blockLengthWeeks,
+    exerciseRole,
+    fatigueTag,
+  });
   const intensifying = blockType === "intensification" || blockType === "strength";
   const peaking = blockType === "peaking";
   const deload = blockType === "deload";
@@ -575,9 +648,10 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
     reps = Math.min(reps, 4);
     targetRpe = Math.min(targetRpe, 7);
   }
-  if (lateBlock && !deload && exerciseRole === "main_lift") {
-    targetRpe = clamp(targetRpe + 0.5, 6, 9.5);
-    reps = Math.max(1, reps - 1);
+  if (!deload) {
+    targetRpe = clamp(targetRpe + weekMod.rpeAdjust, 6, peaking ? 9.5 : 9);
+    reps = Math.max(1, reps + weekMod.repsAdjust);
+    sets = Math.max(1, sets + weekMod.setsAdjust);
   }
   if (fatigueTag === "high" && exerciseRole !== "main_lift") {
     sets = Math.max(2, sets - 1);

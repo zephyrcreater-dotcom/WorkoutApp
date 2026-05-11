@@ -49,6 +49,16 @@
   - Missing accessory categories.
   - Fatigue clustering.
 
+## V3 Phase 1 Exercise Metadata Foundation Decisions
+
+- `axialFatigue` is an optional 7th dimension on `ExerciseFatigueProfile`. It captures spinal/axial loading stress separately from low-back fatigue. Exercises like competition squat and deadlift have "high"; most upper-body and machine movements have "low".
+- `"trunk-flexion"` and `"ankle-extension"` were added to `MovementPattern` to cover cable crunches/hanging leg raises and calf raises respectively, avoiding overuse of "isolation" for exercises with distinct movement patterns.
+- `exerciseMetadata.ts` contains only pure functions — no DB access, no side effects. All functions take an `Exercise` and return a derived value with safe defaults, so callers can use them unconditionally without checking if metadata fields exist.
+- `normalizeExerciseMetadata` derives all missing fields from existing exercise properties at runtime. It is NOT used for migration (that stays in `normalizeDatabase`); it's for runtime use when callers want guaranteed completeness.
+- `fatigueProfileToTag` converts the 7-dimension profile back to a simple "low"/"moderate"/"high" scalar by taking the worst-case dimension across the profile. This allows legacy code using scalar fatigue tags to continue working.
+- `roleHints` in the spec maps to the existing `defaultRoleByGoal` field — they are functionally identical. `getRoleHint` reads from `defaultRoleByGoal`; no rename was done to avoid breaking existing generator code.
+- For exercises with invalid `movementPattern: "isolation"` that have a more specific pattern (curls → "elbow-flexion", triceps extensions → "elbow-extension", leg curls → "knee-extension"), the original field was updated and the duplicate removed. This is correct — "isolation" was a placeholder, not an intentional pattern value.
+
 ## V3.1C Exercise Metadata Architecture Decisions
 
 - `exerciseFamily` is a plain string label (e.g., `"bench_press"`, `"squat"`) that groups closely related movements; it is not a normalized FK. Diversity penalties in the generator use it as a soft constraint.
@@ -60,6 +70,16 @@
 - Triceps slot 1 on powerlifting/strength days is treated as `secondary_compound` so close-grip bench or dips score higher than pure isolation in those contexts.
 - Goal/block-aware warnings are advisory only (no auto-rewrites). Peaking/deload block warnings check accessory count and total set estimates. Bodybuilding/general-health diversity checks fire at ≥3 same-pattern exercises per day.
 - `normalizeDatabase` is the single migration path: new metadata fields are copied from builtInExercises to stored exercises that lack them on load.
+
+## V3 Phase 2 Goal/Block Programming Rules Decisions
+
+- `goalOverride?: TrainingGoal` on `TrainingBlock` is the explicit block-level goal. It takes precedence over `block.goal` (historical metadata field), which takes precedence over `program.goal`. `getGoalUsed()` encodes this priority chain.
+- `block.goal` and `block.goalOverride` coexist. `block.goal` may be set by seed data or legacy code; `goalOverride` is the new explicit programming signal. `getGoalUsed` uses `blockGoalOverride ?? splitGoal ?? programGoal` to avoid breaking any existing `block.goal` consumers.
+- `getWeekProgressionModifier()` is the single source of truth for per-week RPE/rep/set scaling. The old flat `lateBlock +0.5 RPE` logic in `getPrescriptionForExerciseSlot` was replaced with this function.
+- Maintenance and general-health goals have intentionally flat week modifiers (no RPE ramp). These goals are not progressive overload programs; the app should not silently push RPE upward over a block.
+- Bodybuilding chest slot 1 was a latent bug: the `if (specificGoal || dayFocus === 'strength' || strengthBlock)` guard excluded bodybuilding from slot-1 compound treatment, causing it to fall through to `hypertrophy_accessory`. Fixed to always return `primary_compound` for slot 1 regardless of goal, using a `wantsMainLift` flag for the narrower powerlifting/strength case.
+- `scoreExerciseForSlot` goal-aware bonuses are additive on top of existing scoring, not replacements. Bodybuilding/powerbuilding isolation bonus in slots ≥1 and maintenance/general-health high-fatigue penalty are both modest (8–10 pts) to nudge without forcing.
+- Powerbuilding advisory (no isolation on a day) fires only at info severity — it is informational, not a blocker.
 
 ## Session 2 Decisions
 
