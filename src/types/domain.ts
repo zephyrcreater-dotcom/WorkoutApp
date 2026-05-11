@@ -656,6 +656,10 @@ export interface Recommendation {
     setId?: ID;
     targetPlannedSetId?: ID;
     targetSetNumber?: number;
+    sourceExerciseIndex?: number;
+    sourceSetIndex?: number;
+    targetExerciseIndex?: number;
+    targetSetIndex?: number;
     suggestedWeight?: number;
     suggestedReps?: number;
     suggestedRpe?: number;

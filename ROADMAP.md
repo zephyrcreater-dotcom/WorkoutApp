@@ -6,6 +6,24 @@
 
 ### Priority order
 
+0. **Verify V2 final usability blockers**
+   - Status: Final bugfixes are fixed in code; needs manual gym-flow verification.
+   - Block Planner reset now clears draft program state and hides stale Weekly Overview output.
+   - Skip This Workout now abandons the matching WIP session so Week status changes from in progress to skipped.
+   - Today mobile action buttons now stack cleanly with Start/Resume as the primary action.
+   - Desktop and mobile vertical scrolling restored; bottom nav should no longer hide final controls.
+   - Off-program prefilled starting weights persist into session planned set state.
+   - Manual first-set weights carry forward to the next blank target set.
+   - Easy/Hard recommendations use the actual prior set weight as the base.
+   - Off-program completed history counts all valid completed sets and preserves set data.
+   - Exercise Library supports editing seed and user-created exercises without changing IDs.
+   - Mobile Today/Live Logger should fit 390-430px viewports with normal vertical scrolling and no bottom-nav cover.
+   - Recommendations recompute after skip, back, edit, setRating correction, and manual weight input.
+   - Set lineup tapping/editing works for pending, completed, and skipped sets.
+   - Completed and off-program sessions can be reviewed/edited from Week history.
+   - Week Editor distinguishes Planned Day Editor from Completed Session Review.
+   - Training Intelligence v1 / V3 can start after these checks pass.
+
 1. **Fix BUG-A — Choose For Me requirement cap enforcement**
    - Status: Fixed in code; needs real-data manual verification.
    - `chooseForMe()` in `WorkoutDayEditor` must never exceed `req.requiredExerciseCount`.

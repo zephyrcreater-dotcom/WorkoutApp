@@ -2,6 +2,13 @@
 
 ## Known Bugs
 
+## V2 Final Polish Hotfix
+
+- **Block Planner reset left stale Weekly Overview visible:** Fixed. Reset now removes draft programs for the current user, clears the saved builder draft, resets planner controls, and returns the builder to initial setup state.
+- **Skip This Workout left matching WIP sessions resumable:** Fixed. Skipping a planned workout now abandons the matching in-progress session before progress sync, so the week status becomes skipped instead of in progress.
+- **Today mobile actions were crowded/cut off:** Fixed. Start/Resume remains primary; navigation/skip actions and edit/off-program actions stack full-width on narrow screens.
+- **V2 status:** If manual testing passes, this closes the final V2 polish hotfix and the next phase can be V3 Training Intelligence v1.
+
 ### Mobile Layout
 
 **B-MOB-1 — Horizontal overflow / half-screen cutoff on mobile (HIGH PRIORITY)**
@@ -140,6 +147,21 @@
 ---
 
 ## Resolved In V2 Hotfix Final
+
+- **Scrolling blocked on desktop/mobile:** App shell no longer creates a hidden-overflow scroll trap. Document scrolling is restored while horizontal overflow remains clipped. Browser smoke verified Today scrolling on desktop and 390px mobile.
+- **Off-program prefilled weight disappeared:** Off-program builder now persists the displayed starting weight into the first planned set before the session starts; logger-added off-program exercises use the same prefill path.
+- **Manual weight carry-forward:** When a target set has no explicit planned/applied weight, the next draft defaults to the previous valid completed actual weight.
+- **Recommendation base load:** Easy/Hard recommendations are sourced from the prior valid completed set selected for the current target set, so manual/applied/actual load is the base instead of blank history.
+- **Off-program completed set count:** Completed review/history now counts valid completed sets, excludes skipped/warmup sets, and no longer collapses multi-set off-program exercises to one set.
+- **Off-program set data preservation:** Completed session review and exercise performance logs preserve all off-program set weight/reps/RPE/setRating data.
+
+- **Exercise Library edit support expanded:** Seed and user-created exercises can now be edited from Library. Saves preserve the original exercise ID so historical sessions keep resolving to the edited display name/metadata.
+- **Mobile workout logger cutoff:** Logger containers now use min-width-safe grids and phone-sized one-column controls; root/body explicitly allow vertical scroll while clipping horizontal overflow.
+- **Recommendation recomputation after skip/back/edit:** The logger now computes the displayed suggestion from the selected target set's prior completed source set, with identity based on source exercise/set and target exercise/set indexes.
+- **Set lineup editing:** Pending, completed, and skipped set cards are selectable. Back no longer removes the latest set. Saving a skipped set with actual values marks it completed/unskipped.
+- **Completed workout review/edit:** Week completed sessions open a review/edit screen with logged exercises, sets, actual load/reps/RPE, setRating, notes, skipped state, and guarded removal.
+- **Week planned vs completed distinction:** Planned days still use `WorkoutDayEditor`; completed days route to Completed Session Review to avoid overwriting completed history with planned data.
+- **Off-program review/edit:** Off-program completed sessions are visible in Week history and can be reviewed/edited without touching active block or future week plans.
 
 - Block tab no longer shows active weekly overview; shows compact summary + "View current week →" link.
 - Week tab owns active week progress, completed session review, week history selector, and Week Review.
