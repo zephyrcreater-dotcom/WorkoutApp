@@ -13,6 +13,7 @@ import {
 import {
   buildFatigueBudget,
   getExerciseIncrement,
+  getGoalUsed,
   getRequirementSlotPlan,
   getSameExerciseBaseline,
   getExerciseFatigueTag,
@@ -42,6 +43,7 @@ import type {
 export interface ProgramRequest {
   name: string;
   goal: TrainingGoal;
+  blockGoalOverride?: TrainingGoal;
   daysPerWeek: number;
   blockType: BlockType;
   blockLengthWeeks: number;
@@ -140,7 +142,8 @@ function chooseExercisesForDay(
   splitDay?: SplitDay,
   weeklyExerciseCounts: Record<string, number> = {}
 ): SelectedExerciseSlot[] {
-  const defaults = goalDefaults[request.goal];
+  const goalUsed = getGoalUsed(request.goal, request.blockGoalOverride);
+  const defaults = goalDefaults[goalUsed] ?? goalDefaults[request.goal];
   const compoundSettings = request.compoundSettings || defaultCompoundSettings;
   const selectedLifts = request.priorityExerciseIds
     .map((id) => exercises.find((exercise) => exercise.id === id))
@@ -209,7 +212,7 @@ function chooseExercisesForDay(
       for (let slot = 0; slot < req.requiredExerciseCount; slot += 1) {
         const slotPlan = getRequirementSlotPlan({
           targetMuscle: req.targetMuscle,
-          goalType: request.goal,
+          goalType: goalUsed,
           blockType: request.blockType,
           dayFocus: splitDay.focus,
           slotIndex: slot,
@@ -229,7 +232,7 @@ function chooseExercisesForDay(
               exercise,
               slotPlan,
               targetMuscle: req.targetMuscle,
-              goalType: request.goal,
+              goalType: goalUsed,
               blockType: request.blockType,
               dayFocus: splitDay.focus,
               selectedExercises: result.map((item) => item.exercise),
@@ -248,7 +251,7 @@ function chooseExercisesForDay(
               exercise,
               slotPlan,
               targetMuscle: req.targetMuscle,
-              goalType: request.goal,
+              goalType: goalUsed,
               blockType: request.blockType,
               dayFocus: splitDay.focus,
                 selectedExercises: result.map((item) => item.exercise),
@@ -308,7 +311,7 @@ function plannedExerciseFor(
   const resolvedRole = exerciseRole ?? inferBaseExerciseRole(exercise);
   const prescription = getExercisePrescription({
     exercise,
-    goal: request.goal,
+    goal: getGoalUsed(request.goal, request.blockGoalOverride),
     blockType: request.blockType,
     order,
     isPriority: isPriorityLift,

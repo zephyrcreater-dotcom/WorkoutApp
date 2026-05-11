@@ -451,6 +451,7 @@ export interface TrainingBlock {
   startDate: string;
   goalDate?: string;
   meetDate?: string;
+  goalOverride?: TrainingGoal;
   targetRpeProgression: number[];
   volumeProgression: number[];
   deloadFrequencyWeeks?: number;

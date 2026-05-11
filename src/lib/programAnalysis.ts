@@ -8,7 +8,7 @@ import {
   isSbdExercise,
   muscleVolumeTargets
 } from "./programmingLogic";
-import type { BlockType, Exercise, MuscleGroup, MovementPattern, Program, ProgramGap, TrainingDatabase, WorkoutDay } from "../types/domain";
+import type { BlockType, Exercise, MuscleGroup, MovementPattern, Program, ProgramGap, TrainingDatabase, TrainingGoal, WorkoutDay } from "../types/domain";
 
 export interface HypertrophyDashboardData {
   weeklyVolume: Partial<Record<MuscleGroup, number>>;
@@ -89,8 +89,10 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
   const gaps: ProgramGap[] = [];
   const volume = summarizePlannedVolume(program, db);
   const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
-  const targets = muscleVolumeTargets[program.goal] || muscleVolumeTargets.powerbuilding;
-  const blockType: BlockType | undefined = program.blocks[0]?.type;
+  const activeBlock = program.blocks[0];
+  const effectiveGoal: TrainingGoal = activeBlock?.goalOverride ?? activeBlock?.goal ?? program.goal;
+  const targets = muscleVolumeTargets[effectiveGoal] || muscleVolumeTargets.powerbuilding;
+  const blockType: BlockType | undefined = activeBlock?.type;
   const patternCounts: Partial<Record<MovementPattern, number>> = {};
   let pressingSets = 0;
   let pullingSets = 0;
@@ -305,7 +307,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
     });
   }
 
-  if ((patternCounts.squat || 0) <= 1 && program.goal !== "general-health") {
+  if ((patternCounts.squat || 0) <= 1 && effectiveGoal !== "general-health") {
     gaps.push({
       id: createId("gap"),
       type: "movement-pattern",
@@ -335,7 +337,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
     }
   });
 
-  if (lowerFatigueSets === 0 && program.goal !== "conditioning") {
+  if (lowerFatigueSets === 0 && effectiveGoal !== "conditioning") {
     gaps.push({
       id: createId("gap"),
       type: "missing-category",
@@ -416,7 +418,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
     });
   }
 
-  if (program.goal === "bodybuilding" || program.goal === "general-health") {
+  if (effectiveGoal === "bodybuilding" || effectiveGoal === "general-health") {
     const dayMovementPatternDiversity: { day: WorkoutDay; repeatedPatterns: MovementPattern[] }[] = [];
     week.workouts.forEach((day) => {
       const patternFreq: Partial<Record<MovementPattern, number>> = {};
@@ -435,7 +437,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
         id: createId("gap"),
         type: "movement-pattern",
         issue: `Low exercise diversity on ${day.name}`,
-        whyItMatters: `Three or more exercises share the same movement pattern (${repeatedPatterns.join(", ")}). For ${program.goal === "bodybuilding" ? "hypertrophy" : "general fitness"}, varied angles and patterns drive broader stimulus.`,
+        whyItMatters: `Three or more exercises share the same movement pattern (${repeatedPatterns.join(", ")}). For ${effectiveGoal === "bodybuilding" ? "hypertrophy" : "general fitness"}, varied angles and patterns drive broader stimulus.`,
         severity: "moderate",
         suggestedFix: "Replace one repeated-pattern slot with a complementary angle, muscle, or equipment variation.",
         relatedMuscles: [],
@@ -445,7 +447,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
     });
   }
 
-  if (program.goal === "general-health") {
+  if (effectiveGoal === "general-health") {
     const hasVerticalPull = Object.keys(patternCounts).some((p) => p === "vertical-pull");
     const hasHinge = Object.keys(patternCounts).some((p) => p === "hinge");
     const hasSquat = Object.keys(patternCounts).some((p) => p === "squat");
@@ -490,7 +492,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
     }
   }
 
-  if (program.goal === "maintenance" && totalWeeklySets > 60) {
+  if (effectiveGoal === "maintenance" && totalWeeklySets > 60) {
     gaps.push({
       id: createId("gap"),
       type: "volume",
@@ -501,6 +503,28 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       relatedMuscles: [],
       relatedExerciseIds: [],
       action: { kind: "reduce-volume" },
+    });
+  }
+
+  if (effectiveGoal === "powerbuilding") {
+    week.workouts.forEach((day) => {
+      const hasIsolation = day.exercises.some((planned) => {
+        const ex = exerciseFor(db, planned.exerciseId);
+        return ex?.exerciseCategory === "isolation" || ex?.exerciseCategory === "machine_compound";
+      });
+      if (!hasIsolation && day.exercises.length >= 4) {
+        gaps.push({
+          id: createId("gap"),
+          type: "missing-category",
+          issue: `No isolation or machine work on ${day.name}`,
+          whyItMatters: "Powerbuilding programs benefit from direct accessory work alongside main lifts. Isolation and machine exercises add targeted hypertrophy stimulus with less systemic fatigue.",
+          severity: "info",
+          suggestedFix: "Add one isolation or cable exercise for a target muscle on this day.",
+          relatedMuscles: [],
+          relatedExerciseIds: [],
+          action: { kind: "add-exercise", dayId: day.id },
+        });
+      }
     });
   }
 

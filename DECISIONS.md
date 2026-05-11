@@ -71,6 +71,16 @@
 - Goal/block-aware warnings are advisory only (no auto-rewrites). Peaking/deload block warnings check accessory count and total set estimates. Bodybuilding/general-health diversity checks fire at ≥3 same-pattern exercises per day.
 - `normalizeDatabase` is the single migration path: new metadata fields are copied from builtInExercises to stored exercises that lack them on load.
 
+## V3 Phase 2 Goal/Block Programming Rules Decisions
+
+- `goalOverride?: TrainingGoal` on `TrainingBlock` is the explicit block-level goal. It takes precedence over `block.goal` (historical metadata field), which takes precedence over `program.goal`. `getGoalUsed()` encodes this priority chain.
+- `block.goal` and `block.goalOverride` coexist. `block.goal` may be set by seed data or legacy code; `goalOverride` is the new explicit programming signal. `getGoalUsed` uses `blockGoalOverride ?? splitGoal ?? programGoal` to avoid breaking any existing `block.goal` consumers.
+- `getWeekProgressionModifier()` is the single source of truth for per-week RPE/rep/set scaling. The old flat `lateBlock +0.5 RPE` logic in `getPrescriptionForExerciseSlot` was replaced with this function.
+- Maintenance and general-health goals have intentionally flat week modifiers (no RPE ramp). These goals are not progressive overload programs; the app should not silently push RPE upward over a block.
+- Bodybuilding chest slot 1 was a latent bug: the `if (specificGoal || dayFocus === 'strength' || strengthBlock)` guard excluded bodybuilding from slot-1 compound treatment, causing it to fall through to `hypertrophy_accessory`. Fixed to always return `primary_compound` for slot 1 regardless of goal, using a `wantsMainLift` flag for the narrower powerlifting/strength case.
+- `scoreExerciseForSlot` goal-aware bonuses are additive on top of existing scoring, not replacements. Bodybuilding/powerbuilding isolation bonus in slots ≥1 and maintenance/general-health high-fatigue penalty are both modest (8–10 pts) to nudge without forcing.
+- Powerbuilding advisory (no isolation on a day) fires only at info severity — it is informational, not a blocker.
+
 ## Session 2 Decisions
 
 - `SetRating` changed from a 4-option string enum to a numeric `1 | 2 | 3 | 4 | 5` type. This gives algorithm functions a clean numeric input without a conversion step. Old string values are migrated via `normalizeDatabase`.

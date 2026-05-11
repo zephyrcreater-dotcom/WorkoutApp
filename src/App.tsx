@@ -64,6 +64,7 @@ import {
   buildFatigueBudget,
   getExerciseIncrement,
   getExerciseFatigueTag,
+  getGoalUsed,
   getSameExerciseBaseline,
   getRequirementSlotPlan,
   getTrainingTargets,
@@ -2647,6 +2648,7 @@ function WorkoutDayEditor({
     const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
     const dayReqs = requirements;
     const block = program.blocks[0];
+    const goalUsed = getGoalUsed(program.goal, block?.goalOverride ?? block?.goal);
     const currentWeek = block?.weeks.find((week) => week.workouts.some((workout) => workout.id === day.id));
     const weeklyExerciseCounts: Record<string, number> = {};
     currentWeek?.workouts
@@ -2680,8 +2682,8 @@ function WorkoutDayEditor({
         for (let slot = 0; slot < req.requiredExerciseCount; slot += 1) {
           const slotPlan = getRequirementSlotPlan({
             targetMuscle: req.targetMuscle,
-            goalType: program.goal,
-            blockType: program.blocks[0]?.type || "hypertrophy",
+            goalType: goalUsed,
+            blockType: block?.type || "hypertrophy",
             dayFocus: day.focus,
             slotIndex: slot,
             totalSlots: req.requiredExerciseCount,
@@ -2700,8 +2702,8 @@ function WorkoutDayEditor({
                 exercise,
                 slotPlan,
                 targetMuscle: req.targetMuscle,
-                goalType: program.goal,
-                blockType: program.blocks[0]?.type || "hypertrophy",
+                goalType: goalUsed,
+                blockType: block?.type || "hypertrophy",
                 dayFocus: day.focus,
                 selectedExercises: selected.map((item) => item.exercise),
                 slotIndex: slot,
@@ -2723,8 +2725,8 @@ function WorkoutDayEditor({
                 exercise,
                 slotPlan,
                 targetMuscle: req.targetMuscle,
-                goalType: program.goal,
-                blockType: program.blocks[0]?.type || "hypertrophy",
+                goalType: goalUsed,
+                blockType: block?.type || "hypertrophy",
                 dayFocus: day.focus,
                 selectedExercises: selected.map((item) => item.exercise),
                 slotIndex: slot,
@@ -5844,9 +5846,10 @@ function buildPlannedExerciseFromExercise({
 }): PlannedExercise {
   const block = program?.blocks[0];
   const resolvedRole = exerciseRole ?? inferBaseExerciseRole(exercise);
+  const goalUsed = getGoalUsed(program?.goal || user.goal, block?.goalOverride ?? block?.goal);
   const prescription = getBlockExercisePrescription({
     exercise,
-    goal: program?.goal || user.goal,
+    goal: goalUsed,
     blockType: block?.type || "hypertrophy",
     weekNumber: day?.weekNumber || block?.currentWeek || 1,
     blockLengthWeeks: block?.lengthWeeks || 4,
@@ -5864,7 +5867,7 @@ function buildPlannedExerciseFromExercise({
     exercise,
     plannedSet,
     blockType: block?.type,
-    goal: program?.goal || block?.goal || user.goal,
+    goal: goalUsed,
     gymId: user.activeGymId,
   });
   return {
