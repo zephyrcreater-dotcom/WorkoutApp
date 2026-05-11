@@ -15,6 +15,11 @@ import type {
   UserProfile,
   WorkoutSession
 } from "../types/domain";
+import {
+  calculateReadinessAdjustment as calculateTrainingIntelligenceReadinessAdjustment,
+  calculateReadinessState as calculateTrainingIntelligenceReadinessState,
+  calculateSetPerformanceScore as calculateTrainingIntelligenceSetPerformanceScore,
+} from "./trainingIntelligence";
 
 /** Round an RPE value to the nearest 0.5 increment and clamp to [6, 10]. */
 export function sanitizeRpe(value: number): number {
@@ -81,38 +86,26 @@ export function calculateSetPerformanceScore(plannedSet: PlannedSet | undefined,
   status: SetPerformanceStatus;
   reasons: string[];
 } {
-  if (actualSet.skipped) return { score: 0, status: "skipped", reasons: ["Set was skipped."] };
-  const plannedReps = actualSet.plannedReps ?? plannedSet?.targetReps ?? actualSet.actualReps;
-  const plannedWeight = actualSet.plannedWeight ?? plannedSet?.plannedWeight ?? actualSet.actualWeight;
-  const plannedRpe = actualSet.targetRpe ?? plannedSet?.targetRpe ?? actualSet.actualRpe ?? 8;
-  const repsDelta = actualSet.actualReps - plannedReps;
-  const weightRatio = plannedWeight > 0 ? actualSet.actualWeight / plannedWeight : 1;
-  const rpeDelta = (actualSet.actualRpe ?? plannedRpe) - plannedRpe;
-  const rating = setRatingNumeric(actualSet.setRating);
-  const reasons: string[] = [];
-
-  let score = 72;
-  score += Math.max(-24, Math.min(18, repsDelta * 8));
-  score += Math.max(-18, Math.min(18, (weightRatio - 1) * 180));
-  score += Math.max(-18, Math.min(12, -rpeDelta * 7));
-  score += (rating - 3) * 7;
-  if (actualSet.added) score += 4;
-  if (actualSet.kind === "warmup") score = Math.max(50, Math.min(score, 75));
-  if (repsDelta < 0) reasons.push("Reps came in below plan.");
-  if (weightRatio < 0.98) reasons.push("Load came in below plan.");
-  if (rpeDelta >= 1.5) reasons.push("Actual RPE was materially above target.");
-  if (rating <= 2) reasons.push("Set feel showed higher-than-planned difficulty.");
-  if (!reasons.length) reasons.push(actualSet.added ? "Useful added work." : "Set was close to plan.");
-
-  const finalScore = clampScore(score);
+  const result = calculateTrainingIntelligenceSetPerformanceScore({
+    plannedWeight: actualSet.plannedWeight ?? plannedSet?.plannedWeight,
+    actualWeight: actualSet.actualWeight,
+    plannedReps: actualSet.plannedReps ?? plannedSet?.targetReps,
+    actualReps: actualSet.actualReps,
+    targetRpe: actualSet.targetRpe ?? plannedSet?.targetRpe,
+    actualRpe: actualSet.actualRpe,
+    setRating: setRatingNumeric(actualSet.setRating),
+    setType: actualSet.kind,
+    skipped: actualSet.skipped,
+  });
+  const reasons = result.flags.length
+    ? result.flags.map((flag) => flag.replaceAll("_", " "))
+    : [actualSet.added ? "Useful added work." : "Set was close to plan."];
   const status: SetPerformanceStatus = actualSet.added
     ? "added"
-    : finalScore >= 86 && (repsDelta > 0 || weightRatio > 1.01 || rpeDelta <= -1 || rating >= 5)
-      ? "overperformed"
-      : finalScore >= 63
-        ? "matched"
-        : "underperformed";
-  return { score: finalScore, status, reasons };
+    : result.result === "slightly_missed"
+      ? "underperformed"
+      : (result.result as SetPerformanceStatus);
+  return { score: result.setScore, status, reasons };
 }
 
 export function calculateWorkoutScore(session: WorkoutSession): {
@@ -187,12 +180,7 @@ export function lookupRpePercent(reps: number, rpe = 8): number {
 }
 
 export function calculateReadinessScore(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">): number {
-  const positive = input.sleepQuality + input.motivation + input.energy + input.nutritionQuality;
-  const negative = input.stress + input.soreness + input.jointPain * 1.4;
-  const caffeineBump = input.caffeine ? 1 : 0;
-  // Neutral values (pos=12, neg=3.4) → ~70. Max pos (20) + no caffeine → ~93. All-bad → <15.
-  const raw = ((positive + caffeineBump - negative + 15) / 34) * 100;
-  return Math.max(0, Math.min(100, Math.round(raw)));
+  return calculateTrainingIntelligenceReadinessState(input).readinessScore;
 }
 
 export function readinessAdjustment(readiness?: ReadinessCheckIn): {
@@ -201,28 +189,29 @@ export function readinessAdjustment(readiness?: ReadinessCheckIn): {
   explanation: string;
 } {
   if (!readiness) return { rpeDelta: 0, accessorySetDelta: 0, explanation: "No readiness check-in yet." };
-  if (readiness.readinessScore < 45) {
+  const state = calculateTrainingIntelligenceReadinessAdjustment(readiness.readinessScore);
+  if (state.readinessBand === "poor") {
     return {
       rpeDelta: -1,
       accessorySetDelta: -1,
-      explanation: "Low readiness: reduce top-set RPE by about 1 and remove one optional accessory set."
+      explanation: "Readiness is poor. Trim load slightly and cut one optional accessory set."
     };
   }
-  if (readiness.readinessScore < 65) {
+  if (state.readinessBand === "low") {
     return {
       rpeDelta: -0.5,
       accessorySetDelta: 0,
-      explanation: "Moderate readiness: cap top sets slightly lower and avoid chasing load jumps."
+      explanation: "Readiness is low. Keep the day conservative and avoid chasing jumps."
     };
   }
-  if (readiness.readinessScore > 85) {
+  if (state.readinessBand === "good" || state.readinessBand === "great") {
     return {
       rpeDelta: 0.25,
       accessorySetDelta: 0,
-      explanation: "High readiness: small load increases are reasonable if warmups confirm it."
+      explanation: "Readiness is good. Run the plan and only take small increases if warmups agree."
     };
   }
-  return { rpeDelta: 0, accessorySetDelta: 0, explanation: "Readiness is normal: run the plan." };
+  return { rpeDelta: 0, accessorySetDelta: 0, explanation: "Readiness is baseline. Run the plan as written." };
 }
 
 export function getRecentExerciseSets(

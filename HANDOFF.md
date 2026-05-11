@@ -8,6 +8,116 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ---
 
+## Current Handoff for Codex — V3.1C Exercise Metadata Hardening
+
+### What landed in V3.1C
+
+**Philosophy:** User still controls split / day / focus / muscle requirements / exercise counts. The app now has richer per-exercise knowledge to optimize inside those constraints, with more targeted warnings based on goal and block type.
+
+**Exercise model additions (src/types/domain.ts):**
+- `MovementPattern` extended with: `"incline-press"`, `"knee-extension"`, `"hip-extension"`, `"shoulder-abduction"`, `"spinal-extension"`, `"trunk-stability"`
+- Three new interfaces: `ExerciseFatigueProfile` (6 fatigue dimensions: systemic, local, jointStress, lowBack, pressing, grip), `ExerciseSpecificity` (squat/bench/deadlift 0–1), `ExercisePrescriptionProfile` (preferredRepRange, preferredRpeRange, defaultSetRange, avoidLowRepLoading, failureTolerance)
+- New optional fields on `Exercise`: `exerciseFamily`, `variationGroup`, `fatigueProfile`, `specificity`, `prescriptionProfile`, `defaultRoleByGoal`
+
+**Seed metadata added (src/data/seedData.ts):**
+17 key exercises now have rich metadata: ex_squat_comp, ex_bench_comp, ex_deadlift_comp, ex_front_squat, ex_rdl, ex_barbell_row, ex_cable_row, ex_pull_up, ex_db_incline_press, ex_close_grip_bench, ex_incline_barbell_press, ex_cable_lateral_raise, ex_db_lateral_raise, ex_cable_triceps_pressdown, ex_push_up, ex_back_extension, ex_hip_thrust.
+
+**Programming rules improvements (src/lib/trainingIntelligence/programmingRules.ts):**
+- `getExerciseRoleForGoal(exercise, goalType)` — checks `defaultRoleByGoal` first, then falls back to `inferBaseExerciseRole`
+- `scoreExerciseForSlot` now uses `getExerciseRoleForGoal` instead of `inferBaseExerciseRole`
+- Family diversity penalty: -20 per same `exerciseFamily` already in day; -28 per same `variationGroup` already in day; -12 per weekly variationGroup repeat
+- `fatigueProfile` fine-grained checks: high pressingFatigue exercises penalized when press budget is already high; high lowBackFatigue exercises penalized when low-back budget is already high; very_high systemic fatigue penalized when another high-fatigue exercise is already on the day
+- `getPrescriptionForExerciseSlot` applies `prescriptionProfile` overrides at end: `avoidLowRepLoading` floors reps to preferredRepRange.min; `preferredRepRange` clamps reps; `preferredRpeRange` clamps targetRpe; `defaultSetRange` clamps sets
+- `getRequirementSlotPlan` triceps exception: powerlifting/strength days assign slot 1 triceps as `secondary_compound` (to favor close-grip bench or dips) rather than `isolation`
+
+**Goal/block-aware warnings (src/lib/programAnalysis.ts):**
+- Peaking blocks: warn when accessory count > 4
+- Deload blocks: warn when estimated weekly sets > 30
+- Bodybuilding/general-health: warn when any day has ≥3 exercises sharing the same movement pattern
+- General-health: warn when vertical pull, hip hinge/squat, or core brace patterns are missing
+- Maintenance: warn when total weekly sets exceed 60
+
+**Migration (src/lib/db.ts):**
+- `normalizeDatabase` now copies `exerciseFamily`, `variationGroup`, `fatigueProfile`, `specificity`, `prescriptionProfile`, `defaultRoleByGoal` from built-in definitions to matching stored exercises that lack these fields.
+
+### Key rules preserved
+- User-controlled requirement counts are never reduced or overridden.
+- All warnings remain advisory; no auto-rewrites of splits or prescriptions.
+- New metadata only adds new optional fields; backward compatibility is maintained via `normalizeDatabase`.
+
+### Lint/build
+- **Lint:** passing (`eslint .`, 0 errors)
+- **Build:** passing (`tsc -b && vite build`)
+
+### Recommended next step
+- V3.2 should wire `getExerciseRoleForGoal` and `prescriptionProfile` into next-week progression suggestions (name exercises, suggest load/rep/set changes, require user approval before applying).
+- Expand rich metadata to remaining seed exercises beyond the initial 17.
+
+---
+
+## Current Handoff for Codex — V3.1 Training Intelligence Foundation
+
+### V3.1B Constraint-Aware Program Optimization
+
+- The programming layer now explicitly optimizes inside the user’s chosen split instead of trying to silently “fix” the split.
+- Requirement counts still stay user-controlled and hard-capped.
+- Choose For Me and generated plans now consider:
+  - slot role
+  - day fatigue budget
+  - low-back and axial stacking
+  - repeated exercise limits
+  - repeated bench-variation limits
+- Added role overrides for common exercises where default classification was too blunt, including Push-Up, Back Extension, Pull-Up, RDL, Hip Thrust, Cable Triceps Pressdown, and lateral-raise style work.
+- Dynamic prescriptions now better separate:
+  - main lift
+  - primary / secondary compound
+  - accessory compound
+  - isolation / hypertrophy accessory
+- Program analysis now adds concise advisory warnings for repetition, recoverability, pressing bias, and hard-to-optimize day structures.
+- Warnings remain advisory only. The app still respects the split the user created.
+
+### V3.1A Programming Rules Adjustment
+
+- Added exercise-role-based generation for requirement slots.
+- Requirement counts remain user-controlled; the app now improves exercise variety inside those slots instead of reducing or overriding them.
+- `Choose For Me` and `programGenerator` now assign slot roles like `main_lift`, `secondary_compound`, `isolation`, and `hypertrophy_accessory`.
+- Dynamic prescriptions now use goal, block type, day focus, exercise role, slot order, and fatigue cost to set sets, reps, RPE, and rest.
+- Same-muscle multi-slot requests now try to diversify movement role and fatigue profile, so chest `3/3` is less likely to become three redundant heavy barbell presses.
+- Program balance warnings remain advisory only. The app can warn about pressing bias, but it still respects the user’s chosen requirement counts.
+- Full Training Intelligence / broader progression logic is still deferred to later passes.
+
+### What landed in this pass
+
+- Added `src/lib/trainingIntelligence/` as the new deterministic training-intelligence layer.
+- Kept the system rules-based and local: no AI runtime, no black-box recommendations, no cloud work.
+- Added research-backed goal/block target rules with conservative defaults for rep ranges, RPE ranges, set volume, specificity, fatigue tolerance, and progression style.
+- Added readiness scoring cleanup with baseline-centered scoring and conservative load/volume/confidence modifiers.
+- Added set performance scoring, observed e1RM calculation, normalized e1RM scaffold, same-exercise baseline selection, same-exercise weight recommendation, confidence scoring, and concise recommendation-reason text.
+- Lightly wired the new recommendation layer into planned workout cards, the live logger weight analysis, off-program starting weight suggestions, and generated planned exercise weights.
+
+### Key product rules now in place
+
+- V3.1 uses same-exercise history only. No exercise-family transfer or variation prediction yet.
+- Observed e1RM stays close to the completed set itself; normalized e1RM only makes small readiness/context adjustments.
+- Readiness baseline is normal, not idealized. Neutral check-ins should land around baseline, not near-perfect.
+- Recommendation confidence drops when history is old, sparse, or internally conflicting.
+- Recommendation text stays short and factual.
+
+### Deferred on purpose
+
+- Exercise transfer prediction across variations or families.
+- Full normalized e1RM personalization curve.
+- Full analytics overhaul.
+- Settings overhaul.
+- Cloud sync.
+- Program generator v2 / broader programming overhaul.
+
+### Recommended next step
+
+- V3.2 should wire this foundation into next-set and next-week progression decisions more directly, while keeping manual approval and deterministic rules.
+
+---
+
 ## Current Handoff for Codex — V2 Hotfix Continuation
 
 > **Read this section first.** It summarises the current state of the branch and what needs to happen next before the app is stable enough to move into the Training Intelligence / Weight Estimator v1 phase.

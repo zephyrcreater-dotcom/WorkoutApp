@@ -1,7 +1,9 @@
 import type {
   BlockType,
   CompoundSettings,
+  DayFocus,
   Exercise,
+  ExerciseRole,
   MovementPattern,
   MuscleGroup,
   PlannedSet,
@@ -9,6 +11,7 @@ import type {
   SplitLoopMode,
   TrainingGoal
 } from "../types/domain";
+import { getPrescriptionForExerciseSlot } from "./trainingIntelligence";
 
 export const defaultCompoundSettings: CompoundSettings = {
   mode: "normal",
@@ -129,44 +132,30 @@ export function getExercisePrescription(params: {
   blockType: BlockType;
   order: number;
   isPriority: boolean;
+  exerciseRole?: ExerciseRole;
+  dayFocus?: DayFocus;
+  requirementSlotIndex?: number;
+  totalRequiredForMuscle?: number;
 }): { sets: number; reps: number; rpe: number; restSeconds: number; required: boolean; note: string } {
-  const { exercise, goal, blockType, order, isPriority } = params;
-  const compound = isCompound(exercise);
-  const mainLift = exercise.kind.includes("competition-lift") || isPriority || order === 1;
-  const isolation = exercise.kind.includes("isolation");
-  const conditioning = exercise.kind.includes("conditioning") || exercise.bestTrackedBy.includes("time");
-  const strengthish = goal === "powerlifting" || blockType === "strength" || blockType === "intensification" || blockType === "peaking";
-
-  if (conditioning) {
-    return { sets: 1, reps: 20, rpe: 6, restSeconds: 45, required: false, note: "Conditioning target is tracked as time or distance when available." };
-  }
-  if (strengthish && mainLift) {
-    const peaking = blockType === "peaking";
-    return {
-      sets: peaking ? 3 : 4,
-      reps: peaking ? 3 : 5,
-      rpe: peaking ? 8 : 7.5,
-      restSeconds: 180,
-      required: true,
-      note: "Strength main lift: mostly 1-6 reps with RPE held below true maxes until testing or peaking."
-    };
-  }
-  if (strengthish && compound) {
-    return { sets: 3, reps: 6, rpe: 7, restSeconds: 150, required: true, note: "Secondary compound: moderate load, enough practice without burying recovery." };
-  }
-  if (goal === "general-health") {
-    return { sets: compound ? 2 : 2, reps: compound ? 10 : 12, rpe: 6.5, restSeconds: compound ? 105 : 60, required: order <= 3, note: "General health default: moderate effort, balanced movement, lower fatigue." };
-  }
-  if (compound) {
-    return { sets: mainLift ? 4 : 3, reps: mainLift ? 8 : 10, rpe: 7.5, restSeconds: 120, required: mainLift, note: "Hypertrophy compound: 6-12 reps with 1-3 reps in reserve." };
-  }
+  const role = params.exerciseRole
+    ?? (params.exercise.isSBDMainLift || params.isPriority || params.order === 1 ? "main_lift" : params.exercise.kind.includes("isolation") ? "isolation" : "secondary_compound");
+  const prescription = getPrescriptionForExerciseSlot({
+    goalType: params.goal,
+    blockType: params.blockType,
+    dayFocus: params.dayFocus || "hypertrophy",
+    exercise: params.exercise,
+    exerciseRole: role,
+    requirementSlotIndex: params.requirementSlotIndex ?? Math.max(0, params.order - 1),
+    totalRequiredForMuscle: params.totalRequiredForMuscle ?? 1,
+    isPriority: params.isPriority,
+  });
   return {
-    sets: isolation ? 3 : 2,
-    reps: isolation ? 15 : 12,
-    rpe: isolation ? 8 : 7.5,
-    restSeconds: isolation ? 60 : 90,
-    required: false,
-    note: "Hypertrophy accessory: 10-30 reps, close enough to failure for stimulus while preserving joints."
+    sets: prescription.sets,
+    reps: prescription.reps,
+    rpe: prescription.targetRpe,
+    restSeconds: prescription.restSeconds,
+    required: prescription.required,
+    note: `Role-based prescription: ${prescription.role.replaceAll("_", " ")} (${prescription.prescriptionReasonCode}).`
   };
 }
 
@@ -215,82 +204,41 @@ export function getBlockExercisePrescription(params: {
   blockLengthWeeks: number;
   order: number;
   isPriority: boolean;
+  dayFocus?: DayFocus;
+  exerciseRole?: ExerciseRole;
+  requirementSlotIndex?: number;
+  totalRequiredForMuscle?: number;
 }): { plannedSets: PlannedSet[]; restSeconds: number; required: boolean; note: string } {
-  const { exercise, goal, blockType, weekNumber, blockLengthWeeks, order, isPriority } = params;
-  const sbd = isSbdExercise(exercise);
-  const compound = isCompound(exercise);
-  const machineOrCable = exercise.category === "machine" || exercise.category === "cable";
-  const isolation = exercise.kind.includes("isolation") || exercise.movementPattern === "isolation";
-  const weekBuild = weekNumber <= 1 ? -0.25 : weekNumber >= blockLengthWeeks && blockLengthWeeks >= 4 ? -1 : Math.min(0.75, (weekNumber - 1) * 0.25);
-
-  let sets = 3;
-  let reps = 10;
-  let rpe = 7.5 + weekBuild;
-  let restSeconds = 90;
-  let required = order <= 3;
-  let note = "Starter prescription. Session 2 will expand this into more adaptive block logic.";
-
-  if (goal === "general-health") {
-    sets = 2;
-    reps = compound ? 10 : 12;
-    rpe = 6.5 + Math.max(0, weekBuild);
-    restSeconds = compound ? 105 : 60;
-    note = "General health placeholder: moderate effort, simple progression, low friction.";
-  } else if (goal === "powerlifting" || goal === "powerbuilding") {
-    if (sbd || isPriority) {
-      sets = blockType === "peaking" ? 3 : blockType === "accumulation" || blockType === "hypertrophy" ? 4 : 3;
-      reps = blockType === "peaking" ? 2 : blockType === "intensification" || blockType === "strength" ? 4 : 5;
-      rpe = (blockType === "peaking" ? 8 : blockType === "deload" ? 6 : 7.25) + weekBuild;
-      restSeconds = 180;
-      required = true;
-      note = "SBD/main lift placeholder: lower reps, clear RPE target, future top/backdown logic ready.";
-    } else if (compound) {
-      sets = blockType === "deload" ? 2 : 3;
-      reps = machineOrCable ? 10 : 6;
-      rpe = (blockType === "deload" ? 6 : 7) + weekBuild;
-      restSeconds = 120;
-      note = "Secondary compound placeholder: useful work without taking over SBD fatigue.";
-    } else {
-      sets = blockType === "deload" ? 2 : 3;
-      reps = isolation ? 15 : 12;
-      rpe = (blockType === "deload" ? 6 : 7.5) + Math.max(0, weekBuild);
-      restSeconds = 60;
-      note = "Accessory placeholder: hypertrophy support with editable sets, reps, and RPE.";
-    }
-  } else if (goal === "bodybuilding") {
-    sets = blockType === "deload" ? 2 : isolation ? 3 : 3;
-    reps = isolation ? 15 : machineOrCable ? 12 : 8;
-    rpe = (blockType === "deload" ? 6 : blockType === "intensification" ? 8 : 7.5) + Math.max(0, weekBuild);
-    restSeconds = compound ? 105 : 60;
-    note = "Hypertrophy placeholder: enough volume to guide setup, still fully editable.";
-  } else if (blockType === "conditioning") {
-    sets = 1;
-    reps = 20;
-    rpe = 6;
-    restSeconds = 45;
-    required = false;
-    note = "Conditioning placeholder: time/distance handling will mature in Session 2.";
-  }
-
-  if (blockType === "accumulation") sets += compound ? 1 : 0;
-  if (blockType === "intensification") reps = Math.max(4, reps - 2);
-  if (blockType === "deload") {
-    sets = Math.max(1, sets - 1);
-    rpe = Math.min(rpe, 6.5);
-  }
-
-  const normalizedRpe = Math.max(6, Math.min(9, Math.round(rpe * 2) / 2));
-  const plannedSets = Array.from({ length: Math.max(1, sets) }, (_, index) => ({
+  const { weekNumber, blockLengthWeeks } = params;
+  const role = params.exerciseRole
+    ?? (params.exercise.isSBDMainLift || params.isPriority || params.order === 1 ? "main_lift" : params.exercise.kind.includes("isolation") ? "isolation" : "secondary_compound");
+  const prescription = getPrescriptionForExerciseSlot({
+    goalType: params.goal,
+    blockType: params.blockType,
+    dayFocus: params.dayFocus || "hypertrophy",
+    exercise: params.exercise,
+    exerciseRole: role,
+    requirementSlotIndex: params.requirementSlotIndex ?? Math.max(0, params.order - 1),
+    totalRequiredForMuscle: params.totalRequiredForMuscle ?? 1,
+    weekNumber: params.weekNumber,
+    blockLengthWeeks: params.blockLengthWeeks,
+    isPriority: params.isPriority,
+  });
+  const plannedSets = Array.from({ length: Math.max(1, prescription.sets) }, (_, index) => ({
     id: `placeholder_${index + 1}`,
-    kind: (index === 0 && (sbd || isPriority) ? "top" : "working") as PlannedSet["kind"],
+    kind: (index === 0 && (role === "main_lift" || params.isPriority) ? "top" : "working") as PlannedSet["kind"],
     setNumber: index + 1,
-    targetReps: reps,
-    repRange: { min: Math.max(1, reps - 2), max: reps + 2 },
-    targetRpe: normalizedRpe,
-    targetRir: Math.max(0, Math.round(10 - normalizedRpe)),
-    percentageOfTopSet: index > 0 && (sbd || isPriority) ? 0.9 : undefined,
+    targetReps: prescription.reps,
+    repRange: prescription.repRange,
+    targetRpe: prescription.targetRpe,
+    targetRir: Math.max(0, Math.round(10 - prescription.targetRpe)),
+    percentageOfTopSet: index > 0 && role === "main_lift" ? 0.9 : undefined,
     notes: weeklyProgressionSetNote(weekNumber, blockLengthWeeks)
   }));
-
-  return { plannedSets, restSeconds, required, note };
+  return {
+    plannedSets,
+    restSeconds: prescription.restSeconds,
+    required: prescription.required,
+    note: `Role-based prescription: ${prescription.role.replaceAll("_", " ")} (${prescription.prescriptionReasonCode}).`
+  };
 }
