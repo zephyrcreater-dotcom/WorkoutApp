@@ -59,7 +59,20 @@ import {
   sessionFatigueScore
 } from "./lib/programmingLogic";
 import { verifyPin } from "./lib/security";
-import { recommendNextSetAdjustment as algNextSetAdjustment, recommendPlannedWeight } from "./lib/algorithms";
+import { recommendNextSetAdjustment as algNextSetAdjustment } from "./lib/algorithms";
+import {
+  buildFatigueBudget,
+  getExerciseIncrement,
+  getExerciseFatigueTag,
+  getSameExerciseBaseline,
+  getRequirementSlotPlan,
+  getTrainingTargets,
+  inferBaseExerciseRole,
+  mapBlockType,
+  mapTrainingGoal,
+  recommendWeightForExercise,
+  scoreExerciseForSlot,
+} from "./lib/trainingIntelligence";
 import {
   calculateMuscleVolume,
   calculateReadinessScore,
@@ -68,7 +81,6 @@ import {
   calculateWorkoutScore,
   detectWeakPointTags,
   estimateOneRepMax,
-  findGymExerciseAdjustment,
   learnGymExerciseAdjustment,
   powerliftingMetrics,
   readinessAdjustment,
@@ -76,7 +88,6 @@ import {
   recentTopSets,
   setRatingNumeric,
   summarizeWeek,
-  suggestPlannedWeight,
   sanitizeRpe,
   safeAverageRpe,
   isBlockWeekComplete,
@@ -90,6 +101,7 @@ import type {
   EquipmentCategory,
   Exercise,
   ExerciseCategoryLabel,
+  ExerciseRole,
   ExerciseUnit,
   LoggedExercise,
   LoggedSet,
@@ -942,44 +954,19 @@ function LiveLogger({
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
 
-  // Weight Estimator v1: use exercise performance history + block context for the recommendation
   const activeLoggerProgram = db.programs.find((p) => p.id === session?.programId && p.userId === user.id);
   const activeLoggerBlock = activeLoggerProgram?.blocks.find((b) => b.id === session?.blockId);
-  const exercisePerfHistory = (db.exercisePerformanceLogs ?? []).filter(
-    (log) => log.exerciseId === exercise?.id && log.userId === user.id
-  );
-  const liftMaxEntry = exercise
-    ? user.maxes.find((m) => m.exerciseId === exercise.id || exercise.name.toLowerCase().includes(m.liftName.toLowerCase()))
-    : undefined;
-  const gymAdjustEntry =
-    exercise && session?.gymId
-      ? findGymExerciseAdjustment({ db, userId: user.id, gymId: session.gymId, exerciseId: exercise.id, machineId: activeExerciseLog?.machineId })
-      : undefined;
-
-  const weightRec =
-    exercise && currentPlannedSet
-      ? recommendPlannedWeight({
-          exercise,
-          plannedSet: currentPlannedSet,
-          performanceHistory: exercisePerfHistory,
-          readiness: session?.readiness,
-          blockType: activeLoggerBlock?.type,
-          weekNumber: activeLoggerBlock?.currentWeek ?? 1,
-          totalWeeks: activeLoggerBlock?.lengthWeeks ?? 4,
-          unit: user.unit,
-          manualE1RM: liftMaxEntry ? (liftMaxEntry.trainingMax || liftMaxEntry.oneRepMax) : undefined,
-          gymAdjustmentFactor: gymAdjustEntry?.factor,
-        })
-      : undefined;
-
-  // Fall back to legacy suggestion if the new algorithm has no data (no history, no manual max)
-  const adjustedSuggestion =
-    weightRec && weightRec.weight > 0
-      ? weightRec
-      : exercise && currentPlannedSet
-        ? suggestPlannedWeight({ user, exercise, plannedSet: currentPlannedSet, db, readiness: session?.readiness, gymId: session?.gymId, machineId: activeExerciseLog?.machineId })
-        : undefined;
-  const adjustedWeight = adjustedSuggestion?.weight;
+  const weightRec = getExerciseRecommendation({
+    db,
+    user,
+    exercise,
+    plannedSet: currentPlannedSet,
+    readiness: session?.readiness,
+    blockType: activeLoggerBlock?.type,
+    goal: activeLoggerProgram?.goal || activeLoggerBlock?.goal || user.goal,
+    gymId: session?.gymId,
+  });
+  const adjustedWeight = weightRec?.recommendedWeight ?? undefined;
 
   useEffect(() => {
     setSetDraft((current) => {
@@ -1603,8 +1590,8 @@ function LiveLogger({
                 <p className="mt-1 text-sm text-iron-300">{exercise.setupCues.slice(0, 3).join(" - ")}</p>
                 <p className="mt-1 text-xs text-iron-500">
                   {activeGym?.name || "No gym selected"}
-                  {adjustedSuggestion?.weight
-                    ? ` — suggested ${adjustedSuggestion.weight} ${user.unit}${weightRec && weightRec.weight > 0 ? ` (${Math.round(weightRec.confidence * 100)}% conf.)` : ""}`
+                  {weightRec?.recommendedWeight
+                    ? ` — suggested ${weightRec.recommendedWeight} ${user.unit} (${weightRec.confidence}% ${weightRec.confidenceBand})`
                     : ""}
                 </p>
               </div>
@@ -1792,15 +1779,15 @@ function LiveLogger({
             );
           })()}
 
-          {weightRec && weightRec.weight > 0 && weightRec.sources[0] !== "no-data" && (
+          {weightRec?.recommendedWeight && weightRec.recommendedWeight > 0 && (
             <section className="panel border-white/10 p-4">
               <div className="flex items-center justify-between">
                 <p className="label">Weight analysis</p>
                 <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-iron-300">
-                  {Math.round(weightRec.confidence * 100)}% confidence
+                  {weightRec.confidence}% {weightRec.confidenceBand}
                 </span>
               </div>
-              {weightRec.reasoning.slice(0, 3).map((line, i) => (
+              {weightRec.reasonParts.map((line, i) => (
                 <p key={i} className={`mt-1 ${i === 0 ? "text-sm text-iron-200" : "text-xs text-iron-500"}`}>{line}</p>
               ))}
             </section>
@@ -2558,8 +2545,31 @@ function WorkoutDayEditor({
     }
 
     const isExtraFlag = asExtra || !reqId;
+    const slotIndex = reqId ? Math.max(0, currentProgress?.fulfilled ?? 0) : undefined;
+    const totalRequiredForMuscle = reqId ? currentProgress?.needed : undefined;
+    const slotPlan = currentReq && !isExtraFlag
+      ? getRequirementSlotPlan({
+          targetMuscle: currentReq.targetMuscle,
+          goalType: program.goal,
+          blockType: program.blocks[0]?.type || "hypertrophy",
+          dayFocus: day.focus,
+          slotIndex: slotIndex ?? 0,
+          totalSlots: totalRequiredForMuscle ?? 1,
+          movementPattern: currentReq.movementPattern,
+        })
+      : undefined;
     updateDay((target) => {
-      const planned = buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise, order: target.exercises.length + 1 });
+      const planned = buildPlannedExerciseFromExercise({
+        db,
+        user,
+        program,
+        day: target,
+        exercise,
+        order: target.exercises.length + 1,
+        exerciseRole: isExtraFlag ? inferBaseExerciseRole(exercise) : slotPlan?.role,
+        requirementSlotIndex: slotIndex,
+        totalRequiredForMuscle,
+      });
       planned.fulfillsRequirementId = isExtraFlag ? undefined : reqId;
       planned.isExtra = isExtraFlag || undefined;
       target.exercises.push(planned);
@@ -2603,7 +2613,8 @@ function WorkoutDayEditor({
         program,
         day: target,
         exercise: replacement,
-        order: targetExercise.order
+        order: targetExercise.order,
+        exerciseRole: targetExercise.exerciseRole,
       });
       replacementPlanned.id = targetExercise.id;
       replacementPlanned.order = targetExercise.order;
@@ -2635,6 +2646,16 @@ function WorkoutDayEditor({
     const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
     const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
     const dayReqs = requirements;
+    const block = program.blocks[0];
+    const currentWeek = block?.weeks.find((week) => week.workouts.some((workout) => workout.id === day.id));
+    const weeklyExerciseCounts: Record<string, number> = {};
+    currentWeek?.workouts
+      .filter((workout) => workout.id !== day.id)
+      .forEach((workout) => {
+        workout.exercises.forEach((planned) => {
+          weeklyExerciseCounts[planned.exerciseId] = (weeklyExerciseCounts[planned.exerciseId] ?? 0) + 1;
+        });
+      });
 
     const pool = db.exercises
       .filter((exercise) => (!exercise.ownerUserId || exercise.ownerUserId === user.id))
@@ -2642,7 +2663,13 @@ function WorkoutDayEditor({
       .filter((exercise) => !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item)));
 
     // Track { exercise, reqId } pairs so we can tag fulfillsRequirementId correctly
-    const selected: { exercise: Exercise; reqId: string | undefined }[] = [];
+    const selected: {
+      exercise: Exercise;
+      reqId: string | undefined;
+      slotIndex?: number;
+      totalRequiredForMuscle?: number;
+      exerciseRole?: ExerciseRole;
+    }[] = [];
     const usedIds = new Set<string>();
 
     if (dayReqs.length > 0) {
@@ -2650,23 +2677,70 @@ function WorkoutDayEditor({
       // Fill each requirement slot — exactly requiredExerciseCount exercises per slot, no more
       for (const req of [...dayReqs].sort((a, b) => a.priority - b.priority)) {
         let filled = 0;
-        const candidates = pool.filter((ex) =>
-          !usedIds.has(ex.id) &&
-          exerciseFulfillsRequirement(ex, req) &&
-          (!req.movementPattern || ex.movementPattern === req.movementPattern || ex.movementPatterns?.includes(req.movementPattern)) &&
-          (targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p)))
-        );
-        // Fallback: relax pattern constraint but keep muscle req
-        const picks = candidates.length ? candidates : pool.filter((ex) =>
-          !usedIds.has(ex.id) &&
-          exerciseFulfillsRequirement(ex, req) &&
-          (!req.movementPattern || ex.movementPattern === req.movementPattern || ex.movementPatterns?.includes(req.movementPattern))
-        );
-        picks.slice(0, req.requiredExerciseCount).forEach((ex) => {
-          selected.push({ exercise: ex, reqId: req.id });
-          usedIds.add(ex.id);
+        for (let slot = 0; slot < req.requiredExerciseCount; slot += 1) {
+          const slotPlan = getRequirementSlotPlan({
+            targetMuscle: req.targetMuscle,
+            goalType: program.goal,
+            blockType: program.blocks[0]?.type || "hypertrophy",
+            dayFocus: day.focus,
+            slotIndex: slot,
+            totalSlots: req.requiredExerciseCount,
+            movementPattern: req.movementPattern,
+          });
+          const strictCandidates = pool
+            .filter((ex) =>
+              !usedIds.has(ex.id) &&
+              exerciseFulfillsRequirement(ex, req) &&
+              (!req.movementPattern || ex.movementPattern === req.movementPattern || ex.movementPatterns?.includes(req.movementPattern)) &&
+              (targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p)))
+            )
+            .map((exercise) => ({
+              exercise,
+              score: scoreExerciseForSlot({
+                exercise,
+                slotPlan,
+                targetMuscle: req.targetMuscle,
+                goalType: program.goal,
+                blockType: program.blocks[0]?.type || "hypertrophy",
+                dayFocus: day.focus,
+                selectedExercises: selected.map((item) => item.exercise),
+                slotIndex: slot,
+                totalSlots: req.requiredExerciseCount,
+                weeklyExerciseCounts,
+                dayBudget: buildFatigueBudget(selected.map((item) => item.exercise)),
+              }),
+            }))
+            .sort((a, b) => b.score - a.score);
+          const relaxedCandidate = strictCandidates[0] ? undefined : pool
+            .filter((ex) =>
+              !usedIds.has(ex.id) &&
+              exerciseFulfillsRequirement(ex, req) &&
+              (!req.movementPattern || ex.movementPattern === req.movementPattern || ex.movementPatterns?.includes(req.movementPattern))
+            )
+            .map((exercise) => ({
+              exercise,
+              score: scoreExerciseForSlot({
+                exercise,
+                slotPlan,
+                targetMuscle: req.targetMuscle,
+                goalType: program.goal,
+                blockType: program.blocks[0]?.type || "hypertrophy",
+                dayFocus: day.focus,
+                selectedExercises: selected.map((item) => item.exercise),
+                slotIndex: slot,
+                totalSlots: req.requiredExerciseCount,
+                weeklyExerciseCounts,
+                dayBudget: buildFatigueBudget(selected.map((item) => item.exercise)),
+              }),
+            }))
+            .sort((a, b) => b.score - a.score)[0];
+          const pick = strictCandidates[0] ?? relaxedCandidate;
+          if (!pick) continue;
+          selected.push({ exercise: pick.exercise, reqId: req.id, slotIndex: slot, totalRequiredForMuscle: req.requiredExerciseCount, exerciseRole: slotPlan.role });
+          usedIds.add(pick.exercise.id);
+          weeklyExerciseCounts[pick.exercise.id] = (weeklyExerciseCounts[pick.exercise.id] ?? 0) + 1;
           filled += 1;
-        });
+        }
         if (filled < req.requiredExerciseCount) {
           warnings.push(`${req.targetMuscle} ${filled}/${req.requiredExerciseCount}`);
         }
@@ -2686,8 +2760,9 @@ function WorkoutDayEditor({
         if (selected.length >= limit) break;
         const primary = ex.primaryMuscles[0] ?? "other";
         if ((muscleCount[primary] ?? 0) < maxPerMuscle) {
-          selected.push({ exercise: ex, reqId: undefined });
+          selected.push({ exercise: ex, reqId: undefined, exerciseRole: inferBaseExerciseRole(ex) });
           usedIds.add(ex.id);
+          weeklyExerciseCounts[ex.id] = (weeklyExerciseCounts[ex.id] ?? 0) + 1;
           muscleCount[primary] = (muscleCount[primary] ?? 0) + 1;
         }
       }
@@ -2699,7 +2774,17 @@ function WorkoutDayEditor({
     }
     updateDay((target) => {
       target.exercises = selected.map((item, index) => {
-        const planned = buildPlannedExerciseFromExercise({ db, user, program, day: target, exercise: item.exercise, order: index + 1 });
+        const planned = buildPlannedExerciseFromExercise({
+          db,
+          user,
+          program,
+          day: target,
+          exercise: item.exercise,
+          order: index + 1,
+          exerciseRole: item.exerciseRole,
+          requirementSlotIndex: item.slotIndex,
+          totalRequiredForMuscle: item.totalRequiredForMuscle,
+        });
         planned.fulfillsRequirementId = item.reqId;
         return planned;
       });
@@ -2789,6 +2874,8 @@ function WorkoutDayEditor({
                   <p className="text-xs text-iron-400">
                     {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps} reps · RPE {planned.plannedSets[0]?.targetRpe}
                     {reqBadge && <span className="ml-2 rounded-full bg-volt/15 px-2 py-0.5 text-volt">{reqBadge.targetMuscle}</span>}
+                    {planned.exerciseRole && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-300">{planned.exerciseRole.replaceAll("_", " ")}</span>}
+                    {planned.fatigueTag === "high" && <span className="ml-2 rounded-full bg-ember/15 px-2 py-0.5 text-orange-100">high fatigue</span>}
                     {planned.isExtra && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-400">extra</span>}
                   </p>
                 </div>
@@ -3102,8 +3189,9 @@ function ProgramGapPanel({
     { label: "Rule Conflicts", types: ["fatigue"] as ProgramGap["type"][], match: (gap: ProgramGap) => gap.issue.toLowerCase().includes("rule") || gap.issue.toLowerCase().includes("conflict") },
     { label: "Volume", types: ["volume", "missing-category"] as ProgramGap["type"][] },
     { label: "Balance", types: ["balance", "movement-pattern"] as ProgramGap["type"][] },
-    { label: "Fatigue", types: ["fatigue"] as ProgramGap["type"][], match: (gap: ProgramGap) => !gap.issue.toLowerCase().includes("rule") && !gap.issue.toLowerCase().includes("conflict") },
-    { label: "Recovery / Spacing", types: ["frequency"] as ProgramGap["type"][] }
+    { label: "Fatigue", types: ["fatigue", "recoverability"] as ProgramGap["type"][], match: (gap: ProgramGap) => !gap.issue.toLowerCase().includes("rule") && !gap.issue.toLowerCase().includes("conflict") },
+    { label: "Repetition", types: ["repetition"] as ProgramGap["type"][] },
+    { label: "Recovery / Spacing", types: ["frequency", "recoverability"] as ProgramGap["type"][] }
   ].map((group) => ({
     ...group,
     gaps: visibleGaps.filter((gap) => (group.match ? group.match(gap) : group.types.includes(gap.type)))
@@ -5069,7 +5157,7 @@ function ProgramGapCard({ gap, db, compact = false }: { gap: ProgramGap; db: Tra
   const exercise = gap.action?.exerciseId ? db.exercises.find((item) => item.id === gap.action?.exerciseId) : undefined;
   return (
     <div className={`rounded-lg border p-3 ${
-      gap.severity === "high" ? "border-ember/40 bg-ember/10" : gap.severity === "medium" ? "border-volt/25 bg-volt/10" : "border-white/10 bg-white/[0.06]"
+      gap.severity === "high" ? "border-ember/40 bg-ember/10" : gap.severity === "moderate" ? "border-volt/25 bg-volt/10" : "border-white/10 bg-white/[0.06]"
     }`}>
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -5208,16 +5296,34 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
       <div className="space-y-3">
         {day.exercises.map((planned) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
-          const suggestion = exercise ? suggestPlannedWeight({ user, exercise, plannedSet: planned.plannedSets[0], db, gymId: user.activeGymId }) : undefined;
+          const recommendation = getExerciseRecommendation({
+            db,
+            user,
+            exercise,
+            plannedSet: planned.plannedSets[0],
+            goal: user.goal,
+            gymId: user.activeGymId,
+          });
           return (
             <div key={planned.id} className="rounded-lg border border-white/10 bg-white/[0.055] p-3">
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="font-black">{exercise?.name}</p>
-                  <p className="mt-1 text-xs text-iron-400">{planned.plannedSets.length} sets - {planned.plannedSets[0]?.targetReps} reps - RPE {planned.plannedSets[0]?.targetRpe}</p>
+                  <p className="mt-1 text-xs text-iron-400">
+                    {planned.plannedSets.length} sets - {planned.plannedSets[0]?.targetReps} reps - RPE {planned.plannedSets[0]?.targetRpe}
+                    {planned.exerciseRole && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-300">{planned.exerciseRole.replaceAll("_", " ")}</span>}
+                    {planned.fatigueTag === "high" && <span className="ml-2 rounded-full bg-ember/15 px-2 py-0.5 text-orange-100">high fatigue</span>}
+                  </p>
                 </div>
-                <span className="rounded-full bg-volt/15 px-2 py-1 text-xs font-bold text-volt">{suggestion?.weight || planned.plannedSets[0]?.plannedWeight || "-"} {user.unit}</span>
+                <span className="rounded-full bg-volt/15 px-2 py-1 text-xs font-bold text-volt">
+                  {recommendation?.recommendedWeight || planned.plannedSets[0]?.plannedWeight || "-"} {user.unit}
+                </span>
               </div>
+              {recommendation?.recommendedWeight
+                ? recommendation.reasonParts.map((part, index) => (
+                    <p key={index} className={index === 0 ? "mt-2 text-xs text-iron-300" : "mt-1 text-xs text-iron-500"}>{part}</p>
+                  ))
+                : <p className="mt-2 text-xs text-iron-500">No recent history. Enter starting weight.</p>}
               {planned.notes && <p className="mt-2 text-xs text-iron-300">{planned.notes}</p>}
             </div>
           );
@@ -5428,6 +5534,51 @@ function getLatestExercisePerformanceLog(db: TrainingDatabase, userId: string, e
     .at(0);
 }
 
+function getExerciseRecommendation(params: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  exercise?: Exercise;
+  plannedSet?: PlannedSet;
+  readiness?: ReadinessCheckIn;
+  blockType?: BlockType;
+  goal?: TrainingGoal;
+  gymId?: string;
+}) {
+  const { db, user, exercise, plannedSet, readiness, blockType, goal, gymId } = params;
+  if (!exercise || !plannedSet) return undefined;
+
+  const targetReps = plannedSet.targetReps || 8;
+  const targetRpe = plannedSet.targetRpe || 8;
+  const baseline = getSameExerciseBaseline({
+    userId: user.id,
+    exerciseId: exercise.id,
+    sessions: db.sessions,
+    targetReps,
+    targetRpe,
+    gymId,
+  });
+  const targets = getTrainingTargets(
+    mapTrainingGoal(goal || user.goal),
+    mapBlockType(blockType),
+    exercise.exerciseCategory
+  );
+  const recommendation = recommendWeightForExercise({
+    exercise,
+    targetReps,
+    targetRpe: Math.max(targetRpe, targets.selectedRpeRange.min),
+    baseline,
+    readiness,
+    increment: getExerciseIncrement(exercise, user.unit),
+    unit: user.unit,
+  });
+
+  return {
+    ...recommendation,
+    baseline,
+    targetProfile: targets,
+  };
+}
+
 function getOffProgramStartingWeight({
   db,
   user,
@@ -5448,8 +5599,15 @@ function getOffProgramStartingWeight({
     targetReps,
     targetRpe,
   };
-  const suggestion = suggestPlannedWeight({ user, exercise, plannedSet, db, gymId: user.activeGymId });
-  if (suggestion.weight > 0) return suggestion.weight;
+  const recommendation = getExerciseRecommendation({
+    db,
+    user,
+    exercise,
+    plannedSet,
+    goal: user.goal,
+    gymId: user.activeGymId,
+  });
+  if (recommendation?.recommendedWeight && recommendation.recommendedWeight > 0) return recommendation.recommendedWeight;
   const lastLog = getLatestExercisePerformanceLog(db, user.id, exercise.id);
   return lastLog?.weight && lastLog.weight > 0 ? lastLog.weight : undefined;
 }
@@ -5669,7 +5827,10 @@ function buildPlannedExerciseFromExercise({
   program,
   day,
   exercise,
-  order
+  order,
+  exerciseRole,
+  requirementSlotIndex,
+  totalRequiredForMuscle
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -5677,8 +5838,12 @@ function buildPlannedExerciseFromExercise({
   day?: WorkoutDay;
   exercise: Exercise;
   order: number;
+  exerciseRole?: ExerciseRole;
+  requirementSlotIndex?: number;
+  totalRequiredForMuscle?: number;
 }): PlannedExercise {
   const block = program?.blocks[0];
+  const resolvedRole = exerciseRole ?? inferBaseExerciseRole(exercise);
   const prescription = getBlockExercisePrescription({
     exercise,
     goal: program?.goal || user.goal,
@@ -5686,23 +5851,37 @@ function buildPlannedExerciseFromExercise({
     weekNumber: day?.weekNumber || block?.currentWeek || 1,
     blockLengthWeeks: block?.lengthWeeks || 4,
     order,
-    isPriority: Boolean(block?.priorityExerciseIds.includes(exercise.id) || isSbdExercise(exercise))
+    isPriority: Boolean(block?.priorityExerciseIds.includes(exercise.id) || isSbdExercise(exercise)),
+    dayFocus: day?.focus,
+    exerciseRole: resolvedRole,
+    requirementSlotIndex,
+    totalRequiredForMuscle,
   });
   const plannedSet = prescription.plannedSets[0] || { id: createId("pset"), kind: "working" as const, setNumber: 1, targetReps: 8, targetRpe: 7 };
-  const suggested = suggestPlannedWeight({ user, exercise, plannedSet, db, gymId: user.activeGymId });
+  const suggested = getExerciseRecommendation({
+    db,
+    user,
+    exercise,
+    plannedSet,
+    blockType: block?.type,
+    goal: program?.goal || block?.goal || user.goal,
+    gymId: user.activeGymId,
+  });
   return {
     id: createId("planned"),
     exerciseId: exercise.id,
     required: prescription.required,
     order,
+    exerciseRole: resolvedRole,
+    fatigueTag: getExerciseFatigueTag(exercise),
     plannedSets: prescription.plannedSets.map((set, index) => ({
       ...set,
       id: createId("pset"),
       setNumber: index + 1,
-      plannedWeight: suggested.weight || undefined
+      plannedWeight: suggested?.recommendedWeight || undefined
     })),
     restSeconds: prescription.restSeconds,
-    notes: `${prescription.note} ${suggested.explanation}`,
+    notes: [prescription.note, ...(suggested?.reasonParts || [])].filter(Boolean).join(" "),
     substitutionIds: exercise.substitutionIds
   };
 }

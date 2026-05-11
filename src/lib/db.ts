@@ -173,6 +173,16 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       exercise.failureTolerance = ft;
       changed = true;
     }
+    // V3.1C: copy rich metadata from built-in definition when missing from stored exercise
+    const builtIn = builtInExercises.find((b) => b.id === exercise.id);
+    if (builtIn) {
+      if (!exercise.exerciseFamily && builtIn.exerciseFamily) { exercise.exerciseFamily = builtIn.exerciseFamily; changed = true; }
+      if (!exercise.variationGroup && builtIn.variationGroup) { exercise.variationGroup = builtIn.variationGroup; changed = true; }
+      if (!exercise.fatigueProfile && builtIn.fatigueProfile) { exercise.fatigueProfile = builtIn.fatigueProfile; changed = true; }
+      if (!exercise.specificity && builtIn.specificity) { exercise.specificity = builtIn.specificity; changed = true; }
+      if (!exercise.prescriptionProfile && builtIn.prescriptionProfile) { exercise.prescriptionProfile = builtIn.prescriptionProfile; changed = true; }
+      if (!exercise.defaultRoleByGoal && builtIn.defaultRoleByGoal) { exercise.defaultRoleByGoal = builtIn.defaultRoleByGoal; changed = true; }
+    }
   });
   next.splitTemplates.forEach((split) => {
     if (!split.favoriteUserIds) {

@@ -27,9 +27,18 @@
 ## Workout-Programming Decisions
 
 - Use transparent rules-based logic first, not ML.
+- V3.1 Training Intelligence remains deterministic and explainable: no AI runtime, no black-box recommendation engine.
+- Requirement counts are user intent and should be preserved; programming logic may improve exercise role mix inside those slots but should not silently reduce or rebalance them.
+- Generated exercise selection now uses internal exercise roles and fatigue-aware slot planning.
+- Constraint-aware optimization is the programming philosophy: respect the split, optimize within it, and warn when the structure is hard to optimize.
+- Day-level fatigue budgeting and simple weekly repeat limits are acceptable deterministic constraints for generation.
+- Advisory warnings about balance, repetition, or recoverability should stay concise and should not auto-rewrite the user’s split.
+- Program balance warnings are advisory only; they should not override user-selected requirement counts.
 - Use e1RM and RPE percentage charts for load estimates.
 - Use readiness to reduce or slightly increase training stress.
 - Use actual reps, actual RPE, set rating, form rating, muscle feel, pain, and fatigue signals for suggestions.
+- Distinguish raw observed e1RM from lightly adjusted normalized e1RM.
+- Recommendation v1 uses same-exercise history only; transfer prediction across variations is deferred.
 - Program generation should use selected key exercises, goal, block type, days/week, block length, selected split days, priority muscles, and user history.
 - Selected key lifts are exercise IDs, not free-text “Priority Lifts”.
 - Program gap analysis should inspect active program structure:
@@ -39,6 +48,18 @@
   - Movement patterns.
   - Missing accessory categories.
   - Fatigue clustering.
+
+## V3.1C Exercise Metadata Architecture Decisions
+
+- `exerciseFamily` is a plain string label (e.g., `"bench_press"`, `"squat"`) that groups closely related movements; it is not a normalized FK. Diversity penalties in the generator use it as a soft constraint.
+- `variationGroup` is a more specific string (e.g., `"competition_bench"`, `"close_grip_bench"`) used for stronger same-variation penalties and weekly repeat tracking.
+- `ExerciseFatigueProfile` has 6 dimensions (systemic, local, jointStress, lowBack, pressing, grip) using the existing `FatigueLevel` type ("low" | "moderate" | "high" | "very_high"). This is separate from the existing scalar `fatigueRating`; both coexist for backward compatibility.
+- `ExerciseSpecificity` stores squat/bench/deadlift relevance scores (0–1) for potential future peaking-block weighting. Not yet used in prescription logic.
+- `ExercisePrescriptionProfile` constrains prescriptions from the exercise side. The generator goal/block logic runs first, then prescriptionProfile clamps or floors reps/RPE/sets. Goal/block rules take precedence unless prescriptionProfile overrides would pull in the same direction (e.g., `avoidLowRepLoading` raises the floor).
+- `defaultRoleByGoal` allows per-goal role overrides. `getExerciseRoleForGoal` checks this map first, then falls back to `inferBaseExerciseRole`. This is the canonical role source for scoring.
+- Triceps slot 1 on powerlifting/strength days is treated as `secondary_compound` so close-grip bench or dips score higher than pure isolation in those contexts.
+- Goal/block-aware warnings are advisory only (no auto-rewrites). Peaking/deload block warnings check accessory count and total set estimates. Bodybuilding/general-health diversity checks fire at ≥3 same-pattern exercises per day.
+- `normalizeDatabase` is the single migration path: new metadata fields are copied from builtInExercises to stored exercises that lack them on load.
 
 ## Session 2 Decisions
 
@@ -85,6 +106,8 @@
 ## Rejected Or Avoided Decisions
 
 - Do not keep “Priority Lifts” as a plain text box.
+- Do not build exercise transfer prediction in V3.1.
+- Do not overhaul analytics or settings before the training-intelligence layer proves out.
 - Do not use “compound lift settings” to govern every multi-joint exercise. Keep SBD controls separate from broader exercise filtering.
 - Do not treat each gym as a totally separate exercise universe.
 - Do not make weak spots only about “weak off chest” or “slow off floor” right now.

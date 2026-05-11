@@ -63,17 +63,35 @@ export type ExerciseCategoryLabel =
   | "isolation"
   | "bodyweight"
   | "conditioning";
+export type ExerciseRole =
+  | "main_lift"
+  | "primary_compound"
+  | "secondary_compound"
+  | "accessory_compound"
+  | "isolation"
+  | "pump_accessory"
+  | "technique_variation"
+  | "hypertrophy_accessory"
+  | "support_stability"
+  | "timed_core";
+export type ExerciseFatigueTag = "low" | "moderate" | "high";
 
 export type FatigueLevel = "low" | "moderate" | "high" | "very_high";
 export type MovementPattern =
   | "squat"
   | "hinge"
   | "horizontal-press"
+  | "incline-press"
   | "vertical-press"
   | "horizontal-pull"
   | "vertical-pull"
   | "single-leg"
   | "isolation"
+  | "knee-extension"
+  | "hip-extension"
+  | "shoulder-abduction"
+  | "spinal-extension"
+  | "trunk-stability"
   | "carry"
   | "brace"
   | "locomotion"
@@ -116,7 +134,7 @@ export type RecommendationType =
   | "cue"
   | "block-adjustment"
   | "pain-warning";
-export type ProgramGapSeverity = "low" | "medium" | "high";
+export type ProgramGapSeverity = "info" | "moderate" | "high";
 export type CompoundRestrictionMode =
   | "normal"
   | "limited"
@@ -255,6 +273,30 @@ export interface GymExerciseVariant {
   updatedAt: string;
 }
 
+// Rich exercise metadata interfaces (V3.1C)
+export interface ExerciseFatigueProfile {
+  systemicFatigue: FatigueLevel;
+  localFatigue: FatigueLevel;
+  jointStress: FatigueLevel;
+  lowBackFatigue: FatigueLevel;
+  pressingFatigue: FatigueLevel;
+  gripFatigue: FatigueLevel;
+}
+
+export interface ExerciseSpecificity {
+  squat?: number;    // 0–1
+  bench?: number;    // 0–1
+  deadlift?: number; // 0–1
+}
+
+export interface ExercisePrescriptionProfile {
+  preferredRepRange?: { min: number; max: number };
+  preferredRpeRange?: { min: number; max: number };
+  defaultSetRange?: { min: number; max: number };
+  avoidLowRepLoading?: boolean;
+  failureTolerance?: "low" | "moderate" | "high";
+}
+
 export interface Exercise {
   id: ID;
   ownerUserId?: ID;
@@ -303,6 +345,13 @@ export interface Exercise {
   variationGroupId?: string;
   variationName?: string;
   isVariation?: boolean;
+  // Rich metadata (V3.1C)
+  exerciseFamily?: string;
+  variationGroup?: string;
+  fatigueProfile?: ExerciseFatigueProfile;
+  specificity?: ExerciseSpecificity;
+  prescriptionProfile?: ExercisePrescriptionProfile;
+  defaultRoleByGoal?: Partial<Record<TrainingGoal, ExerciseRole>>;
 }
 
 export interface ExerciseVariant {
@@ -467,6 +516,8 @@ export interface PlannedExercise {
   supersetGroupId?: ID;
   required: boolean;
   order: number;
+  exerciseRole?: ExerciseRole;
+  fatigueTag?: ExerciseFatigueTag;
   plannedSets: PlannedSet[];
   restSeconds: number;
   notes?: string;
@@ -629,7 +680,7 @@ export interface WeakPoint {
 
 export interface ProgramGap {
   id: ID;
-  type: "volume" | "frequency" | "balance" | "fatigue" | "movement-pattern" | "missing-category";
+  type: "volume" | "frequency" | "balance" | "fatigue" | "movement-pattern" | "missing-category" | "repetition" | "recoverability";
   issue: string;
   whyItMatters: string;
   severity: ProgramGapSeverity;

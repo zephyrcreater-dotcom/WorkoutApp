@@ -8,7 +8,7 @@ import {
   isSbdExercise,
   muscleVolumeTargets
 } from "./programmingLogic";
-import type { Exercise, MuscleGroup, MovementPattern, Program, ProgramGap, TrainingDatabase, WorkoutDay } from "../types/domain";
+import type { BlockType, Exercise, MuscleGroup, MovementPattern, Program, ProgramGap, TrainingDatabase, WorkoutDay } from "../types/domain";
 
 export interface HypertrophyDashboardData {
   weeklyVolume: Partial<Record<MuscleGroup, number>>;
@@ -90,6 +90,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
   const volume = summarizePlannedVolume(program, db);
   const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
   const targets = muscleVolumeTargets[program.goal] || muscleVolumeTargets.powerbuilding;
+  const blockType: BlockType | undefined = program.blocks[0]?.type;
   const patternCounts: Partial<Record<MovementPattern, number>> = {};
   let pressingSets = 0;
   let pullingSets = 0;
@@ -99,16 +100,30 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
   let lowBackFatigueMovements = 0;
   const sameDayFatigue: { day: WorkoutDay; sets: number }[] = [];
   const restrictedSbd = new Map<string, { exercise: Exercise; days: Set<string>; placements: number }>();
+  const repeatedExercises = new Map<string, { exercise: Exercise; count: number }>();
+  const repeatedBenchVariations = new Map<string, number>();
 
   week.workouts.forEach((day) => {
     let dayLowerFatigue = 0;
+    let dayPressing = 0;
+    let dayPulling = 0;
     day.exercises.forEach((planned) => {
       const exercise = exerciseFor(db, planned.exerciseId);
       if (!exercise) return;
       const sets = planned.plannedSets.length;
+      repeatedExercises.set(exercise.id, { exercise, count: (repeatedExercises.get(exercise.id)?.count ?? 0) + 1 });
+      if (exercise.name.toLowerCase().includes("bench") || exercise.id === "ex_push_up" || exercise.id === "ex_dips") {
+        repeatedBenchVariations.set(exercise.id, (repeatedBenchVariations.get(exercise.id) ?? 0) + 1);
+      }
       patternCounts[exercise.movementPattern] = (patternCounts[exercise.movementPattern] || 0) + 1;
-      if (exercise.movementPattern.includes("press")) pressingSets += sets;
-      if (exercise.movementPattern.includes("pull")) pullingSets += sets;
+      if (exercise.movementPattern.includes("press")) {
+        pressingSets += sets;
+        dayPressing += sets;
+      }
+      if (exercise.movementPattern.includes("pull")) {
+        pullingSets += sets;
+        dayPulling += sets;
+      }
       if (highFatiguePatterns.has(exercise.movementPattern)) {
         lowerFatigueSets += sets;
         dayLowerFatigue += sets;
@@ -124,6 +139,31 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       }
     });
     sameDayFatigue.push({ day, sets: dayLowerFatigue });
+    if (day.name.toLowerCase().includes("deadlift") && dayLowerFatigue >= 9) {
+      gaps.push({
+        id: createId("gap"),
+        type: "recoverability",
+        issue: `${day.name} carries high low-back fatigue`,
+        whyItMatters: "Deadlift-focused days are harder to optimize when squat, hinge, and erector work all stack together.",
+        severity: dayLowerFatigue >= 12 ? "high" : "moderate",
+        suggestedFix: "Keep one main hinge, then prefer lower-fatigue back, glute, or hamstring accessories.",
+        relatedMuscles: ["back", "hamstrings", "glutes", "quads"],
+        relatedExerciseIds: [],
+        action: { kind: "move-exercise", dayId: day.id }
+      });
+    }
+    if (dayPressing > dayPulling * 2 && day.focus === "strength") {
+      gaps.push({
+        id: createId("gap"),
+        type: "balance",
+        issue: `${day.name} is press-heavy`,
+        whyItMatters: "The split is being respected, but this day has much more pressing than pulling support.",
+        severity: "info",
+        suggestedFix: "Consider another upper-back or rear-delt slot if recovery or shoulder balance becomes an issue.",
+        relatedMuscles: ["chest", "triceps", "upper-back", "rear-delts"],
+        relatedExerciseIds: [],
+      });
+    }
   });
 
   if (restrictedSbd.size) {
@@ -157,7 +197,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
         type: "volume",
         issue: `${muscle} volume is too low`,
         whyItMatters: `The active week has ${sets.toFixed(1)} planned sets, below the useful floor of about ${target.min} for this goal.`,
-        severity: sets === 0 ? "high" : "medium",
+        severity: sets === 0 ? "high" : "moderate",
         suggestedFix: fix ? `Add 2-4 sets of ${fix.name} to a compatible day.` : `Add 2-4 direct sets for ${muscle}.`,
         relatedMuscles: [muscle],
         relatedExerciseIds: fix ? [fix.id] : [],
@@ -169,7 +209,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
         type: "volume",
         issue: `${muscle} volume may be too high`,
         whyItMatters: `${sets.toFixed(1)} planned weekly sets can outpace recovery unless this is a short specialization phase.`,
-        severity: "medium",
+        severity: "moderate",
         suggestedFix: `Remove 2-4 optional ${muscle} sets or spread them across the block.`,
         relatedMuscles: [muscle],
         relatedExerciseIds: [],
@@ -200,7 +240,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       type: "volume",
       issue: "Rear delts are undertrained",
       whyItMatters: "Rear delt and upper-back work helps shoulder balance when pressing volume is high.",
-      severity: "medium",
+      severity: "moderate",
       suggestedFix: fix ? `Add ${fix.name} or another rear-delt row/reverse fly.` : "Add a rear-delt isolation or upper-back row.",
       relatedMuscles: ["rear-delts", "upper-back"],
       relatedExerciseIds: fix ? [fix.id] : [],
@@ -215,7 +255,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       type: "balance",
       issue: "Too much pressing compared to pulling",
       whyItMatters: `The week has ${pressingSets} pressing sets and ${pullingSets} pulling sets. More pulling usually improves shoulder tolerance and pressing progress.`,
-      severity: pressingSets > pullingSets * 1.8 ? "high" : "medium",
+      severity: pressingSets > pullingSets * 1.8 ? "high" : "moderate",
       suggestedFix: fix ? `Add ${fix.name} or swap one optional press for a pull.` : "Add horizontal or vertical pulling volume.",
       relatedMuscles: ["upper-back", "lats", "rear-delts"],
       relatedExerciseIds: fix ? [fix.id] : [],
@@ -229,7 +269,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       type: "fatigue",
       issue: "Too many compound lifts for the block settings",
       whyItMatters: `${compoundCount} compound lift slots exceed the current per-workout compound limit and can crowd out targeted accessory work.`,
-      severity: "medium",
+      severity: "moderate",
       suggestedFix: "Swap one or two compound accessories for isolation, cable, machine, or bodyweight work.",
       relatedMuscles: [],
       relatedExerciseIds: [],
@@ -271,7 +311,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       type: "movement-pattern",
       issue: "Squat pattern appears only once this block week",
       whyItMatters: "Low squat-pattern exposure can limit skill practice and quad volume in strength or powerbuilding blocks.",
-      severity: "low",
+      severity: "info",
       suggestedFix: "Add a lighter squat variation, leg press, or split squat on a second day.",
       relatedMuscles: ["quads", "glutes"],
       relatedExerciseIds: ["ex_front_squat", "ex_leg_press"],
@@ -286,7 +326,7 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
         type: "fatigue",
         issue: `High-fatigue lower body cluster on ${day.name}`,
         whyItMatters: `${sets} hard squat/hinge sets in one day can bury performance and make later accessories low quality.`,
-        severity: sets >= 13 ? "high" : "medium",
+        severity: sets >= 13 ? "high" : "moderate",
         suggestedFix: "Move one hinge or squat accessory to another day, or reduce one movement by 1-2 sets.",
         relatedMuscles: ["quads", "hamstrings", "glutes"],
         relatedExerciseIds: [],
@@ -301,11 +341,166 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
       type: "missing-category",
       issue: "Lack of low back and posterior-chain exercises",
       whyItMatters: "Some hinge or bracing work is useful for general resilience and strength transfer.",
-      severity: "medium",
+      severity: "moderate",
       suggestedFix: "Add RDLs, back extensions, hip hinges, carries, or bracing work.",
       relatedMuscles: ["hamstrings", "glutes", "back", "abs"],
       relatedExerciseIds: ["ex_rdl", "ex_deadlift_comp"],
       action: { kind: "add-exercise", dayId: week.workouts[0]?.id, exerciseId: "ex_rdl" }
+    });
+  }
+
+  repeatedExercises.forEach(({ exercise, count }) => {
+    if (count >= 3 && exercise.id !== "ex_bench_comp") {
+      gaps.push({
+        id: createId("gap"),
+        type: "repetition",
+        issue: `${exercise.name} repeats often this week`,
+        whyItMatters: "The split was respected, but repeated exact exercises can make the week harder to optimize for joint stress and stimulus variety.",
+        severity: exercise.id === "ex_close_grip_bench" ? "high" : "moderate",
+        suggestedFix: `Swap one ${exercise.name} slot for a nearby variation or lower-fatigue alternative if options exist.`,
+        relatedMuscles: exercise.directVolumeMuscles,
+        relatedExerciseIds: [exercise.id],
+        action: { kind: "swap-exercise", swapOutExerciseId: exercise.id }
+      });
+    }
+  });
+
+  const closeGripBenchRepeats = repeatedBenchVariations.get("ex_close_grip_bench") ?? 0;
+  if (closeGripBenchRepeats >= 2) {
+    gaps.push({
+      id: createId("gap"),
+      type: "repetition",
+      issue: "Close-grip bench repeats often this week",
+      whyItMatters: "Repeated close-grip bench can crowd out chest/triceps variety when other presses or accessories are available.",
+      severity: closeGripBenchRepeats >= 3 ? "high" : "moderate",
+      suggestedFix: "Keep one close-grip bench slot, then use DB, machine, or isolation work for the others.",
+      relatedMuscles: ["chest", "triceps"],
+      relatedExerciseIds: ["ex_close_grip_bench"],
+      action: { kind: "swap-exercise", swapOutExerciseId: "ex_close_grip_bench" }
+    });
+  }
+
+  const totalWeeklySets = Object.values(volume).reduce((sum, v) => sum + (v || 0), 0);
+  const accessoryCount = week.workouts.reduce((sum, day) => {
+    return sum + day.exercises.filter((planned) => {
+      const ex = exerciseFor(db, planned.exerciseId);
+      return ex && !ex.isSBDMainLift && (ex.exerciseCategory === "isolation" || ex.exerciseCategory === "machine_compound");
+    }).length;
+  }, 0);
+
+  if (blockType === "peaking" && accessoryCount > 4) {
+    gaps.push({
+      id: createId("gap"),
+      type: "volume",
+      issue: "High accessory volume during a peaking block",
+      whyItMatters: `Peaking blocks benefit from reduced fatigue noise. ${accessoryCount} accessory slots can accumulate residual fatigue and blunt peak-week readiness.`,
+      severity: accessoryCount > 7 ? "high" : "moderate",
+      suggestedFix: "Cut isolation and machine accessories to 2-4 slots; concentrate volume on main lifts and one or two support compounds.",
+      relatedMuscles: [],
+      relatedExerciseIds: [],
+      action: { kind: "reduce-volume" },
+    });
+  }
+
+  if (blockType === "deload" && totalWeeklySets > 30) {
+    gaps.push({
+      id: createId("gap"),
+      type: "volume",
+      issue: "Volume appears high for a deload block",
+      whyItMatters: `Deload blocks are most effective when total weekly hard sets drop meaningfully. This week shows an estimated ${Math.round(totalWeeklySets)} sets.`,
+      severity: totalWeeklySets > 50 ? "high" : "moderate",
+      suggestedFix: "Target 40–60% of normal weekly volume; keep intensity moderate and cut extra sets per exercise.",
+      relatedMuscles: [],
+      relatedExerciseIds: [],
+      action: { kind: "reduce-volume" },
+    });
+  }
+
+  if (program.goal === "bodybuilding" || program.goal === "general-health") {
+    const dayMovementPatternDiversity: { day: WorkoutDay; repeatedPatterns: MovementPattern[] }[] = [];
+    week.workouts.forEach((day) => {
+      const patternFreq: Partial<Record<MovementPattern, number>> = {};
+      day.exercises.forEach((planned) => {
+        const ex = exerciseFor(db, planned.exerciseId);
+        if (!ex) return;
+        patternFreq[ex.movementPattern] = (patternFreq[ex.movementPattern] ?? 0) + 1;
+      });
+      const repeated = (Object.entries(patternFreq) as [MovementPattern, number][])
+        .filter(([, count]) => count >= 3)
+        .map(([pattern]) => pattern);
+      if (repeated.length > 0) dayMovementPatternDiversity.push({ day, repeatedPatterns: repeated });
+    });
+    dayMovementPatternDiversity.forEach(({ day, repeatedPatterns }) => {
+      gaps.push({
+        id: createId("gap"),
+        type: "movement-pattern",
+        issue: `Low exercise diversity on ${day.name}`,
+        whyItMatters: `Three or more exercises share the same movement pattern (${repeatedPatterns.join(", ")}). For ${program.goal === "bodybuilding" ? "hypertrophy" : "general fitness"}, varied angles and patterns drive broader stimulus.`,
+        severity: "moderate",
+        suggestedFix: "Replace one repeated-pattern slot with a complementary angle, muscle, or equipment variation.",
+        relatedMuscles: [],
+        relatedExerciseIds: [],
+        action: { kind: "swap-exercise" },
+      });
+    });
+  }
+
+  if (program.goal === "general-health") {
+    const hasVerticalPull = Object.keys(patternCounts).some((p) => p === "vertical-pull");
+    const hasHinge = Object.keys(patternCounts).some((p) => p === "hinge");
+    const hasSquat = Object.keys(patternCounts).some((p) => p === "squat");
+    const hasBrace = Object.keys(patternCounts).some((p) => p === "brace");
+    if (!hasVerticalPull) {
+      gaps.push({
+        id: createId("gap"),
+        type: "movement-pattern",
+        issue: "No vertical pulling pattern this week",
+        whyItMatters: "General health training benefits from covering all major movement patterns weekly. Vertical pulls develop lat and shoulder health.",
+        severity: "moderate",
+        suggestedFix: "Add a pull-up, lat pulldown, or cable row variation.",
+        relatedMuscles: ["lats", "upper-back"],
+        relatedExerciseIds: ["ex_pull_up"],
+        action: { kind: "add-exercise", dayId: week.workouts[0]?.id, exerciseId: "ex_pull_up" },
+      });
+    }
+    if (!hasHinge && !hasSquat) {
+      gaps.push({
+        id: createId("gap"),
+        type: "movement-pattern",
+        issue: "No hip hinge or squat pattern this week",
+        whyItMatters: "Hip hinge and squat patterns are foundational for lower body health and posterior-chain strength.",
+        severity: "moderate",
+        suggestedFix: "Add an RDL, goblet squat, leg press, or hip thrust.",
+        relatedMuscles: ["glutes", "hamstrings", "quads"],
+        relatedExerciseIds: ["ex_rdl"],
+        action: { kind: "add-exercise", dayId: week.workouts[0]?.id, exerciseId: "ex_rdl" },
+      });
+    }
+    if (!hasBrace) {
+      gaps.push({
+        id: createId("gap"),
+        type: "movement-pattern",
+        issue: "No core bracing or stability work this week",
+        whyItMatters: "Trunk stability training reduces injury risk and supports all loaded movement patterns.",
+        severity: "info",
+        suggestedFix: "Add planks, dead bugs, or ab wheel variations.",
+        relatedMuscles: ["abs", "obliques"],
+        relatedExerciseIds: [],
+      });
+    }
+  }
+
+  if (program.goal === "maintenance" && totalWeeklySets > 60) {
+    gaps.push({
+      id: createId("gap"),
+      type: "volume",
+      issue: "Volume may exceed maintenance needs",
+      whyItMatters: `Maintenance training aims to preserve strength and mass at lower total workload. Estimated ${Math.round(totalWeeklySets)} total weekly sets may accumulate unnecessary fatigue.`,
+      severity: totalWeeklySets > 80 ? "high" : "moderate",
+      suggestedFix: "Trim each exercise to 2-3 working sets and consolidate accessory work to keep the program sustainable long-term.",
+      relatedMuscles: [],
+      relatedExerciseIds: [],
+      action: { kind: "reduce-volume" },
     });
   }
 
@@ -319,9 +514,11 @@ export function analyzeProgramGaps(program: Program | undefined, db: TrainingDat
 
 function categoryRank(type: ProgramGap["type"]): number {
   if (type === "fatigue") return 0;
+  if (type === "recoverability") return 1;
   if (type === "volume" || type === "missing-category") return 1;
   if (type === "balance" || type === "movement-pattern") return 2;
-  if (type === "frequency") return 3;
+  if (type === "repetition") return 3;
+  if (type === "frequency") return 4;
   return 4;
 }
 
@@ -361,5 +558,5 @@ export function buildHypertrophyDashboard(program: Program | undefined, db: Trai
 }
 
 function severityRank(severity: ProgramGap["severity"]): number {
-  return severity === "high" ? 3 : severity === "medium" ? 2 : 1;
+  return severity === "high" ? 3 : severity === "moderate" ? 2 : 1;
 }

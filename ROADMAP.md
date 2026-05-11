@@ -1,5 +1,66 @@
 # ROADMAP.md
 
+## V3.1C Exercise Metadata Hardening — Completed
+
+- Added `ExerciseFatigueProfile`, `ExerciseSpecificity`, `ExercisePrescriptionProfile` interfaces to domain types.
+- Extended `MovementPattern` with 6 supplemental values (incline-press, knee-extension, hip-extension, shoulder-abduction, spinal-extension, trunk-stability).
+- Added `exerciseFamily`, `variationGroup`, `fatigueProfile`, `specificity`, `prescriptionProfile`, `defaultRoleByGoal` optional fields to `Exercise`.
+- Applied rich metadata to 17 key seed exercises.
+- Added `getExerciseRoleForGoal` helper; updated `scoreExerciseForSlot` to use it plus exerciseFamily/variationGroup diversity penalties and fatigueProfile fine-grained fatigue checks.
+- `getPrescriptionForExerciseSlot` now applies prescriptionProfile overrides (rep/RPE/set range, avoidLowRepLoading).
+- `getRequirementSlotPlan` triceps powerlifting press-day slot 1 → `secondary_compound`.
+- `analyzeProgramGaps` now emits goal/block-aware warnings: peaking accessory overload, deload volume, bodybuilding diversity, general-health pattern gaps, maintenance volume cap.
+- `normalizeDatabase` copies new metadata from built-in exercises to stored exercises that are missing it.
+
+## Next Recommended Step
+
+1. Wire `getExerciseRoleForGoal` and `prescriptionProfile` into next-week progression suggestions.
+2. Expand rich metadata to remaining seed exercises beyond the initial 17.
+3. Add unit tests for `programmingRules.ts` scoring and prescription logic.
+
+## V3.1B Constraint-Aware Program Optimization — Completed
+
+- Added constraint-aware slot scoring that respects user requirements while improving exercise diversity.
+- Added day fatigue budgeting for SBD/main fatigue, low-back fatigue, hinge fatigue, axial loading, and pressing load.
+- Added repeat limits for exact exercises and repeated bench-style variations.
+- Added advisory warnings for repetition, recoverability, and split optimization difficulty.
+- Kept split requirements user-controlled and preserved the hard requirement-cap behavior.
+
+## Next Recommended Step
+
+1. Add richer exercise metadata and seed-library coverage so the constraint system has better fallback choices.
+2. Extend these constraints into week-to-week progression and deload decisions.
+3. Add focused manual verification around hard-to-optimize user-created splits before broader generator changes.
+
+## V3.1A Programming Rules Adjustment — Completed
+
+- Added exercise-role-based requirement slot planning.
+- Added dynamic prescription rules by goal, block type, day focus, role, and fatigue.
+- Preserved hard requirement caps and user-controlled slot counts.
+- Improved `Choose For Me` and generated plans so they prefer better role diversity inside repeated muscle requirements.
+- Kept program balance guidance advisory instead of auto-overriding user intent.
+
+## Next Recommended Step
+
+1. Extend these role rules into next-week progression suggestions.
+2. Add more exercise metadata depth where the current seed library is still thin.
+3. Keep full Training Intelligence and broader weight-estimation expansion as later layers, not part of this programming pass.
+
+## V3.1 Training Intelligence Foundation — Completed
+
+- Added `src/lib/trainingIntelligence/` as the central deterministic recommendation layer.
+- Added research-backed goal/block defaults through `trainingRules.ts`.
+- Added readiness cleanup scaffold with baseline-centered scoring and conservative load modifiers.
+- Added set performance scoring, observed e1RM, normalized e1RM scaffold, same-exercise baselines, recommendation confidence, and concise reason text.
+- Lightly wired recommendations into planned workout cards, off-program starting weights, live logger weight analysis, and generated planned-set weights.
+
+## V3.2 Recommended Next Step
+
+1. Use the new same-exercise baseline and confidence outputs for next-set progression decisions.
+2. Add next-week progression wiring that suggests load/reps/set changes without auto-applying them.
+3. Expand normalized e1RM and confidence rules before attempting any exercise-family transfer logic.
+4. Keep analytics/settings overhauls deferred until the recommendation layer has more real usage behind it.
+
 ## Codex V2 Final Stabilization — Current Status
 
 **Goal:** Resolve all blocker bugs before beginning Training Intelligence v1 / Weight Estimator v1.

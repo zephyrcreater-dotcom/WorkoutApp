@@ -2,6 +2,12 @@
 
 ## Known Bugs
 
+## V3.1 Training Intelligence Foundation
+
+- Same-exercise recommendation v1 is intentionally conservative and does not yet predict across exercise families or variations.
+- Normalized e1RM is a scaffold only; adjustments are intentionally small and not yet personalized by exercise or athlete profile.
+- Recommendation confidence is available, but no dedicated analytics view exists for auditing recommendation accuracy yet.
+
 ## V2 Final Polish Hotfix
 
 - **Block Planner reset left stale Weekly Overview visible:** Fixed. Reset now removes draft programs for the current user, clears the saved builder draft, resets planner controls, and returns the builder to initial setup state.
