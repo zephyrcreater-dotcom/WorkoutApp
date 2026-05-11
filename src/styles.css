@@ -12,10 +12,17 @@ html,
 body,
 #root {
   min-height: 100%;
+  height: auto;
+  width: 100%;
   max-width: 100%;
-  /* clip avoids the browser quirk where overflow-x:hidden on html/body also
-     disables the scroll port, trapping vertical scroll. */
+  overflow-y: visible;
   overflow-x: clip;
+}
+
+html,
+body {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 body {
@@ -25,7 +32,7 @@ body {
     linear-gradient(160deg, #07090d 0%, #111827 48%, #0d1016 100%);
   color: #f8fafc;
   -webkit-font-smoothing: antialiased;
-  overscroll-behavior-y: none;
+  overscroll-behavior-y: auto;
 }
 
 button,
@@ -33,6 +40,7 @@ input,
 select,
 textarea {
   font: inherit;
+  max-width: 100%;
 }
 
 input,

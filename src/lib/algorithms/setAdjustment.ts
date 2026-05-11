@@ -315,11 +315,25 @@ function buildRec(input: BuildRecInput): SetAdjustmentResult {
 }
 
 function buildMaintain(input: Omit<BuildRecInput, "type" | "priority" | "title" | "multiplier" | "enforceDirectionCheck">): SetAdjustmentResult {
-  const { reason, fatiguedBase, exercise, user, fatigueFactor } = input;
+  const { reason, fatiguedBase, exercise, user, loggedSet, fatigueFactor } = input;
+  const suggestedWeight = roundToExerciseIncrement(fatiguedBase, exercise, user.unit);
+  const recommendation: Recommendation = {
+    id: createId("rec"),
+    userId: user.id,
+    type: "load-change",
+    priority: "low",
+    title: "Maintain load",
+    explanation: reason,
+    action: {
+      exerciseId: exercise.id,
+      setId: loggedSet.id,
+    },
+    createdAt: nowIso(),
+  };
   return {
-    recommendation: undefined,
+    recommendation,
     fatigueFactor,
-    adjustedTargetWeight: roundToExerciseIncrement(fatiguedBase, exercise, user.unit),
+    adjustedTargetWeight: suggestedWeight,
     reason,
   };
 }

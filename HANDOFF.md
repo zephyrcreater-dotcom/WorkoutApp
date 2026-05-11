@@ -12,6 +12,13 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 > **Read this section first.** It summarises the current state of the branch and what needs to happen next before the app is stable enough to move into the Training Intelligence / Weight Estimator v1 phase.
 
+### V2 Final Polish Hotfix — Block Planner Reset / Skip WIP / Mobile Actions
+
+- Reset Block Planner now clears the saved builder draft, removes the user's draft program from IndexedDB, resets local planner controls, and hides the stale draft Weekly Overview.
+- Skip This Workout now marks the matching in-progress workout session as abandoned before syncing block progress, so Week shows skipped instead of in progress and Today no longer offers the skipped workout as resumable.
+- Today action layout now keeps Start/Resume as the primary action, then stacks Go Back / Move To Next Day / Skip This Workout, then Edit Current Day / Go Off Program with full-width mobile buttons.
+- V2 should be considered stabilized after this hotfix if manual testing passes. Next phase remains V3 Training Intelligence v1 / algorithm iteration work.
+
 ### Next-session handoff
 
 - **Branch:** `v2.1-BugHotfix`
@@ -63,15 +70,27 @@ This pass focused only on blocker stabilization before Weight Estimator v1.
 | **Today gating** | Today uses the shared `isWeekDraft`/`isWeekPlanned` helpers. If a week is draft or unplanned, the workout card and exercise list are hidden completely. |
 | **Week overview UI** | The richer weekday card selector was restored for editable weekly overview and Week Editor day selection. |
 
-### Current V2 stabilization focus
+### V2 Final Stabilization Pass — Exercise Editing / Mobile / Reviews
 
-- Preserve the working Choose For Me requirement-cap fix in both the editor and generator paths.
-- Add direct exercise swap/edit controls anywhere planned exercises are edited.
-- Debug Easy/5 next-set recommendations, especially after manual-weight entry and after prior applied decreases.
-- Make manual weight carry-forward use the previous actual set unless an explicit recommendation overrides it.
-- Tighten week planned/completed truth so empty week shells are neither planned nor completed.
-- Clamp end-of-block behavior so the app shows Block Complete instead of drifting into non-existent Week 4 planning.
-- After this pass, the project should be ready for V3 Training Intelligence v1 unless a workout-blocking bug remains.
+- Exercise Library editing now applies to seed and user-created exercises while preserving `exercise.id`; movement patterns remain hidden under Advanced Options.
+- Mobile workout logging layout was tightened with min-width-safe logger grids, single-column phone inputs/actions, bottom spacing, and explicit vertical scroll behavior.
+- Coach recommendation display now recomputes from the selected target set's prior completed source set. Recommendation identity includes source/target exercise and set indexes.
+- Set lineup tapping now selects pending, completed, and skipped sets. Back selects the previous set instead of deleting it. Editing a skipped set with actual values unskips/completes it.
+- Week completed days now open a Completed Session Review instead of the planned day editor. Logged set values, setRating, notes, and skipped state can be edited and saved.
+- Off-program completed sessions appear in Week history and use the same review/edit flow without modifying active block plans.
+- Completed-session edits rebuild exercise performance logs so analytics reflect the edited history.
+- V3 Training Intelligence v1 remains deferred until these V2 stabilization changes are manually verified.
+
+### V2 Final Bugfix — Scroll / Off-Program Weights / Set Counting
+
+- Restored normal document scrolling by removing the app shell overflow trap, keeping horizontal clipping on the document, and allowing `html/body/#root` to use normal vertical scroll.
+- Off-program builder now writes the displayed starting weight into the first `offProgramPlannedSets` entry before the session starts; added off-program exercises use the same path.
+- Manual weight carry-forward now prefers the previous completed actual set when the next set has no explicit planned/applied weight.
+- Recommendation display uses the selected target set's prior valid completed source set, so Easy/Hard adjustments use the real load the user actually logged.
+- Applied recommendations update off-program planned sets as well as programmed planned sets, so navigation does not lose the applied target weight.
+- Completed/off-program history now counts valid completed sets only, excluding skipped and warmup sets, and exercise performance logs preserve all completed off-program sets.
+- Browser smoke checked desktop and 390px mobile vertical scroll on Today; lint and build pass.
+- If the manual gym tests pass, this branch is ready for V3 Training Intelligence v1 / algorithm iteration work.
 
 ### Current verification
 
