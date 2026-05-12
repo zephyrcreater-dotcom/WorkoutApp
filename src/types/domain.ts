@@ -87,6 +87,7 @@ export type MovementPattern =
   | "vertical-pull"
   | "single-leg"
   | "isolation"
+  | "knee-flexion"
   | "knee-extension"
   | "hip-extension"
   | "elbow-flexion"
@@ -333,7 +334,11 @@ export interface Exercise {
   defaultUnit?: ExerciseUnit;
   allowedUnits?: ExerciseUnit[];
   defaultIncrement?: number;
+  increment?: number;
   customIncrement?: number;
+  isTimeBased?: boolean;
+  isBodyweight?: boolean;
+  isUnilateral?: boolean;
   canBeGymSpecific?: boolean;
   isGymSpecificEnabled?: boolean;
   createdByUser?: boolean;
@@ -357,6 +362,7 @@ export interface Exercise {
   fatigueProfile?: ExerciseFatigueProfile;
   specificity?: ExerciseSpecificity;
   prescriptionProfile?: ExercisePrescriptionProfile;
+  roleHints?: Partial<Record<TrainingGoal, ExerciseRole>>;
   defaultRoleByGoal?: Partial<Record<TrainingGoal, ExerciseRole>>;
 }
 

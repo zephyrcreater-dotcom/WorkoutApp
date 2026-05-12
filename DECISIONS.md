@@ -9,6 +9,7 @@
 - Multiple local users are required. Local PIN login is acceptable for MVP.
 - The app should recommend and explain, but never fight manual overrides.
 - Weak spots should currently mean program gaps, not literal athlete weak points.
+- Fresh installs should not ship with fake exercise load history, fake starter weights, or fake prescribed training loads. Default weights stay blank until user history exists.
 
 ## Architecture Decisions
 
@@ -68,6 +69,28 @@
   - Movement patterns.
   - Missing accessory categories.
   - Fatigue clustering.
+- Default hypertrophy/bodybuilding prescriptions should generally bias moderate-to-higher reps and harder efforts on safer machine/cable/isolation work rather than forcing low-rep `4x6` style defaults everywhere.
+- Default maintenance and deload templates should reduce total sets and avoid unnecessary exercise redundancy rather than simply cloning normal training with lower intent.
+- Split templates remain user-controlled scaffolds. The app should optimize inside the requested structure and warn when a split is hard to optimize, but should not silently add extra exercises or override requirement counts.
+- Weekly hard-set targets and per-session exercise-count guidance are advisory defaults for generation and future warnings, not hard locks.
+
+## Split Template Library Decisions
+
+- The canonical built-in split template list is the `splitTemplates` array in `src/data/seedData.ts`. Any future addition, removal, or change to a built-in template must happen there; `normalizeDatabase` in `db.ts` then propagates the change to all existing databases automatically on next load.
+- Exercise slot counts in split day requirements are frequency-aware: if a muscle is trained 1x/week, the per-session slot count is higher to compensate; if trained 2x or 3x/week, one slot per session is sufficient. This is reflected in the seed data comment headers and in `notes` fields on individual days.
+- Front delts are not given a dedicated requirement slot on push days that already include horizontal or incline pressing. Pressing exercises provide sufficient anterior-delt stimulus; a dedicated slot would cause redundant volume and crowd out more productive slots.
+- Rear delts are never placed in a push-day requirement. They are a horizontal-pull muscle and belong on pull days.
+- Mid-back is used as the pull-day B slot for back thickness in PPL 6-Day to create A/B variation with upper-back. Pull A emphasizes upper-back/traps; Pull B emphasizes mid-back/rhomboids.
+- Maintenance templates prioritize major movement pattern coverage over accessory completeness. Arms and calves are omitted from Maintenance 2-Day; front-delts are replaced with side-delts across maintenance days because pressing already covers the anterior shoulder.
+- Deload templates use 3 exercises per day at 2 weekly sets per muscle. Conditioning is optional during deload. The goal is movement quality exposure, not stimulus.
+- The three new templates (Full Body 4-Day, Powerbuilding 5-Day, Conditioning + Strength) follow the same ID-based normalization contract as existing built-ins. They will be auto-inserted into databases that do not yet contain them.
+
+## Workout Expansion Cleanup Decisions
+
+- Existing `defaultRoleByGoal` remains the canonical role-hint storage, but `roleHints` now aliases that metadata shape so richer seed metadata can be stored without breaking existing generator code.
+- `defaultUnit` / `defaultIncrement` remain the canonical unit and increment fields. The cleanup adds `increment`, `isTimeBased`, `isBodyweight`, and `isUnilateral` as convenience metadata, but normal UI should keep those details hidden unless advanced options are explicitly shown.
+- Built-in split templates are now refreshed by seed/template ID during normalization for non-user-owned templates so older installs receive updated requirement structures automatically.
+- Built-in exercise definitions are refreshed by built-in exercise ID during normalization for non-user-owned exercises so older installs receive corrected names, movement patterns, and metadata.
 
 ## V3 Phase 1 Exercise Metadata Foundation Decisions
 

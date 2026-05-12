@@ -2,6 +2,11 @@
 
 ## Known Bugs
 
+## Workout Expansion Cleanup
+
+- Browser/manual verification is still needed for the rebuilt default split templates and fresh-start weight behavior. Lint/build passed, but this Codex session did not run a live browser flow.
+- Existing user-authored custom exercises and custom split templates are preserved during normalization, but only non-user-owned built-in definitions are refreshed automatically.
+
 ## Supabase Persistence Phase 1
 
 - Local-only mode and cloud-account mode are now separated, but the explicit import flow is still intentionally conservative. It merges known top-level collections by ID and does not attempt deep per-set or per-block reconciliation yet.

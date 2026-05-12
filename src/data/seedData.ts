@@ -1,17 +1,70 @@
-import { createId, nowIso, todayIso } from "../lib/ids";
+import { createId, nowIso } from "../lib/ids";
 import type {
   Exercise,
+  ExerciseUnit,
   Gym,
+  MovementPattern,
+  MuscleGroup,
+  SplitDay,
+  SplitDayRequirement,
   ReadinessCheckIn,
   SplitTemplate,
   TrainingDatabase,
   TrainingGoal,
   UserProfile,
-  WorkoutSession,
   WorkoutTemplate
 } from "../types/domain";
 
-const builtInExercises: Exercise[] = [
+function inferExerciseFlags(exercise: Exercise): Pick<Exercise, "defaultUnit" | "allowedUnits" | "defaultIncrement" | "increment" | "isTimeBased" | "isBodyweight" | "isUnilateral" | "roleHints"> {
+  const timeBased = exercise.bestTrackedBy.includes("time") || exercise.category === "cardio";
+  const bodyweight = exercise.category === "bodyweight" || exercise.trackByBodyweight;
+  const unilateral = exercise.trackPerSide
+    || exercise.movementPattern === "single-leg"
+    || /single-arm|one-arm|walking lunge|bulgarian|split squat/i.test(exercise.name);
+  const defaultUnit: ExerciseUnit = timeBased
+    ? "time"
+    : bodyweight
+      ? "bodyweight"
+      : exercise.bestTrackedBy.includes("distance")
+        ? "distance"
+        : "lb";
+  const allowedUnits: ExerciseUnit[] = timeBased
+    ? ["time"]
+    : bodyweight
+      ? ["bodyweight", "lb", "kg", "assisted"]
+      : exercise.bestTrackedBy.includes("distance")
+        ? ["distance", "time"]
+        : ["lb", "kg"];
+  const defaultIncrement = timeBased
+    ? 5
+    : bodyweight
+      ? 5
+      : exercise.category === "dumbbell" || exercise.trackPerSide
+        ? 2.5
+        : exercise.category === "cable" || exercise.category === "machine"
+          ? 5
+          : 5;
+
+  return {
+    defaultUnit,
+    allowedUnits,
+    defaultIncrement,
+    increment: defaultIncrement,
+    isTimeBased: timeBased,
+    isBodyweight: bodyweight,
+    isUnilateral: unilateral,
+    roleHints: exercise.defaultRoleByGoal,
+  };
+}
+
+function finalizeBuiltInExercise(exercise: Exercise): Exercise {
+  return {
+    ...exercise,
+    ...inferExerciseFlags(exercise),
+  };
+}
+
+const builtInExercises: Exercise[] = ([
   {
     id: "ex_squat_comp",
     name: "Competition Squat",
@@ -396,12 +449,39 @@ const builtInExercises: Exercise[] = [
     indirectVolumeMuscles: ["biceps", "abs"],
     bestTrackedBy: ["reps", "load"],
     exerciseCategory: "main_compound",
-    fatigueRating: 3,
+    fatigueRating: 4,
     exerciseFamily: "vertical_pull",
     variationGroup: "pull_up",
-    fatigueProfile: { systemicFatigue: "moderate", localFatigue: "high", jointStress: "moderate", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "moderate", axialFatigue: "low" },
-    prescriptionProfile: { preferredRepRange: { min: 5, max: 10 }, preferredRpeRange: { min: 7.0, max: 9.0 }, defaultSetRange: { min: 3, max: 4 }, avoidLowRepLoading: false, failureTolerance: "moderate" },
+    fatigueProfile: { systemicFatigue: "high", localFatigue: "high", jointStress: "moderate", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "high", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 5, max: 10 }, preferredRpeRange: { min: 7.0, max: 8.5 }, defaultSetRange: { min: 3, max: 4 }, avoidLowRepLoading: false, failureTolerance: "low" },
     defaultRoleByGoal: { powerlifting: "primary_compound", powerbuilding: "primary_compound", bodybuilding: "primary_compound", "general-health": "primary_compound", maintenance: "primary_compound" },
+  },
+  {
+    id: "ex_assisted_pull_up",
+    name: "Assisted Pull-Up",
+    muscleGroup: "lats",
+    primaryMuscles: ["lats", "upper-back"],
+    secondaryMuscles: ["biceps", "abs"],
+    equipment: ["machine"],
+    movementPattern: "vertical-pull",
+    tags: ["bodybuilding", "general-health", "maintenance"],
+    variants: [],
+    substitutionIds: ["ex_pull_up", "ex_lat_pulldown"],
+    setupCues: ["Use the minimum assistance needed", "Pull elbows down", "Control the lowering phase"],
+    trackByBodyweight: true,
+    trackPerSide: false,
+    category: "machine",
+    kind: ["compound", "accessory"],
+    directVolumeMuscles: ["lats", "upper-back"],
+    indirectVolumeMuscles: ["biceps", "abs"],
+    bestTrackedBy: ["reps", "load"],
+    exerciseCategory: "machine_compound",
+    fatigueRating: 2,
+    exerciseFamily: "vertical_pull",
+    variationGroup: "assisted_pull_up",
+    fatigueProfile: { systemicFatigue: "low", localFatigue: "moderate", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "moderate", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 6, max: 12 }, preferredRpeRange: { min: 7.0, max: 9.0 }, defaultSetRange: { min: 2, max: 4 }, avoidLowRepLoading: true, failureTolerance: "moderate" },
+    defaultRoleByGoal: { powerlifting: "accessory_compound", powerbuilding: "secondary_compound", bodybuilding: "secondary_compound", "general-health": "secondary_compound", maintenance: "secondary_compound" },
   },
   {
     id: "ex_leg_press",
@@ -453,7 +533,7 @@ const builtInExercises: Exercise[] = [
     fatigueRating: 1,
     exerciseFamily: "knee_flexion",
     variationGroup: "lying_leg_curl",
-    movementPattern: "knee-extension",
+    movementPattern: "knee-flexion",
     fatigueProfile: { systemicFatigue: "low", localFatigue: "high", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
     prescriptionProfile: { preferredRepRange: { min: 10, max: 15 }, preferredRpeRange: { min: 7.5, max: 9.0 }, defaultSetRange: { min: 2, max: 4 }, avoidLowRepLoading: true, failureTolerance: "high" },
     defaultRoleByGoal: { powerlifting: "isolation", powerbuilding: "isolation", bodybuilding: "isolation", "general-health": "isolation", maintenance: "isolation" },
@@ -680,7 +760,7 @@ const builtInExercises: Exercise[] = [
   // --- Chest / Press ---
   {
     id: "ex_db_bench_press",
-    name: "Dumbbell Bench Press",
+    name: "Flat Dumbbell Press",
     muscleGroup: "chest",
     primaryMuscles: ["chest"],
     secondaryMuscles: ["triceps", "front-delts"],
@@ -820,7 +900,7 @@ const builtInExercises: Exercise[] = [
   },
   {
     id: "ex_dips",
-    name: "Dips",
+    name: "Weighted Dip",
     muscleGroup: "lower-chest",
     primaryMuscles: ["lower-chest", "triceps"],
     secondaryMuscles: ["front-delts"],
@@ -838,12 +918,12 @@ const builtInExercises: Exercise[] = [
     indirectVolumeMuscles: ["front-delts"],
     bestTrackedBy: ["reps", "load"],
     exerciseCategory: "secondary_compound",
-    fatigueRating: 3,
+    fatigueRating: 4,
     exerciseFamily: "vertical_press",
     variationGroup: "dips",
-    fatigueProfile: { systemicFatigue: "moderate", localFatigue: "high", jointStress: "moderate", lowBackFatigue: "low", pressingFatigue: "moderate", gripFatigue: "low", axialFatigue: "low" },
-    specificity: { squat: 0.0, bench: 0.3, deadlift: 0.0 },
-    prescriptionProfile: { preferredRepRange: { min: 6, max: 12 }, preferredRpeRange: { min: 7.0, max: 9.0 }, defaultSetRange: { min: 2, max: 4 }, avoidLowRepLoading: false, failureTolerance: "moderate" },
+    fatigueProfile: { systemicFatigue: "high", localFatigue: "high", jointStress: "moderate", lowBackFatigue: "low", pressingFatigue: "high", gripFatigue: "moderate", axialFatigue: "low" },
+    specificity: { squat: 0.0, bench: 0.45, deadlift: 0.0 },
+    prescriptionProfile: { preferredRepRange: { min: 5, max: 10 }, preferredRpeRange: { min: 7.0, max: 8.5 }, defaultSetRange: { min: 2, max: 4 }, avoidLowRepLoading: false, failureTolerance: "low" },
     defaultRoleByGoal: { powerlifting: "accessory_compound", powerbuilding: "accessory_compound", bodybuilding: "accessory_compound", "general-health": "secondary_compound", maintenance: "accessory_compound" },
   },
   // --- Back / Pull ---
@@ -876,7 +956,7 @@ const builtInExercises: Exercise[] = [
   },
   {
     id: "ex_single_arm_row",
-    name: "Single-Arm Dumbbell Row",
+    name: "One-Arm Dumbbell Row",
     muscleGroup: "upper-back",
     primaryMuscles: ["upper-back", "lats"],
     secondaryMuscles: ["biceps", "rear-delts"],
@@ -1180,7 +1260,7 @@ const builtInExercises: Exercise[] = [
   },
   {
     id: "ex_overhead_cable_ext",
-    name: "Overhead Cable Triceps Extension",
+    name: "Overhead Triceps Extension",
     muscleGroup: "triceps",
     primaryMuscles: ["triceps"],
     secondaryMuscles: [],
@@ -1528,7 +1608,7 @@ const builtInExercises: Exercise[] = [
     fatigueRating: 1,
     exerciseFamily: "knee_flexion",
     variationGroup: "seated_leg_curl",
-    movementPattern: "knee-extension",
+    movementPattern: "knee-flexion",
     fatigueProfile: { systemicFatigue: "low", localFatigue: "high", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
     prescriptionProfile: { preferredRepRange: { min: 8, max: 15 }, preferredRpeRange: { min: 7.5, max: 9.0 }, defaultSetRange: { min: 2, max: 4 }, avoidLowRepLoading: true, failureTolerance: "high" },
     defaultRoleByGoal: { powerlifting: "pump_accessory", powerbuilding: "isolation", bodybuilding: "hypertrophy_accessory", "general-health": "isolation", maintenance: "isolation" },
@@ -1777,128 +1857,957 @@ const builtInExercises: Exercise[] = [
     fatigueProfile: { systemicFatigue: "low", localFatigue: "low", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
     prescriptionProfile: { preferredRepRange: { min: 10, max: 15 }, preferredRpeRange: { min: 7.0, max: 8.5 }, defaultSetRange: { min: 2, max: 3 }, avoidLowRepLoading: true, failureTolerance: "moderate" },
     defaultRoleByGoal: { powerlifting: "pump_accessory", powerbuilding: "pump_accessory", bodybuilding: "pump_accessory", "general-health": "isolation", maintenance: "pump_accessory" },
+  },
+  {
+    id: "ex_front_raise",
+    name: "Front Raise",
+    muscleGroup: "front-delts",
+    primaryMuscles: ["front-delts"],
+    secondaryMuscles: ["upper-chest"],
+    equipment: ["dumbbell", "cable"],
+    movementPattern: "isolation",
+    movementPatterns: ["shoulder-abduction"],
+    tags: ["bodybuilding", "maintenance"],
+    variants: [],
+    substitutionIds: ["ex_db_shoulder_press", "ex_machine_shoulder_press"],
+    setupCues: ["Raise in the scapular plane", "Keep ribs down", "Avoid swinging"],
+    trackByBodyweight: false,
+    trackPerSide: true,
+    category: "dumbbell",
+    kind: ["isolation"],
+    directVolumeMuscles: ["front-delts"],
+    indirectVolumeMuscles: [],
+    bestTrackedBy: ["load", "reps"],
+    exerciseCategory: "isolation",
+    fatigueRating: 1,
+    exerciseFamily: "front_raise",
+    variationGroup: "front_raise",
+    fatigueProfile: { systemicFatigue: "low", localFatigue: "moderate", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 10, max: 20 }, preferredRpeRange: { min: 8.0, max: 9.0 }, defaultSetRange: { min: 2, max: 3 }, avoidLowRepLoading: true, failureTolerance: "high" },
+    defaultRoleByGoal: { powerbuilding: "pump_accessory", bodybuilding: "hypertrophy_accessory", maintenance: "isolation" },
+  },
+  {
+    id: "ex_cable_pull_through",
+    name: "Cable Pull-Through",
+    muscleGroup: "glutes",
+    primaryMuscles: ["glutes", "hamstrings"],
+    secondaryMuscles: ["abs"],
+    equipment: ["cable"],
+    movementPattern: "hinge",
+    movementPatterns: ["hinge", "hip-extension"],
+    tags: ["bodybuilding", "general-health", "maintenance"],
+    variants: [],
+    substitutionIds: ["ex_hip_thrust", "ex_glute_bridge", "ex_rdl"],
+    setupCues: ["Walk out from stack", "Reach hips back", "Finish with glutes"],
+    trackByBodyweight: false,
+    trackPerSide: false,
+    category: "cable",
+    kind: ["compound", "accessory"],
+    directVolumeMuscles: ["glutes", "hamstrings"],
+    indirectVolumeMuscles: ["abs"],
+    bestTrackedBy: ["load", "reps"],
+    exerciseCategory: "machine_compound",
+    fatigueRating: 2,
+    exerciseFamily: "hip_extension",
+    variationGroup: "cable_pull_through",
+    fatigueProfile: { systemicFatigue: "low", localFatigue: "moderate", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 10, max: 20 }, preferredRpeRange: { min: 7.5, max: 9.0 }, defaultSetRange: { min: 2, max: 4 }, avoidLowRepLoading: true, failureTolerance: "high" },
+    defaultRoleByGoal: { powerbuilding: "hypertrophy_accessory", bodybuilding: "hypertrophy_accessory", "general-health": "secondary_compound", maintenance: "secondary_compound" },
+  },
+  {
+    id: "ex_ab_wheel",
+    name: "Ab Wheel",
+    muscleGroup: "abs",
+    primaryMuscles: ["abs"],
+    secondaryMuscles: ["obliques", "front-delts"],
+    equipment: ["bodyweight", "other"],
+    movementPattern: "trunk-stability",
+    tags: ["powerlifting", "bodybuilding", "general-health"],
+    variants: [],
+    substitutionIds: ["ex_plank", "ex_pallof_press"],
+    setupCues: ["Brace hard before rollout", "Only go as far as you can own", "Pull ribs back down"],
+    trackByBodyweight: true,
+    trackPerSide: false,
+    category: "bodyweight",
+    kind: ["accessory"],
+    directVolumeMuscles: ["abs", "obliques"],
+    indirectVolumeMuscles: ["front-delts"],
+    bestTrackedBy: ["reps"],
+    exerciseCategory: "isolation",
+    fatigueRating: 1,
+    exerciseFamily: "core",
+    variationGroup: "ab_wheel",
+    fatigueProfile: { systemicFatigue: "low", localFatigue: "moderate", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 6, max: 15 }, preferredRpeRange: { min: 7.0, max: 8.5 }, defaultSetRange: { min: 2, max: 3 }, avoidLowRepLoading: true, failureTolerance: "moderate" },
+    defaultRoleByGoal: { powerlifting: "support_stability", powerbuilding: "support_stability", bodybuilding: "support_stability", "general-health": "support_stability", maintenance: "support_stability" },
+  },
+  {
+    id: "ex_bike",
+    name: "Bike",
+    muscleGroup: "conditioning",
+    primaryMuscles: ["conditioning"],
+    secondaryMuscles: ["quads", "glutes"],
+    equipment: ["cardio"],
+    movementPattern: "conditioning",
+    tags: ["conditioning", "general-health", "maintenance"],
+    variants: [],
+    substitutionIds: ["ex_treadmill_walk", "ex_rower", "ex_sled_push"],
+    setupCues: ["Keep effort sustainable unless intervals are prescribed", "Let breathing set the pace"],
+    trackByBodyweight: false,
+    trackPerSide: false,
+    category: "cardio",
+    kind: ["conditioning"],
+    directVolumeMuscles: ["conditioning"],
+    indirectVolumeMuscles: ["quads", "glutes"],
+    bestTrackedBy: ["time", "distance"],
+    exerciseCategory: "conditioning",
+    fatigueRating: 1,
+    exerciseFamily: "conditioning",
+    variationGroup: "bike",
+    fatigueProfile: { systemicFatigue: "low", localFatigue: "low", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 10, max: 30 }, preferredRpeRange: { min: 5.0, max: 7.5 }, defaultSetRange: { min: 1, max: 2 }, avoidLowRepLoading: true, failureTolerance: "high" },
+    defaultRoleByGoal: { conditioning: "timed_core", "general-health": "timed_core", maintenance: "timed_core" },
+  },
+  {
+    id: "ex_rower",
+    name: "Rower",
+    muscleGroup: "conditioning",
+    primaryMuscles: ["conditioning"],
+    secondaryMuscles: ["back", "hamstrings", "glutes"],
+    equipment: ["cardio"],
+    movementPattern: "conditioning",
+    tags: ["conditioning", "general-health", "maintenance"],
+    variants: [],
+    substitutionIds: ["ex_bike", "ex_treadmill_walk", "ex_sled_push"],
+    setupCues: ["Drive with legs first", "Finish with hips then arms", "Stay smooth"],
+    trackByBodyweight: false,
+    trackPerSide: false,
+    category: "cardio",
+    kind: ["conditioning"],
+    directVolumeMuscles: ["conditioning"],
+    indirectVolumeMuscles: ["back", "hamstrings", "glutes"],
+    bestTrackedBy: ["time", "distance"],
+    exerciseCategory: "conditioning",
+    fatigueRating: 2,
+    exerciseFamily: "conditioning",
+    variationGroup: "rower",
+    fatigueProfile: { systemicFatigue: "low", localFatigue: "moderate", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "low" },
+    prescriptionProfile: { preferredRepRange: { min: 5, max: 20 }, preferredRpeRange: { min: 5.0, max: 8.0 }, defaultSetRange: { min: 1, max: 2 }, avoidLowRepLoading: true, failureTolerance: "high" },
+    defaultRoleByGoal: { conditioning: "timed_core", "general-health": "timed_core", maintenance: "timed_core" },
+  },
+  {
+    id: "ex_sled_push",
+    name: "Sled Push",
+    muscleGroup: "conditioning",
+    primaryMuscles: ["conditioning", "quads", "glutes"],
+    secondaryMuscles: ["calves", "abs"],
+    equipment: ["other"],
+    movementPattern: "locomotion",
+    tags: ["conditioning", "general-health", "powerbuilding"],
+    variants: [],
+    substitutionIds: ["ex_bike", "ex_rower", "ex_treadmill_walk"],
+    setupCues: ["Drive through the floor", "Stay braced", "Keep steady pressure on the handles"],
+    trackByBodyweight: false,
+    trackPerSide: false,
+    category: "other",
+    kind: ["conditioning"],
+    directVolumeMuscles: ["conditioning", "quads", "glutes"],
+    indirectVolumeMuscles: ["calves", "abs"],
+    bestTrackedBy: ["distance", "time"],
+    exerciseCategory: "conditioning",
+    fatigueRating: 2,
+    exerciseFamily: "conditioning",
+    variationGroup: "sled_push",
+    fatigueProfile: { systemicFatigue: "moderate", localFatigue: "moderate", jointStress: "low", lowBackFatigue: "low", pressingFatigue: "low", gripFatigue: "low", axialFatigue: "moderate" },
+    prescriptionProfile: { preferredRepRange: { min: 4, max: 12 }, preferredRpeRange: { min: 6.0, max: 8.0 }, defaultSetRange: { min: 1, max: 3 }, avoidLowRepLoading: true, failureTolerance: "moderate" },
+    defaultRoleByGoal: { conditioning: "timed_core", "general-health": "timed_core", powerbuilding: "support_stability", maintenance: "timed_core" },
   }
-];
+] as Exercise[]).map(finalizeBuiltInExercise);
+
+function makeRequirement(id: string, targetMuscle: MuscleGroup, priority: number, requiredExerciseCount = 1, movementPattern?: MovementPattern): SplitDayRequirement {
+  return { id, targetMuscle, priority, requiredExerciseCount, movementPattern };
+}
+
+function makeSplitDaySeed(params: {
+  id: string;
+  name: string;
+  focus: SplitDay["focus"];
+  movementPatterns: MovementPattern[];
+  requirements: SplitDayRequirement[];
+  weeklySetTargets: Partial<Record<MuscleGroup, number>>;
+  notes?: string;
+  mainLiftFocus?: string;
+  optionalTrainingFocus?: SplitDay["focus"];
+}): SplitDay {
+  const muscleGroups = Array.from(new Set(params.requirements.map((req) => req.targetMuscle)));
+  return {
+    id: params.id,
+    name: params.name,
+    focus: params.focus,
+    optionalTrainingFocus: params.optionalTrainingFocus ?? params.focus,
+    targetMuscles: muscleGroups,
+    muscleGroups,
+    optionalMovementPatterns: params.movementPatterns,
+    mainLiftFocus: params.mainLiftFocus,
+    movementPatterns: params.movementPatterns,
+    exerciseTargetCount: params.requirements.reduce((sum, req) => sum + req.requiredExerciseCount, 0),
+    priorityMuscles: muscleGroups.slice(0, 2),
+    priorityLifts: [],
+    weeklySetTargets: params.weeklySetTargets,
+    requirements: params.requirements,
+    notes: params.notes ?? "",
+  };
+}
 
 const splitTemplates: SplitTemplate[] = [
+  // ── Bodybuilding PPL 3-Day ──────────────────────────────────────────────────
+  // 1x/week per muscle: use more exercise slots per session to accumulate volume.
   {
-    id: "split_ppl",
-    name: "Push/Pull/Legs",
+    id: "split_bodybuilding_ppl_3",
+    name: "Bodybuilding PPL 3-Day",
+    description: "Push/pull/legs trained once per week. Higher per-session volume compensates for lower frequency.",
+    goal: "bodybuilding",
+    daysPerWeek: 3,
+    notes: "1x weekly frequency — use more exercise slots per session to accumulate sufficient weekly volume.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_bb_ppl3_push",
+        name: "Push",
+        focus: "hypertrophy",
+        movementPatterns: ["horizontal-press", "incline-press", "shoulder-abduction", "elbow-extension"],
+        requirements: [
+          makeRequirement("req_bb_ppl3_push_chest", "chest", 1, 2, "horizontal-press"),
+          makeRequirement("req_bb_ppl3_push_upper", "upper-chest", 2, 1, "incline-press"),
+          makeRequirement("req_bb_ppl3_push_side", "side-delts", 3, 1, "shoulder-abduction"),
+          makeRequirement("req_bb_ppl3_push_tri", "triceps", 4, 1, "elbow-extension"),
+        ],
+        weeklySetTargets: { chest: 12, "upper-chest": 6, "side-delts": 6, triceps: 6 },
+        notes: "Front delts are sufficiently stimulated by pressing; no dedicated slot needed.",
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl3_pull",
+        name: "Pull",
+        focus: "hypertrophy",
+        movementPatterns: ["vertical-pull", "horizontal-pull", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_bb_ppl3_pull_lats", "lats", 1, 1, "vertical-pull"),
+          makeRequirement("req_bb_ppl3_pull_ub", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl3_pull_midb", "mid-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl3_pull_rear", "rear-delts", 4, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl3_pull_bi", "biceps", 5, 2, "elbow-flexion"),
+        ],
+        weeklySetTargets: { lats: 8, "upper-back": 6, "mid-back": 6, "rear-delts": 6, biceps: 10 },
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl3_legs",
+        name: "Legs",
+        focus: "hypertrophy",
+        movementPatterns: ["squat", "single-leg", "hinge", "knee-flexion", "ankle-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_bb_ppl3_legs_quads", "quads", 1, 2, "squat"),
+          makeRequirement("req_bb_ppl3_legs_hams", "hamstrings", 2, 1, "knee-flexion"),
+          makeRequirement("req_bb_ppl3_legs_glutes", "glutes", 3, 1, "hinge"),
+          makeRequirement("req_bb_ppl3_legs_calves", "calves", 4, 1, "ankle-extension"),
+          makeRequirement("req_bb_ppl3_legs_abs", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 10, hamstrings: 6, glutes: 6, calves: 4, abs: 4 },
+        notes: "Core slot is optional if recovery or time is tight.",
+      }),
+    ],
+  },
+
+  // ── Bodybuilding PPL 6-Day ──────────────────────────────────────────────────
+  // 2x/week per muscle: moderate per-session volume. A/B variation across the week.
+  {
+    id: "split_bodybuilding_ppl_6",
+    name: "Bodybuilding PPL 6-Day",
+    description: "High-frequency A/B push/pull/legs rotation. Muscles trained 2x per week with moderate per-session volume.",
     goal: "bodybuilding",
     daysPerWeek: 6,
-    notes: "High frequency hypertrophy with repeated movement patterns.",
+    notes: "2x weekly frequency — one exercise slot per muscle per session is sufficient.",
     days: [
-      { id: "split_ppl_push", name: "Push", focus: "hypertrophy", muscleGroups: ["chest", "front-delts", "side-delts", "triceps"], movementPatterns: ["horizontal-press", "vertical-press", "isolation"], exerciseTargetCount: 6, priorityMuscles: ["chest", "side-delts"], priorityLifts: [], weeklySetTargets: { chest: 8, "side-delts": 6, triceps: 6 }, requirements: [{ id: "req_push_chest", targetMuscle: "chest", requiredExerciseCount: 2, priority: 1 }, { id: "req_push_side_delts", targetMuscle: "side-delts", requiredExerciseCount: 1, priority: 2 }, { id: "req_push_triceps", targetMuscle: "triceps", requiredExerciseCount: 1, priority: 3 }] },
-      { id: "split_ppl_pull", name: "Pull", focus: "hypertrophy", muscleGroups: ["back", "lats", "upper-back", "rear-delts", "biceps"], movementPatterns: ["horizontal-pull", "vertical-pull", "isolation"], exerciseTargetCount: 6, priorityMuscles: ["lats", "upper-back"], priorityLifts: [], weeklySetTargets: { lats: 8, "upper-back": 6, biceps: 6 }, requirements: [{ id: "req_pull_lats", targetMuscle: "lats", requiredExerciseCount: 1, priority: 1 }, { id: "req_pull_upper_back", targetMuscle: "upper-back", requiredExerciseCount: 1, priority: 2 }, { id: "req_pull_rear_delts", targetMuscle: "rear-delts", requiredExerciseCount: 1, priority: 3 }, { id: "req_pull_biceps", targetMuscle: "biceps", requiredExerciseCount: 1, priority: 4 }] },
-      { id: "split_ppl_legs", name: "Legs", focus: "hypertrophy", muscleGroups: ["quads", "hamstrings", "glutes", "calves"], movementPatterns: ["squat", "hinge", "isolation"], exerciseTargetCount: 6, priorityMuscles: ["quads", "hamstrings"], priorityLifts: [], weeklySetTargets: { quads: 8, hamstrings: 8, glutes: 4 }, requirements: [{ id: "req_legs_quads", targetMuscle: "quads", requiredExerciseCount: 2, priority: 1 }, { id: "req_legs_hamstrings", targetMuscle: "hamstrings", requiredExerciseCount: 1, priority: 2 }, { id: "req_legs_glutes", targetMuscle: "glutes", requiredExerciseCount: 1, priority: 3 }, { id: "req_legs_calves", targetMuscle: "calves", requiredExerciseCount: 1, priority: 4 }] }
-    ]
+      makeSplitDaySeed({
+        id: "split_bb_ppl6_push_a",
+        name: "Push A",
+        focus: "hypertrophy",
+        movementPatterns: ["horizontal-press", "incline-press", "shoulder-abduction", "elbow-extension"],
+        requirements: [
+          makeRequirement("req_bb_ppl6_pusha_chest", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_bb_ppl6_pusha_upper", "upper-chest", 2, 1, "incline-press"),
+          makeRequirement("req_bb_ppl6_pusha_side", "side-delts", 3, 1, "shoulder-abduction"),
+          makeRequirement("req_bb_ppl6_pusha_tri", "triceps", 4, 1, "elbow-extension"),
+        ],
+        weeklySetTargets: { chest: 6, "upper-chest": 6, "side-delts": 6, triceps: 6 },
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl6_pull_a",
+        name: "Pull A",
+        focus: "hypertrophy",
+        movementPatterns: ["vertical-pull", "horizontal-pull", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_bb_ppl6_pulla_lats", "lats", 1, 1, "vertical-pull"),
+          makeRequirement("req_bb_ppl6_pulla_ub", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl6_pulla_rear", "rear-delts", 3, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl6_pulla_bi", "biceps", 4, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { lats: 6, "upper-back": 6, "rear-delts": 6, biceps: 6 },
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl6_legs_a",
+        name: "Legs A",
+        focus: "hypertrophy",
+        movementPatterns: ["squat", "single-leg", "knee-flexion", "ankle-extension"],
+        requirements: [
+          makeRequirement("req_bb_ppl6_legsa_quads", "quads", 1, 2, "squat"),
+          makeRequirement("req_bb_ppl6_legsa_hams", "hamstrings", 2, 1, "knee-flexion"),
+          makeRequirement("req_bb_ppl6_legsa_calves", "calves", 3, 1, "ankle-extension"),
+        ],
+        weeklySetTargets: { quads: 8, hamstrings: 5, calves: 4 },
+        notes: "Quad-focused leg day; glutes and posterior chain are the emphasis in Legs B.",
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl6_push_b",
+        name: "Push B",
+        focus: "hypertrophy",
+        movementPatterns: ["incline-press", "horizontal-press", "shoulder-abduction", "elbow-extension"],
+        requirements: [
+          makeRequirement("req_bb_ppl6_pushb_upper", "upper-chest", 1, 1, "incline-press"),
+          makeRequirement("req_bb_ppl6_pushb_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_bb_ppl6_pushb_side", "side-delts", 3, 1, "shoulder-abduction"),
+          makeRequirement("req_bb_ppl6_pushb_tri", "triceps", 4, 1, "elbow-extension"),
+        ],
+        weeklySetTargets: { "upper-chest": 6, chest: 6, "side-delts": 6, triceps: 6 },
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl6_pull_b",
+        name: "Pull B",
+        focus: "hypertrophy",
+        movementPatterns: ["horizontal-pull", "vertical-pull", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_bb_ppl6_pullb_midb", "mid-back", 1, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl6_pullb_lats", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_bb_ppl6_pullb_rear", "rear-delts", 3, 1, "horizontal-pull"),
+          makeRequirement("req_bb_ppl6_pullb_bi", "biceps", 4, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { "mid-back": 6, lats: 6, "rear-delts": 6, biceps: 6 },
+        notes: "Mid-back emphasis here; Pull A covers upper-back/traps.",
+      }),
+      makeSplitDaySeed({
+        id: "split_bb_ppl6_legs_b",
+        name: "Legs B",
+        focus: "hypertrophy",
+        movementPatterns: ["hinge", "hip-extension", "squat", "ankle-extension"],
+        requirements: [
+          makeRequirement("req_bb_ppl6_legsb_hams", "hamstrings", 1, 1, "hinge"),
+          makeRequirement("req_bb_ppl6_legsb_glutes", "glutes", 2, 1, "hip-extension"),
+          makeRequirement("req_bb_ppl6_legsb_quads", "quads", 3, 1, "squat"),
+          makeRequirement("req_bb_ppl6_legsb_calves", "calves", 4, 1, "ankle-extension"),
+        ],
+        weeklySetTargets: { hamstrings: 6, glutes: 6, quads: 6, calves: 4 },
+        notes: "Posterior-focused leg day; complement to Legs A which emphasizes quads.",
+      }),
+    ],
   },
+
+  // ── Upper/Lower 4-Day ───────────────────────────────────────────────────────
+  // 2x/week per muscle: one exercise slot per muscle per session.
   {
-    id: "split_upper_lower",
-    name: "Upper/Lower",
+    id: "split_upper_lower_4",
+    name: "Upper/Lower 4-Day",
+    description: "Four-day split with muscles trained 2x per week. Covers all major upper and lower patterns across two upper and two lower sessions.",
+    goal: "bodybuilding",
+    daysPerWeek: 4,
+    notes: "2x weekly frequency — one exercise per muscle per session is sufficient.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_ul4_upper_1",
+        name: "Upper 1",
+        focus: "hypertrophy",
+        movementPatterns: ["horizontal-press", "vertical-pull", "horizontal-pull", "shoulder-abduction", "elbow-extension", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_ul4_u1_chest", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_ul4_u1_lats", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_ul4_u1_ub", "upper-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_ul4_u1_side", "side-delts", 4, 1, "shoulder-abduction"),
+          makeRequirement("req_ul4_u1_tri", "triceps", 5, 1, "elbow-extension"),
+          makeRequirement("req_ul4_u1_bi", "biceps", 6, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { chest: 6, lats: 6, "upper-back": 6, "side-delts": 4, triceps: 4, biceps: 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_ul4_lower_1",
+        name: "Lower 1",
+        focus: "hypertrophy",
+        movementPatterns: ["squat", "knee-flexion", "hip-extension", "ankle-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_ul4_l1_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_ul4_l1_hams", "hamstrings", 2, 1, "knee-flexion"),
+          makeRequirement("req_ul4_l1_glutes", "glutes", 3, 1, "hip-extension"),
+          makeRequirement("req_ul4_l1_calves", "calves", 4, 1, "ankle-extension"),
+          makeRequirement("req_ul4_l1_abs", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 6, hamstrings: 5, glutes: 5, calves: 4, abs: 4 },
+        notes: "Core slot is optional if recovery or time is tight.",
+      }),
+      makeSplitDaySeed({
+        id: "split_ul4_upper_2",
+        name: "Upper 2",
+        focus: "hypertrophy",
+        movementPatterns: ["incline-press", "vertical-pull", "horizontal-pull", "elbow-extension", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_ul4_u2_upper", "upper-chest", 1, 1, "incline-press"),
+          makeRequirement("req_ul4_u2_lats", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_ul4_u2_ub", "upper-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_ul4_u2_rear", "rear-delts", 4, 1, "horizontal-pull"),
+          makeRequirement("req_ul4_u2_tri", "triceps", 5, 1, "elbow-extension"),
+          makeRequirement("req_ul4_u2_bi", "biceps", 6, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { "upper-chest": 6, lats: 6, "upper-back": 6, "rear-delts": 4, triceps: 4, biceps: 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_ul4_lower_2",
+        name: "Lower 2",
+        focus: "hypertrophy",
+        movementPatterns: ["squat", "hinge", "hip-extension", "ankle-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_ul4_l2_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_ul4_l2_hams", "hamstrings", 2, 1, "hinge"),
+          makeRequirement("req_ul4_l2_glutes", "glutes", 3, 1, "hip-extension"),
+          makeRequirement("req_ul4_l2_calves", "calves", 4, 1, "ankle-extension"),
+          makeRequirement("req_ul4_l2_abs", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 6, hamstrings: 5, glutes: 5, calves: 4, abs: 4 },
+        notes: "Core slot is optional if recovery or time is tight.",
+      }),
+    ],
+  },
+
+  // ── Full Body 3-Day ─────────────────────────────────────────────────────────
+  // 3x/week per pattern: moderate per-session volume.
+  {
+    id: "split_full_body_3",
+    name: "Full Body 3-Day",
+    description: "Three-day full-body split. Each session hits a push, pull, squat/lunge, hinge, and optional accessory slot.",
+    goal: "bodybuilding",
+    daysPerWeek: 3,
+    notes: "3x weekly frequency for most patterns — keep per-session volume moderate.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_fb3_day1",
+        name: "Day 1",
+        focus: "hybrid",
+        movementPatterns: ["squat", "horizontal-press", "vertical-pull", "shoulder-abduction", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_fb3_d1_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_fb3_d1_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_fb3_d1_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_fb3_d1_side", "side-delts", 4, 1, "shoulder-abduction"),
+          makeRequirement("req_fb3_d1_abs", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 5, chest: 5, lats: 5, "side-delts": 4, abs: 3 },
+        notes: "Core slot is optional if recovery or time is tight.",
+      }),
+      makeSplitDaySeed({
+        id: "split_fb3_day2",
+        name: "Day 2",
+        focus: "hybrid",
+        movementPatterns: ["hinge", "incline-press", "horizontal-pull", "elbow-flexion", "ankle-extension"],
+        requirements: [
+          makeRequirement("req_fb3_d2_hams", "hamstrings", 1, 1, "hinge"),
+          makeRequirement("req_fb3_d2_upper", "upper-chest", 2, 1, "incline-press"),
+          makeRequirement("req_fb3_d2_ub", "upper-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_fb3_d2_bi", "biceps", 4, 1, "elbow-flexion"),
+          makeRequirement("req_fb3_d2_calves", "calves", 5, 1, "ankle-extension"),
+        ],
+        weeklySetTargets: { hamstrings: 5, "upper-chest": 5, "upper-back": 5, biceps: 4, calves: 3 },
+        notes: "Calf slot is optional if recovery or time is tight.",
+      }),
+      makeSplitDaySeed({
+        id: "split_fb3_day3",
+        name: "Day 3",
+        focus: "hybrid",
+        movementPatterns: ["single-leg", "vertical-press", "horizontal-pull", "elbow-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_fb3_d3_glutequad", "glutes", 1, 1, "single-leg"),
+          makeRequirement("req_fb3_d3_press", "front-delts", 2, 1, "vertical-press"),
+          makeRequirement("req_fb3_d3_pull", "upper-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_fb3_d3_arms", "triceps", 4, 1, "elbow-extension"),
+          makeRequirement("req_fb3_d3_core", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { glutes: 5, "front-delts": 4, "upper-back": 5, triceps: 4, abs: 3 },
+        notes: "Core slot is optional if recovery or time is tight.",
+      }),
+    ],
+  },
+
+  // ── Full Body 4-Day ─────────────────────────────────────────────────────────
+  // A/B rotation: most muscles trained 2x/week. Moderate per-session volume.
+  {
+    id: "split_full_body_4",
+    name: "Full Body 4-Day",
+    description: "Four-day full-body template with A/B day rotation. Most muscles trained 2x per week at moderate per-session volume.",
+    goal: "bodybuilding",
+    daysPerWeek: 4,
+    notes: "2x weekly frequency across 4 days — one exercise slot per muscle per session.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_fb4_day1",
+        name: "Day 1",
+        focus: "hybrid",
+        movementPatterns: ["squat", "horizontal-press", "vertical-pull", "shoulder-abduction"],
+        requirements: [
+          makeRequirement("req_fb4_d1_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_fb4_d1_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_fb4_d1_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_fb4_d1_side", "side-delts", 4, 1, "shoulder-abduction"),
+        ],
+        weeklySetTargets: { quads: 5, chest: 5, lats: 5, "side-delts": 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_fb4_day2",
+        name: "Day 2",
+        focus: "hybrid",
+        movementPatterns: ["hinge", "hip-extension", "horizontal-pull", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_fb4_d2_hams", "hamstrings", 1, 1, "hinge"),
+          makeRequirement("req_fb4_d2_glutes", "glutes", 2, 1, "hip-extension"),
+          makeRequirement("req_fb4_d2_ub", "upper-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_fb4_d2_bi", "biceps", 4, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { hamstrings: 5, glutes: 5, "upper-back": 5, biceps: 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_fb4_day3",
+        name: "Day 3",
+        focus: "hybrid",
+        movementPatterns: ["squat", "incline-press", "vertical-pull", "elbow-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_fb4_d3_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_fb4_d3_upper", "upper-chest", 2, 1, "incline-press"),
+          makeRequirement("req_fb4_d3_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_fb4_d3_tri", "triceps", 4, 1, "elbow-extension"),
+          makeRequirement("req_fb4_d3_abs", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 5, "upper-chest": 5, lats: 5, triceps: 4, abs: 3 },
+        notes: "Core slot is optional if recovery or time is tight.",
+      }),
+      makeSplitDaySeed({
+        id: "split_fb4_day4",
+        name: "Day 4",
+        focus: "hybrid",
+        movementPatterns: ["knee-flexion", "hip-extension", "horizontal-pull", "ankle-extension"],
+        requirements: [
+          makeRequirement("req_fb4_d4_hams", "hamstrings", 1, 1, "knee-flexion"),
+          makeRequirement("req_fb4_d4_glutes", "glutes", 2, 1, "hip-extension"),
+          makeRequirement("req_fb4_d4_rear", "rear-delts", 3, 1, "horizontal-pull"),
+          makeRequirement("req_fb4_d4_calves", "calves", 4, 1, "ankle-extension"),
+        ],
+        weeklySetTargets: { hamstrings: 5, glutes: 5, "rear-delts": 4, calves: 4 },
+      }),
+    ],
+  },
+
+  // ── Maintenance 2-Day ───────────────────────────────────────────────────────
+  {
+    id: "split_maintenance_2",
+    name: "Maintenance 2-Day",
+    description: "Two-day minimum-effective-dose template. Covers major movement patterns with low total volume.",
+    goal: "maintenance",
+    daysPerWeek: 2,
+    notes: "Low volume designed to preserve progress during busy or recovery weeks.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_maint2_day1",
+        name: "Day 1",
+        focus: "hybrid",
+        movementPatterns: ["horizontal-press", "vertical-pull", "squat", "hinge"],
+        requirements: [
+          makeRequirement("req_maint2_d1_chest", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_maint2_d1_back", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_maint2_d1_quads", "quads", 3, 1, "squat"),
+          makeRequirement("req_maint2_d1_hams", "hamstrings", 4, 1, "hinge"),
+        ],
+        weeklySetTargets: { chest: 3, lats: 3, quads: 3, hamstrings: 3 },
+      }),
+      makeSplitDaySeed({
+        id: "split_maint2_day2",
+        name: "Day 2",
+        focus: "hybrid",
+        movementPatterns: ["horizontal-pull", "shoulder-abduction", "hip-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_maint2_d2_ub", "upper-back", 1, 1, "horizontal-pull"),
+          makeRequirement("req_maint2_d2_shoulders", "side-delts", 2, 1, "shoulder-abduction"),
+          makeRequirement("req_maint2_d2_glutes", "glutes", 3, 1, "hip-extension"),
+          makeRequirement("req_maint2_d2_core", "abs", 4, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { "upper-back": 3, "side-delts": 3, glutes: 3, abs: 2 },
+        notes: "Arms and calves omitted — major pattern coverage is the priority at this volume.",
+      }),
+    ],
+  },
+
+  // ── Maintenance 3-Day ───────────────────────────────────────────────────────
+  {
+    id: "split_maintenance_3",
+    name: "Maintenance 3-Day",
+    description: "Balanced low-volume three-day template. Covers major push, pull, and leg patterns without chasing pump.",
+    goal: "maintenance",
+    daysPerWeek: 3,
+    notes: "Low volume across three days. Avoids redundant muscle slots.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_maint3_day1",
+        name: "Day 1",
+        focus: "hybrid",
+        movementPatterns: ["squat", "horizontal-press", "vertical-pull", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_maint3_d1_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_maint3_d1_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_maint3_d1_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_maint3_d1_abs", "abs", 4, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 3, chest: 3, lats: 3, abs: 2 },
+      }),
+      makeSplitDaySeed({
+        id: "split_maint3_day2",
+        name: "Day 2",
+        focus: "hybrid",
+        movementPatterns: ["hinge", "shoulder-abduction", "horizontal-pull", "elbow-extension"],
+        requirements: [
+          makeRequirement("req_maint3_d2_hams", "hamstrings", 1, 1, "hinge"),
+          makeRequirement("req_maint3_d2_delts", "side-delts", 2, 1, "shoulder-abduction"),
+          makeRequirement("req_maint3_d2_ub", "upper-back", 3, 1, "horizontal-pull"),
+          makeRequirement("req_maint3_d2_tri", "triceps", 4, 1, "elbow-extension"),
+        ],
+        weeklySetTargets: { hamstrings: 3, "side-delts": 3, "upper-back": 3, triceps: 2 },
+        notes: "Side delts used here instead of front delts — pressing already covers anterior shoulder.",
+      }),
+      makeSplitDaySeed({
+        id: "split_maint3_day3",
+        name: "Day 3",
+        focus: "hybrid",
+        movementPatterns: ["single-leg", "incline-press", "horizontal-pull", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_maint3_d3_glutes", "glutes", 1, 1, "single-leg"),
+          makeRequirement("req_maint3_d3_upper", "upper-chest", 2, 1, "incline-press"),
+          makeRequirement("req_maint3_d3_lats", "lats", 3, 1, "horizontal-pull"),
+          makeRequirement("req_maint3_d3_bi", "biceps", 4, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { glutes: 3, "upper-chest": 3, lats: 3, biceps: 2 },
+      }),
+    ],
+  },
+
+  // ── Powerbuilding Upper/Lower 4-Day ────────────────────────────────────────
+  {
+    id: "split_powerbuilding_ul_4",
+    name: "Powerbuilding Upper/Lower 4-Day",
+    description: "Compound-focused upper and lower days paired with hypertrophy accessory sessions. Strength and size in a four-day structure.",
     goal: "powerbuilding",
     daysPerWeek: 4,
-    notes: "Balanced strength and hypertrophy with simple recovery management.",
+    notes: "Strength days prioritize main lifts; hypertrophy days add accessory volume.",
     days: [
-      { id: "split_ul_upper_strength", name: "Upper Strength", focus: "strength", muscleGroups: ["chest", "back", "triceps", "biceps"], mainLiftFocus: "Bench", movementPatterns: ["horizontal-press", "horizontal-pull"], exerciseTargetCount: 5, priorityMuscles: ["chest", "triceps"], priorityLifts: ["bench"], weeklySetTargets: { chest: 5, back: 5, triceps: 3 } },
-      { id: "split_ul_lower_strength", name: "Lower Strength", focus: "strength", muscleGroups: ["quads", "hamstrings", "glutes"], mainLiftFocus: "Squat", movementPatterns: ["squat", "hinge"], exerciseTargetCount: 5, priorityMuscles: ["quads", "hamstrings"], priorityLifts: ["squat", "deadlift"], weeklySetTargets: { quads: 5, hamstrings: 5, glutes: 4 } },
-      { id: "split_ul_upper_hyp", name: "Upper Hypertrophy", focus: "hypertrophy", muscleGroups: ["chest", "back", "lats", "side-delts", "rear-delts", "biceps", "triceps"], movementPatterns: ["horizontal-press", "vertical-pull", "isolation"], exerciseTargetCount: 7, priorityMuscles: ["lats", "side-delts", "biceps"], priorityLifts: [], weeklySetTargets: { lats: 5, "side-delts": 5, biceps: 4 } },
-      { id: "split_ul_lower_hyp", name: "Lower Hypertrophy", focus: "hypertrophy", muscleGroups: ["quads", "hamstrings", "glutes", "calves"], movementPatterns: ["squat", "hinge", "isolation"], exerciseTargetCount: 6, priorityMuscles: ["hamstrings", "quads"], priorityLifts: [], weeklySetTargets: { quads: 5, hamstrings: 5, calves: 4 } }
-    ]
+      makeSplitDaySeed({
+        id: "split_pb_ul_upper_strength",
+        name: "Upper Strength",
+        focus: "strength",
+        movementPatterns: ["horizontal-press", "horizontal-pull", "vertical-pull", "elbow-extension", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_pb_us_chest", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_pb_us_ub", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_pb_us_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_pb_us_tri", "triceps", 4, 1, "elbow-extension"),
+          makeRequirement("req_pb_us_bi", "biceps", 5, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { chest: 5, "upper-back": 5, lats: 4, triceps: 3, biceps: 3 },
+        mainLiftFocus: "Bench",
+      }),
+      makeSplitDaySeed({
+        id: "split_pb_ul_lower_strength",
+        name: "Lower Strength",
+        focus: "strength",
+        movementPatterns: ["squat", "hinge", "hip-extension", "ankle-extension", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_pb_ls_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_pb_ls_hams", "hamstrings", 2, 1, "hinge"),
+          makeRequirement("req_pb_ls_glutes", "glutes", 3, 1, "hip-extension"),
+          makeRequirement("req_pb_ls_calves", "calves", 4, 1, "ankle-extension"),
+          makeRequirement("req_pb_ls_abs", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 5, hamstrings: 4, glutes: 4, calves: 3, abs: 3 },
+        notes: "Calf and core slots are optional if recovery or time is tight.",
+        mainLiftFocus: "Squat",
+      }),
+      makeSplitDaySeed({
+        id: "split_pb_ul_upper_hyp",
+        name: "Upper Hypertrophy",
+        focus: "hypertrophy",
+        movementPatterns: ["incline-press", "horizontal-press", "shoulder-abduction", "horizontal-pull", "elbow-extension", "elbow-flexion"],
+        requirements: [
+          makeRequirement("req_pb_uh_upper", "upper-chest", 1, 1, "incline-press"),
+          makeRequirement("req_pb_uh_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_pb_uh_side", "side-delts", 3, 1, "shoulder-abduction"),
+          makeRequirement("req_pb_uh_rear", "rear-delts", 4, 1, "horizontal-pull"),
+          makeRequirement("req_pb_uh_tri", "triceps", 5, 1, "elbow-extension"),
+          makeRequirement("req_pb_uh_bi", "biceps", 6, 1, "elbow-flexion"),
+        ],
+        weeklySetTargets: { "upper-chest": 6, chest: 5, "side-delts": 5, "rear-delts": 4, triceps: 4, biceps: 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_pb_ul_lower_hyp",
+        name: "Lower Hypertrophy",
+        focus: "hypertrophy",
+        movementPatterns: ["squat", "single-leg", "hinge", "hip-extension", "ankle-extension"],
+        requirements: [
+          makeRequirement("req_pb_lh_quads", "quads", 1, 2, "squat"),
+          makeRequirement("req_pb_lh_hams", "hamstrings", 2, 1, "hinge"),
+          makeRequirement("req_pb_lh_glutes", "glutes", 3, 1, "hip-extension"),
+          makeRequirement("req_pb_lh_calves", "calves", 4, 1, "ankle-extension"),
+        ],
+        weeklySetTargets: { quads: 8, hamstrings: 5, glutes: 5, calves: 4 },
+      }),
+    ],
   },
+
+  // ── Powerbuilding 5-Day ─────────────────────────────────────────────────────
   {
-    id: "split_full_body",
-    name: "Full Body",
+    id: "split_powerbuilding_5",
+    name: "Powerbuilding 5-Day",
+    description: "Five-day structure with dedicated squat, bench, and deadlift days plus two hypertrophy accessory sessions.",
+    goal: "powerbuilding",
+    daysPerWeek: 5,
+    notes: "Three compound-focus days anchor the week; accessory days build volume around the competition lifts.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_pb5_squat",
+        name: "Squat Day",
+        focus: "strength",
+        movementPatterns: ["squat", "hinge", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_pb5_sq_quads", "quads", 1, 2, "squat"),
+          makeRequirement("req_pb5_sq_hams", "hamstrings", 2, 1, "hinge"),
+          makeRequirement("req_pb5_sq_abs", "abs", 3, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { quads: 8, hamstrings: 4, abs: 3 },
+        mainLiftFocus: "Squat",
+      }),
+      makeSplitDaySeed({
+        id: "split_pb5_bench",
+        name: "Bench Day",
+        focus: "strength",
+        movementPatterns: ["horizontal-press", "horizontal-pull", "elbow-extension", "shoulder-abduction"],
+        requirements: [
+          makeRequirement("req_pb5_bn_chest", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_pb5_bn_ub", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_pb5_bn_tri", "triceps", 3, 1, "elbow-extension"),
+          makeRequirement("req_pb5_bn_side", "side-delts", 4, 1, "shoulder-abduction"),
+        ],
+        weeklySetTargets: { chest: 5, "upper-back": 5, triceps: 4, "side-delts": 4 },
+        mainLiftFocus: "Bench",
+      }),
+      makeSplitDaySeed({
+        id: "split_pb5_deadlift",
+        name: "Deadlift Day",
+        focus: "strength",
+        movementPatterns: ["hinge", "hip-extension", "vertical-pull", "horizontal-pull"],
+        requirements: [
+          makeRequirement("req_pb5_dl_hams", "hamstrings", 1, 1, "hinge"),
+          makeRequirement("req_pb5_dl_glutes", "glutes", 2, 1, "hip-extension"),
+          makeRequirement("req_pb5_dl_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_pb5_dl_ub", "upper-back", 4, 1, "horizontal-pull"),
+        ],
+        weeklySetTargets: { hamstrings: 5, glutes: 4, lats: 5, "upper-back": 4 },
+        mainLiftFocus: "Deadlift",
+      }),
+      makeSplitDaySeed({
+        id: "split_pb5_upper_hyp",
+        name: "Upper Hypertrophy",
+        focus: "hypertrophy",
+        movementPatterns: ["incline-press", "vertical-pull", "shoulder-abduction", "elbow-flexion", "elbow-extension"],
+        requirements: [
+          makeRequirement("req_pb5_uh_upper", "upper-chest", 1, 1, "incline-press"),
+          makeRequirement("req_pb5_uh_lats", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_pb5_uh_side", "side-delts", 3, 1, "shoulder-abduction"),
+          makeRequirement("req_pb5_uh_bi", "biceps", 4, 1, "elbow-flexion"),
+          makeRequirement("req_pb5_uh_tri", "triceps", 5, 1, "elbow-extension"),
+        ],
+        weeklySetTargets: { "upper-chest": 5, lats: 5, "side-delts": 4, biceps: 4, triceps: 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_pb5_lower_hyp",
+        name: "Lower Hypertrophy",
+        focus: "hypertrophy",
+        movementPatterns: ["squat", "knee-flexion", "hip-extension", "ankle-extension"],
+        requirements: [
+          makeRequirement("req_pb5_lh_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_pb5_lh_hams", "hamstrings", 2, 1, "knee-flexion"),
+          makeRequirement("req_pb5_lh_glutes", "glutes", 3, 1, "hip-extension"),
+          makeRequirement("req_pb5_lh_calves", "calves", 4, 1, "ankle-extension"),
+        ],
+        weeklySetTargets: { quads: 6, hamstrings: 5, glutes: 5, calves: 4 },
+      }),
+    ],
+  },
+
+  // ── Deload / Recovery Week ──────────────────────────────────────────────────
+  {
+    id: "split_deload_recovery",
+    name: "Deload / Recovery Week",
+    description: "Low-volume recovery split. Keeps movement patterns alive without accumulating fatigue.",
+    goal: "maintenance",
+    daysPerWeek: 3,
+    notes: "Reduce all set counts and RPE. Focus on movement quality, not stimulus.",
+    days: [
+      makeSplitDaySeed({
+        id: "split_deload_day1",
+        name: "Day 1",
+        focus: "recovery",
+        movementPatterns: ["squat", "horizontal-press", "vertical-pull"],
+        requirements: [
+          makeRequirement("req_deload_d1_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_deload_d1_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_deload_d1_lats", "lats", 3, 1, "vertical-pull"),
+        ],
+        weeklySetTargets: { quads: 2, chest: 2, lats: 2 },
+      }),
+      makeSplitDaySeed({
+        id: "split_deload_day2",
+        name: "Day 2",
+        focus: "recovery",
+        movementPatterns: ["hinge", "horizontal-pull", "shoulder-abduction"],
+        requirements: [
+          makeRequirement("req_deload_d2_hams", "hamstrings", 1, 1, "hinge"),
+          makeRequirement("req_deload_d2_ub", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_deload_d2_side", "side-delts", 3, 1, "shoulder-abduction"),
+        ],
+        weeklySetTargets: { hamstrings: 2, "upper-back": 2, "side-delts": 2 },
+      }),
+      makeSplitDaySeed({
+        id: "split_deload_day3",
+        name: "Day 3",
+        focus: "recovery",
+        movementPatterns: ["single-leg", "elbow-flexion", "elbow-extension"],
+        requirements: [
+          makeRequirement("req_deload_d3_glutes", "glutes", 1, 1, "single-leg"),
+          makeRequirement("req_deload_d3_bi", "biceps", 2, 1, "elbow-flexion"),
+          makeRequirement("req_deload_d3_tri", "triceps", 3, 1, "elbow-extension"),
+        ],
+        weeklySetTargets: { glutes: 2, biceps: 2, triceps: 2 },
+        notes: "Conditioning is optional during deload — prioritize rest over output.",
+      }),
+    ],
+  },
+
+  // ── General Fitness 3-Day ───────────────────────────────────────────────────
+  {
+    id: "split_general_fitness_3",
+    name: "General Fitness 3-Day",
+    description: "Balanced full-body template with push, pull, squat/lunge, hinge, and optional conditioning each session.",
     goal: "general-health",
     daysPerWeek: 3,
-    notes: "Efficient general fitness with whole-body practice.",
+    notes: "Simple full-body structure. Conditioning slot is always optional.",
     days: [
-      { id: "split_fb_a", name: "Full Body A", focus: "hybrid", muscleGroups: ["full-body"], movementPatterns: ["squat", "horizontal-press", "horizontal-pull", "brace"], exerciseTargetCount: 5, priorityMuscles: ["full-body"], priorityLifts: [], weeklySetTargets: { "full-body": 10 } },
-      { id: "split_fb_b", name: "Full Body B", focus: "hybrid", muscleGroups: ["full-body"], movementPatterns: ["hinge", "vertical-press", "vertical-pull", "locomotion"], exerciseTargetCount: 5, priorityMuscles: ["full-body"], priorityLifts: [], weeklySetTargets: { "full-body": 10 } },
-      { id: "split_fb_c", name: "Full Body C", focus: "conditioning", muscleGroups: ["full-body", "conditioning"], movementPatterns: ["single-leg", "horizontal-press", "horizontal-pull", "locomotion"], exerciseTargetCount: 5, priorityMuscles: ["conditioning"], priorityLifts: [], weeklySetTargets: { conditioning: 3 } }
-    ]
+      makeSplitDaySeed({
+        id: "split_gf3_day1",
+        name: "Day 1",
+        focus: "hybrid",
+        movementPatterns: ["horizontal-press", "vertical-pull", "squat", "hinge", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_gf3_d1_push", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_gf3_d1_pull", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_gf3_d1_squat", "quads", 3, 1, "squat"),
+          makeRequirement("req_gf3_d1_hinge", "glutes", 4, 1, "hinge"),
+          makeRequirement("req_gf3_d1_core", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { chest: 4, lats: 4, quads: 4, glutes: 4, abs: 3 },
+        notes: "Core slot is optional if time is tight.",
+      }),
+      makeSplitDaySeed({
+        id: "split_gf3_day2",
+        name: "Day 2",
+        focus: "hybrid",
+        movementPatterns: ["vertical-press", "horizontal-pull", "single-leg", "hip-extension", "conditioning"],
+        requirements: [
+          makeRequirement("req_gf3_d2_push", "front-delts", 1, 1, "vertical-press"),
+          makeRequirement("req_gf3_d2_pull", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_gf3_d2_lunge", "quads", 3, 1, "single-leg"),
+          makeRequirement("req_gf3_d2_hinge", "hamstrings", 4, 1, "hip-extension"),
+          makeRequirement("req_gf3_d2_cond", "conditioning", 5, 1, "conditioning"),
+        ],
+        weeklySetTargets: { "front-delts": 3, "upper-back": 4, quads: 4, hamstrings: 4, conditioning: 2 },
+        notes: "Conditioning slot is optional if time is tight.",
+      }),
+      makeSplitDaySeed({
+        id: "split_gf3_day3",
+        name: "Day 3",
+        focus: "hybrid",
+        movementPatterns: ["horizontal-press", "vertical-pull", "squat", "hinge", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_gf3_d3_push", "chest", 1, 1, "horizontal-press"),
+          makeRequirement("req_gf3_d3_pull", "lats", 2, 1, "vertical-pull"),
+          makeRequirement("req_gf3_d3_squat", "glutes", 3, 1, "squat"),
+          makeRequirement("req_gf3_d3_hinge", "hamstrings", 4, 1, "hinge"),
+          makeRequirement("req_gf3_d3_core", "abs", 5, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { chest: 4, lats: 4, glutes: 4, hamstrings: 4, abs: 3 },
+      }),
+    ],
   },
+
+  // ── Conditioning + Strength ─────────────────────────────────────────────────
   {
-    id: "split_powerlifting",
-    name: "Powerlifting",
-    goal: "powerlifting",
-    daysPerWeek: 4,
-    notes: "Squat, bench, and deadlift frequency with accessories for weak points.",
+    id: "split_conditioning_strength",
+    name: "Conditioning + Strength",
+    description: "Three-day template combining strength compound work with dedicated conditioning. Suited for general fitness and athletic base building.",
+    goal: "general-health",
+    daysPerWeek: 3,
+    notes: "Strength days cover major patterns at low volume; conditioning day drives cardiorespiratory work.",
     days: [
-      { id: "split_pl_squat", name: "Squat + Bench Volume", focus: "strength", muscleGroups: ["quads", "chest", "triceps"], mainLiftFocus: "Squat", movementPatterns: ["squat", "horizontal-press"], exerciseTargetCount: 5, priorityMuscles: ["quads", "chest"], priorityLifts: ["squat", "bench"], weeklySetTargets: { quads: 6, chest: 5 } },
-      { id: "split_pl_bench", name: "Bench + Upper Back", focus: "strength", muscleGroups: ["chest", "upper-back", "triceps"], mainLiftFocus: "Bench", movementPatterns: ["horizontal-press", "horizontal-pull"], exerciseTargetCount: 6, priorityMuscles: ["chest", "upper-back"], priorityLifts: ["bench"], weeklySetTargets: { chest: 6, "upper-back": 6 } },
-      { id: "split_pl_deadlift", name: "Deadlift + Squat Variation", focus: "strength", muscleGroups: ["hamstrings", "glutes", "quads", "back"], mainLiftFocus: "Deadlift", movementPatterns: ["hinge", "squat"], exerciseTargetCount: 5, priorityMuscles: ["hamstrings", "glutes"], priorityLifts: ["deadlift", "squat"], weeklySetTargets: { hamstrings: 6, glutes: 5 } },
-      { id: "split_pl_bench_hyp", name: "Bench Hypertrophy + Accessories", focus: "hypertrophy", muscleGroups: ["chest", "triceps", "lats", "side-delts"], mainLiftFocus: "Bench", movementPatterns: ["horizontal-press", "vertical-pull", "isolation"], exerciseTargetCount: 7, priorityMuscles: ["triceps", "lats", "side-delts"], priorityLifts: ["bench"], weeklySetTargets: { triceps: 5, lats: 5, "side-delts": 4 } }
-    ]
+      makeSplitDaySeed({
+        id: "split_cs_strength_a",
+        name: "Strength A",
+        focus: "hybrid",
+        movementPatterns: ["squat", "horizontal-press", "vertical-pull", "hinge"],
+        requirements: [
+          makeRequirement("req_cs_sa_quads", "quads", 1, 1, "squat"),
+          makeRequirement("req_cs_sa_chest", "chest", 2, 1, "horizontal-press"),
+          makeRequirement("req_cs_sa_lats", "lats", 3, 1, "vertical-pull"),
+          makeRequirement("req_cs_sa_hams", "hamstrings", 4, 1, "hinge"),
+        ],
+        weeklySetTargets: { quads: 4, chest: 4, lats: 4, hamstrings: 4 },
+      }),
+      makeSplitDaySeed({
+        id: "split_cs_conditioning",
+        name: "Conditioning",
+        focus: "conditioning",
+        movementPatterns: ["conditioning", "trunk-stability"],
+        requirements: [
+          makeRequirement("req_cs_cond_main", "conditioning", 1, 2, "conditioning"),
+          makeRequirement("req_cs_cond_core", "abs", 2, 1, "trunk-stability"),
+        ],
+        weeklySetTargets: { conditioning: 4, abs: 3 },
+        notes: "Use cardio machine, carries, or circuit work. Core slot is optional.",
+      }),
+      makeSplitDaySeed({
+        id: "split_cs_strength_b",
+        name: "Strength B",
+        focus: "hybrid",
+        movementPatterns: ["hip-extension", "horizontal-pull", "shoulder-abduction", "conditioning"],
+        requirements: [
+          makeRequirement("req_cs_sb_glutes", "glutes", 1, 1, "hip-extension"),
+          makeRequirement("req_cs_sb_ub", "upper-back", 2, 1, "horizontal-pull"),
+          makeRequirement("req_cs_sb_side", "side-delts", 3, 1, "shoulder-abduction"),
+          makeRequirement("req_cs_sb_cond", "conditioning", 4, 1, "conditioning"),
+        ],
+        weeklySetTargets: { glutes: 4, "upper-back": 4, "side-delts": 3, conditioning: 2 },
+        notes: "Conditioning finisher is optional — finish with light cardio or carries if energy allows.",
+      }),
+    ],
   },
-  {
-    id: "split_powerbuilding",
-    name: "Powerbuilding",
-    goal: "powerbuilding",
-    daysPerWeek: 5,
-    notes: "Main lift progress first, bodybuilding volume second.",
-    days: []
-  },
-  {
-    id: "split_bro",
-    name: "Bodybuilding Bro Split",
-    goal: "bodybuilding",
-    daysPerWeek: 5,
-    notes: "High local volume and focused execution for one or two muscles per day.",
-    days: []
-  },
-  {
-    id: "split_hybrid",
-    name: "Strength/Hypertrophy Hybrid",
-    goal: "powerbuilding",
-    daysPerWeek: 4,
-    notes: "Heavy compounds followed by targeted hypertrophy work.",
-    days: []
-  },
-  {
-    id: "split_meet_prep",
-    name: "Meet Prep",
-    goal: "powerlifting",
-    daysPerWeek: 4,
-    notes: "Specificity, singles practice, fatigue control, and peaking structure.",
-    days: []
-  },
-  {
-    id: "split_offseason",
-    name: "Off-Season",
-    goal: "powerbuilding",
-    daysPerWeek: 4,
-    notes: "Build muscle, shore up weak points, and reduce competition lift monotony.",
-    days: []
-  },
-  {
-    id: "split_deload",
-    name: "Deload/Recovery Week",
-    goal: "maintenance",
-    daysPerWeek: 3,
-    notes: "Reduced volume and intensity while preserving movement practice.",
-    days: []
-  },
-  {
-    id: "split_maintenance",
-    name: "Maintenance",
-    goal: "maintenance",
-    daysPerWeek: 3,
-    notes: "Minimum effective dose to hold strength, muscle, and routine.",
-    days: []
-  },
-  {
-    id: "split_conditioning",
-    name: "Conditioning Focused",
-    goal: "conditioning",
-    daysPerWeek: 4,
-    notes: "Aerobic base, intervals, and resilient movement quality.",
-    days: []
-  }
 ];
 
-function plannedSet(id: string, reps: number, rpe: number, weight?: number) {
-  return { id, kind: "working" as const, targetReps: reps, targetRpe: rpe, plannedWeight: weight };
+function plannedSet(id: string, reps: number, rpe: number) {
+  return { id, kind: "working" as const, targetReps: reps, targetRpe: rpe };
 }
 
 function makeTemplate(userId: string, name: string, goal: TrainingGoal): WorkoutTemplate {
@@ -1924,47 +2833,11 @@ function makeTemplate(userId: string, name: string, goal: TrainingGoal): Workout
                 { id: createId("planned"), exerciseId: "ex_treadmill_walk", required: false, order: 4, plannedSets: [{ id: createId("set"), kind: "conditioning", targetReps: 20, notes: "20 minutes zone 2" }], restSeconds: 30, substitutionIds: [] }
               ]
             : [
-                { id: createId("planned"), exerciseId: "ex_squat_comp", required: true, order: 1, plannedSets: [plannedSet(createId("set"), 5, 7, 315), plannedSet(createId("set"), 5, 7, 315), plannedSet(createId("set"), 5, 7, 315), plannedSet(createId("set"), 5, 7, 315)], restSeconds: 240, notes: "Competition stance. Last set can float to RPE 8.", substitutionIds: ["ex_front_squat"] },
-                { id: createId("planned"), exerciseId: "ex_bench_comp", required: true, order: 2, plannedSets: [plannedSet(createId("set"), 6, 7, 225), plannedSet(createId("set"), 6, 7, 225), plannedSet(createId("set"), 6, 7, 225), plannedSet(createId("set"), 6, 7, 225)], restSeconds: 180, substitutionIds: ["ex_close_grip_bench", "ex_db_incline_press"] },
-                { id: createId("planned"), exerciseId: "ex_rdl", required: true, order: 3, plannedSets: [plannedSet(createId("set"), 8, 7, 245), plannedSet(createId("set"), 8, 7, 245), plannedSet(createId("set"), 8, 7, 245)], restSeconds: 150, substitutionIds: ["ex_lying_leg_curl"] },
-                { id: createId("planned"), exerciseId: "ex_cable_lateral_raise", required: false, order: 4, plannedSets: [plannedSet(createId("set"), 15, 8, 20), plannedSet(createId("set"), 15, 8, 20), plannedSet(createId("set"), 15, 8, 20)], restSeconds: 60, substitutionIds: ["ex_db_lateral_raise"] }
+                { id: createId("planned"), exerciseId: "ex_squat_comp", required: true, order: 1, plannedSets: [plannedSet(createId("set"), 5, 7), plannedSet(createId("set"), 5, 7), plannedSet(createId("set"), 5, 7), plannedSet(createId("set"), 5, 7)], restSeconds: 240, notes: "Competition stance. Last set can float to RPE 8.", substitutionIds: ["ex_front_squat"] },
+                { id: createId("planned"), exerciseId: "ex_bench_comp", required: true, order: 2, plannedSets: [plannedSet(createId("set"), 6, 7), plannedSet(createId("set"), 6, 7), plannedSet(createId("set"), 6, 7), plannedSet(createId("set"), 6, 7)], restSeconds: 180, substitutionIds: ["ex_close_grip_bench", "ex_db_incline_press"] },
+                { id: createId("planned"), exerciseId: "ex_rdl", required: true, order: 3, plannedSets: [plannedSet(createId("set"), 8, 7), plannedSet(createId("set"), 8, 7), plannedSet(createId("set"), 8, 7)], restSeconds: 150, substitutionIds: ["ex_lying_leg_curl"] },
+                { id: createId("planned"), exerciseId: "ex_cable_lateral_raise", required: false, order: 4, plannedSets: [plannedSet(createId("set"), 15, 8), plannedSet(createId("set"), 15, 8), plannedSet(createId("set"), 15, 8)], restSeconds: 60, substitutionIds: ["ex_db_lateral_raise"] }
               ]
-      }
-    ]
-  };
-}
-
-function sampleSession(userId: string, gymId: string, templateId: string): WorkoutSession {
-  return {
-    id: createId("session"),
-    userId,
-    gymId,
-    templateId,
-    name: "Squat + Bench Volume",
-    status: "completed",
-    startedAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 4).toISOString(),
-    completedAt: new Date(Date.now() - 1000 * 60 * 60 * 24 * 4 + 1000 * 60 * 78).toISOString(),
-    recommendations: [],
-    loggedExercises: [
-      {
-        id: createId("logex"),
-        exerciseId: "ex_squat_comp",
-        order: 1,
-        weakPointTags: ["slow-out-of-hole"],
-        sets: [
-          { id: createId("set"), kind: "working", actualWeight: 315, plannedWeight: 315, plannedReps: 5, actualReps: 5, targetRpe: 7, actualRpe: 7, setRating: 3, formRating: 4, muscleFeelRating: 3, painRating: 0, completedAt: nowIso() },
-          { id: createId("set"), kind: "working", actualWeight: 315, plannedWeight: 315, plannedReps: 5, actualReps: 5, targetRpe: 7, actualRpe: 8, setRating: 2, formRating: 3, muscleFeelRating: 3, painRating: 1, completedAt: nowIso(), notes: "Slow out of hole on set 2." }
-        ]
-      },
-      {
-        id: createId("logex"),
-        exerciseId: "ex_bench_comp",
-        order: 2,
-        weakPointTags: ["weak-off-chest"],
-        sets: [
-          { id: createId("set"), kind: "working", actualWeight: 225, plannedWeight: 225, plannedReps: 6, actualReps: 6, targetRpe: 7, actualRpe: 7, setRating: 3, formRating: 4, muscleFeelRating: 4, painRating: 0, completedAt: nowIso() },
-          { id: createId("set"), kind: "working", actualWeight: 225, plannedWeight: 225, plannedReps: 6, actualReps: 5, targetRpe: 7, actualRpe: 9, setRating: 2, formRating: 3, muscleFeelRating: 3, painRating: 0, completedAt: nowIso(), notes: "Bench was slow off chest." }
-        ]
       }
     ]
   };
@@ -2044,22 +2917,8 @@ function makeUser(id: string, username: string, displayName: string, goal: Train
         : ["bench 3x/week", "powerbuilding accessories", "use RPE", "track machine differences"],
     injuryNotes: goal === "general-health" ? [] : ["Watch left hip when squat volume climbs."],
     activeGymId: `${id}_gym_commercial`,
-    maxes:
-      goal === "general-health"
-        ? [
-            { id: createId("max"), liftName: "Leg Press", oneRepMax: 220, trainingMax: 190, unit: "lb", date: todayIso(), source: "manual" },
-            { id: createId("max"), liftName: "Machine Chest Press", oneRepMax: 100, trainingMax: 85, unit: "lb", date: todayIso(), source: "manual" }
-          ]
-        : [
-            { id: createId("max"), liftName: "Squat", exerciseId: "ex_squat_comp", oneRepMax: 455, trainingMax: 410, unit: "lb", date: todayIso(), source: "manual" },
-            { id: createId("max"), liftName: "Bench", exerciseId: "ex_bench_comp", oneRepMax: 315, trainingMax: 285, unit: "lb", date: todayIso(), source: "manual" },
-            { id: createId("max"), liftName: "Deadlift", exerciseId: "ex_deadlift_comp", oneRepMax: 545, trainingMax: 490, unit: "lb", date: todayIso(), source: "manual" },
-            { id: createId("max"), liftName: "Overhead Press", exerciseId: "ex_ohp", oneRepMax: 205, trainingMax: 185, unit: "lb", date: todayIso(), source: "manual" }
-          ],
-    bodyweightHistory: [
-      { id: createId("bw"), date: new Date(Date.now() - 1000 * 60 * 60 * 24 * 14).toISOString().slice(0, 10), weight: goal === "general-health" ? 135 : 202, unit: "lb" },
-      { id: createId("bw"), date: todayIso(), weight: goal === "general-health" ? 136 : 204, unit: "lb" }
-    ],
+    maxes: [],
+    bodyweightHistory: [],
     settings: {
       darkMode: true,
       conservativeAutoAdjustments: true,
@@ -2073,26 +2932,7 @@ function makeUser(id: string, username: string, displayName: string, goal: Train
 export async function seedDatabase(): Promise<TrainingDatabase> {
   const localUser = makeUser("local_only_user", "local-only", "Local Profile", "powerbuilding");
   const powerTemplate = makeTemplate(localUser.id, "Powerbuilding Base Week", "powerbuilding");
-  const readiness: ReadinessCheckIn[] = [
-    {
-      id: createId("readiness"),
-      userId: localUser.id,
-      date: todayIso(),
-      sleepQuality: 3,
-      stress: 3,
-      soreness: 2,
-      motivation: 4,
-      energy: 4,
-      jointPain: 1,
-      bodyweight: 204,
-      nutritionQuality: 4,
-      caffeine: true,
-      timeOfDay: "evening",
-      readinessScore: 74
-    }
-  ];
-
-  const session = sampleSession(localUser.id, `${localUser.id}_gym_commercial`, powerTemplate.id);
+  const readiness: ReadinessCheckIn[] = [];
 
   return {
     version: 1,
@@ -2104,36 +2944,10 @@ export async function seedDatabase(): Promise<TrainingDatabase> {
     splitTemplates,
     workoutTemplates: [powerTemplate],
     programs: [],
-    sessions: [session],
+    sessions: [],
     readiness,
     prs: [],
-    weakPoints: [
-      {
-        id: createId("weak"),
-        userId: localUser.id,
-        type: "powerlifting",
-        label: "Bench weak off chest",
-        relatedLift: "Bench",
-        relatedMuscles: ["chest", "front-delts"],
-        evidence: ["Session note: bench was slow off chest.", "Top volume work reached RPE 9 one set early."],
-        recommendedExerciseIds: ["ex_bench_comp", "ex_db_incline_press"],
-        severity: 3,
-        status: "active",
-        updatedAt: nowIso()
-      },
-      {
-        id: createId("weak"),
-        userId: localUser.id,
-        type: "bodybuilding",
-        label: "Side delts need more direct volume",
-        relatedMuscles: ["side-delts"],
-        evidence: ["Only 3 direct sets logged this week."],
-        recommendedExerciseIds: ["ex_cable_lateral_raise", "ex_db_lateral_raise"],
-        severity: 2,
-        status: "watching",
-        updatedAt: nowIso()
-      }
-    ],
+    weakPoints: [],
     programGaps: [],
     recommendations: []
   };

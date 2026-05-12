@@ -34,32 +34,33 @@ export const muscleVolumeTargets: Record<TrainingGoal, Partial<Record<MuscleGrou
     "rear-delts": { min: 3, target: 6, max: 12 }
   },
   bodybuilding: {
-    chest: { min: 8, target: 12, max: 20 },
-    lats: { min: 6, target: 10, max: 20 },
-    "upper-back": { min: 6, target: 10, max: 20 },
-    quads: { min: 8, target: 12, max: 20 },
-    hamstrings: { min: 6, target: 10, max: 18 },
-    glutes: { min: 4, target: 8, max: 16 },
-    calves: { min: 4, target: 8, max: 16 },
-    biceps: { min: 6, target: 10, max: 18 },
-    triceps: { min: 6, target: 10, max: 18 },
-    "side-delts": { min: 6, target: 12, max: 22 },
-    "rear-delts": { min: 4, target: 8, max: 16 },
-    abs: { min: 4, target: 8, max: 14 }
+    chest: { min: 8, target: 12, max: 16 },
+    back: { min: 10, target: 14, max: 18 },
+    lats: { min: 6, target: 10, max: 12 },
+    "upper-back": { min: 6, target: 10, max: 12 },
+    quads: { min: 8, target: 12, max: 16 },
+    hamstrings: { min: 6, target: 9, max: 12 },
+    glutes: { min: 6, target: 10, max: 14 },
+    calves: { min: 4, target: 6, max: 10 },
+    biceps: { min: 6, target: 8, max: 12 },
+    triceps: { min: 6, target: 8, max: 12 },
+    "side-delts": { min: 6, target: 10, max: 14 },
+    "rear-delts": { min: 6, target: 8, max: 14 },
+    abs: { min: 4, target: 6, max: 10 }
   },
   powerbuilding: {
-    chest: { min: 8, target: 12, max: 18 },
-    lats: { min: 6, target: 10, max: 18 },
-    "upper-back": { min: 6, target: 10, max: 18 },
-    quads: { min: 8, target: 12, max: 18 },
-    hamstrings: { min: 6, target: 10, max: 16 },
-    glutes: { min: 4, target: 8, max: 16 },
-    biceps: { min: 4, target: 8, max: 16 },
-    triceps: { min: 6, target: 10, max: 16 },
-    "side-delts": { min: 6, target: 10, max: 18 },
+    chest: { min: 8, target: 10, max: 14 },
+    lats: { min: 6, target: 8, max: 12 },
+    "upper-back": { min: 6, target: 8, max: 12 },
+    quads: { min: 8, target: 10, max: 14 },
+    hamstrings: { min: 6, target: 8, max: 12 },
+    glutes: { min: 4, target: 8, max: 12 },
+    biceps: { min: 4, target: 6, max: 10 },
+    triceps: { min: 6, target: 8, max: 12 },
+    "side-delts": { min: 6, target: 8, max: 12 },
     "rear-delts": { min: 4, target: 8, max: 14 },
-    calves: { min: 3, target: 6, max: 12 },
-    abs: { min: 3, target: 6, max: 12 }
+    calves: { min: 3, target: 5, max: 8 },
+    abs: { min: 3, target: 5, max: 8 }
   },
   "general-health": {
     "full-body": { min: 6, target: 10, max: 14 },
@@ -79,10 +80,10 @@ export const muscleVolumeTargets: Record<TrainingGoal, Partial<Record<MuscleGrou
   },
   maintenance: {
     "full-body": { min: 4, target: 8, max: 12 },
-    chest: { min: 3, target: 6, max: 10 },
-    back: { min: 3, target: 6, max: 10 },
-    quads: { min: 3, target: 6, max: 10 },
-    hamstrings: { min: 2, target: 4, max: 8 }
+    chest: { min: 3, target: 5, max: 8 },
+    back: { min: 3, target: 5, max: 8 },
+    quads: { min: 3, target: 5, max: 8 },
+    hamstrings: { min: 2, target: 4, max: 7 }
   }
 };
 
