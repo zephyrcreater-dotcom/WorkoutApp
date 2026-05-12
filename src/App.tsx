@@ -5,6 +5,7 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
+  ChevronDown,
   ClipboardList,
   Copy,
   Dumbbell,
@@ -12,12 +13,15 @@ import {
   FileDown,
   FileUp,
   Gauge,
+  GitBranch,
   Home,
+  EyeOff,
   Library,
   LogOut,
   Pencil,
   Plus,
   RefreshCcw,
+  RotateCcw,
   Save,
   Settings,
   ShieldAlert,
@@ -28,7 +32,8 @@ import {
   Trash2,
   UserRound,
   Warehouse,
-  Wand2
+  Wand2,
+  X
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
@@ -41,6 +46,7 @@ import {
   skipActiveWorkout,
   syncActiveBlockProgress
 } from "./lib/blockProgression";
+import { builtInExercises, splitTemplates as seedSplitTemplates } from "./data/seedData";
 import { createId, nowIso, todayIso } from "./lib/ids";
 import {
   analyzeProgramGaps,
@@ -301,6 +307,21 @@ function renderCloudStatusLabel(status: "disabled" | "not-signed-in" | "hydratin
       return "Sync Failed";
     default:
       return "Cloud";
+  }
+}
+
+function editSaveContext(authMode: "unknown" | "local" | "cloud", cloudStatus: "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed"): string {
+  if (authMode !== "cloud") return "Changes are saved locally.";
+  switch (cloudStatus) {
+    case "syncing":
+    case "hydrating":
+      return "Syncing to cloud…";
+    case "synced":
+      return "Saved to cloud.";
+    case "failed":
+      return "Sync failed — changes are queued locally.";
+    default:
+      return "Changes are saved locally.";
   }
 }
 
@@ -592,7 +613,7 @@ function App() {
             <LiveLogger db={db} user={currentUser} updateDb={updateDb} sessionId={activeSession?.id} setActiveSessionId={setActiveSessionId} setScreen={setScreen} />
           )}
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
-          {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} />}
+          {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
           {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
@@ -3512,23 +3533,30 @@ TemplateEditor.displayName = "DeferredWorkoutTemplateEditor";
 function LibraryScreen({
   db,
   user,
-  updateDb
+  updateDb,
+  authMode,
+  cloudStatus,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  authMode: "unknown" | "local" | "cloud";
+  cloudStatus: "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed";
 }) {
   const [section, setSection] = useState<"exercises" | "splits">("exercises");
   const [query, setQuery] = useState("");
   const [muscle, setMuscle] = useState<string>("all");
   const [equipmentFilter, setEquipmentFilter] = useState<string>("all");
-  const [patternFilter, setPatternFilter] = useState<string>("all");
+  const patternFilter = "all";
   const [kindFilter, setKindFilter] = useState<string>("all");
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [gymSpecificFilter, setGymSpecificFilter] = useState<string>("all");
   const [progressExerciseId, setProgressExerciseId] = useState<string | undefined>();
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>();
   const [showAdvancedExercise, setShowAdvancedExercise] = useState(false);
+  const [parentSearch, setParentSearch] = useState("");
+  const [showVariations, setShowVariations] = useState(false);
+  const [expandedVariantParentIds, setExpandedVariantParentIds] = useState<Set<string>>(new Set());
   const emptyDraft = {
     name: "",
     notes: "",
@@ -3545,7 +3573,10 @@ function LibraryScreen({
     isCompound: false,
     canBeGymSpecific: false,
     isGymSpecificEnabled: false,
-    tags: ""
+    tags: "",
+    isVariation: false,
+    parentExerciseId: "",
+    variationType: "",
   };
   const [draft, setDraft] = useState(emptyDraft);
 
@@ -3568,19 +3599,58 @@ function LibraryScreen({
       canBeGymSpecific: exercise.canBeGymSpecific || false,
       isGymSpecificEnabled: exercise.isGymSpecificEnabled || false,
       tags: exercise.tagLabels?.join(", ") || "",
+      isVariation: exercise.isVariation || false,
+      parentExerciseId: exercise.parentExerciseId || "",
+      variationType: exercise.variationType || exercise.variationName || "",
     });
     setShowAdvancedExercise(false);
+    setParentSearch("");
+  }
+
+  function startAddVariation(parent: Exercise) {
+    setEditingExerciseId(undefined);
+    setDraft({
+      name: `${parent.name} (Variation)`,
+      notes: "",
+      primaryMuscles: parent.primaryMuscles,
+      secondaryMuscles: parent.secondaryMuscles,
+      movementPatterns: parent.movementPatterns || (parent.movementPattern ? [parent.movementPattern] : ["isolation"]),
+      equipment: parent.equipment[0] || "dumbbell",
+      exerciseCategory: parent.exerciseCategory || (isCompound(parent) ? "secondary_compound" : "isolation"),
+      defaultUnit: parent.defaultUnit || user.unit,
+      allowedUnits: parent.allowedUnits || [user.unit],
+      defaultIncrement: parent.defaultIncrement || (user.unit === "kg" ? 2.5 : 5),
+      customIncrement: parent.customIncrement || (user.unit === "kg" ? 2.5 : 5),
+      fatigueRating: parent.fatigueRating || 2,
+      isCompound: parent.isCompound || false,
+      canBeGymSpecific: parent.canBeGymSpecific || false,
+      isGymSpecificEnabled: parent.isGymSpecificEnabled || false,
+      tags: parent.tagLabels?.join(", ") || "",
+      isVariation: true,
+      parentExerciseId: parent.id,
+      variationType: "",
+    });
+    setShowAdvancedExercise(false);
+    setParentSearch(parent.name);
   }
   const exercises = db.exercises.filter((exercise) => {
+    // Ownership: exclude other users' custom exercises
+    if (exercise.ownerUserId && exercise.ownerUserId !== user.id) return false;
+    const isCustom = !!(exercise.ownerUserId);
+    // Archived items only show in the "archived" tab
+    if (exercise.isArchived && sourceFilter !== "archived") return false;
+    if (sourceFilter === "custom" && !isCustom) return false;
+    if (sourceFilter === "default" && isCustom) return false;
+    // Hide variations from the flat list when no search query and variations toggle is off
+    if (exercise.isVariation && !query && !showVariations) return false;
     const searchText = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
     const matchesQuery = searchText.includes(query.toLowerCase());
     const matchesMuscle = muscle === "all" || exercise.primaryMuscles.includes(muscle as MuscleGroup) || exercise.muscleGroup === muscle;
     const matchesEquipment = equipmentFilter === "all" || exercise.equipment.includes(equipmentFilter as EquipmentCategory);
     const matchesPattern = patternFilter === "all" || exercise.movementPattern === patternFilter || exercise.movementPatterns?.includes(patternFilter as MovementPattern);
     const matchesKind = kindFilter === "all" || (kindFilter === "compound" ? isCompound(exercise) : exercise.kind.includes("isolation") || !isCompound(exercise));
-    const matchesSource = sourceFilter === "all" || (sourceFilter === "custom" ? exercise.ownerUserId === user.id || exercise.createdByUser : !exercise.ownerUserId && !exercise.createdByUser);
     const matchesGymSpecific = gymSpecificFilter === "all" || (gymSpecificFilter === "enabled" ? exercise.isGymSpecificEnabled : !exercise.isGymSpecificEnabled);
-    return matchesQuery && matchesMuscle && matchesEquipment && matchesPattern && matchesKind && matchesSource && matchesGymSpecific && (!exercise.ownerUserId || exercise.ownerUserId === user.id);
+    return matchesQuery && matchesMuscle && matchesEquipment && matchesPattern && matchesKind && matchesGymSpecific;
   });
   const progressExercise = db.exercises.find((exercise) => exercise.id === progressExerciseId);
 
@@ -3613,6 +3683,10 @@ function LibraryScreen({
       target.isGymSpecificEnabled = draft.isGymSpecificEnabled;
       target.directVolumeMuscles = draft.primaryMuscles;
       target.indirectVolumeMuscles = draft.secondaryMuscles;
+      target.isVariation = draft.isVariation;
+      target.parentExerciseId = draft.isVariation ? draft.parentExerciseId : undefined;
+      target.variationType = draft.isVariation ? draft.variationType : undefined;
+      if (!target.ownerUserId) target.userModified = true;
       target.updatedAt = nowIso();
       return data;
     });
@@ -3658,6 +3732,10 @@ function LibraryScreen({
       canBeGymSpecific: draft.canBeGymSpecific,
       isGymSpecificEnabled: draft.isGymSpecificEnabled,
       createdByUser: true,
+      source: "custom" as const,
+      isVariation: draft.isVariation || undefined,
+      parentExerciseId: draft.isVariation && draft.parentExerciseId ? draft.parentExerciseId : undefined,
+      variationType: draft.isVariation && draft.variationType ? draft.variationType : undefined,
       createdAt: nowIso(),
       updatedAt: nowIso()
     };
@@ -3666,6 +3744,66 @@ function LibraryScreen({
       return data;
     });
     setDraft(emptyDraft);
+  }
+
+  function deleteExercise(exercise: Exercise) {
+    if (exercise.ownerUserId) {
+      const children = db.exercises.filter((e) => e.parentExerciseId === exercise.id);
+      if (children.length > 0) {
+        alert(`"${exercise.name}" has ${children.length} variation${children.length > 1 ? "s" : ""}. Delete or reassign them before deleting this exercise.`);
+        return;
+      }
+      if (!confirm(`Delete "${exercise.name}"? This cannot be undone.`)) return;
+      void updateDb((data) => {
+        data.exercises = data.exercises.filter((e) => e.id !== exercise.id);
+        return data;
+      });
+      if (editingExerciseId === exercise.id) { setEditingExerciseId(undefined); setDraft(emptyDraft); }
+    } else {
+      if (!confirm(`Hide "${exercise.name}" from the library? It will no longer appear in searches. You can reset defaults to restore it.`)) return;
+      void updateDb((data) => {
+        const target = data.exercises.find((e) => e.id === exercise.id);
+        if (target) { target.isArchived = true; target.updatedAt = nowIso(); }
+        return data;
+      });
+      if (editingExerciseId === exercise.id) { setEditingExerciseId(undefined); setDraft(emptyDraft); }
+    }
+  }
+
+  function resetExerciseToDefault(exercise: Exercise) {
+    const seed = builtInExercises.find((b) => b.id === exercise.id);
+    if (!seed) return;
+    void updateDb((data) => {
+      const target = data.exercises.find((e) => e.id === exercise.id);
+      if (!target) return data;
+      Object.assign(target, structuredClone(seed));
+      target.userModified = false;
+      target.isArchived = false;
+      target.source = "default";
+      target.updatedAt = nowIso();
+      return data;
+    });
+    setEditingExerciseId(undefined);
+    setDraft(emptyDraft);
+  }
+
+  function duplicateExercise(exercise: Exercise) {
+    const copy: Exercise = {
+      ...structuredClone(exercise),
+      id: createId("ex"),
+      ownerUserId: user.id,
+      name: `${exercise.name} (Copy)`,
+      source: "custom" as const,
+      copiedFromId: exercise.id,
+      createdByUser: true,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    void updateDb((data) => {
+      data.exercises.unshift(copy);
+      return data;
+    });
+    startEditExercise(copy);
   }
 
   function toggleDraftMuscle(key: "primaryMuscles" | "secondaryMuscles", value: MuscleGroup) {
@@ -3703,7 +3841,7 @@ function LibraryScreen({
           ))}
         </div>
       </section>
-      {section === "splits" && <SplitLibraryManager db={db} user={user} updateDb={updateDb} />}
+      {section === "splits" && <SplitLibraryManager db={db} user={user} updateDb={updateDb} authMode={authMode} cloudStatus={cloudStatus} />}
       {section === "exercises" && (
         <>
           <section className="grid gap-4 xl:grid-cols-[1fr_24rem]">
@@ -3713,10 +3851,24 @@ function LibraryScreen({
                   <p className="label">Exercise Library</p>
                   <h2 className="text-xl font-black">Search, filter, and inspect movements</h2>
                 </div>
-                <p className="text-sm text-iron-400">{exercises.length} shown</p>
+                <div className="flex items-center gap-3">
+                  <button
+                    className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${showVariations ? "bg-iron-700 text-iron-200" : "bg-white/10 text-iron-400 hover:bg-white/20"}`}
+                    onClick={() => setShowVariations((v) => !v)}
+                    title={showVariations ? "Hide variations from list" : "Show variations in list"}
+                  >
+                    <GitBranch className="mr-1 inline h-3 w-3" />{showVariations ? "Variations shown" : "Show variations"}
+                  </button>
+                  <p className="text-sm text-iron-400">{exercises.length} shown</p>
+                </div>
+              </div>
+              <div className="mb-3 flex gap-1">
+                {([["all", "All"], ["default", "Default"], ["custom", "Custom"], ["archived", "Hidden"]] as const).map(([id, label]) => (
+                  <button key={id} className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${sourceFilter === id ? "bg-volt text-iron-950" : "bg-white/10 text-iron-300 hover:bg-white/20"}`} onClick={() => setSourceFilter(id)}>{label}</button>
+                ))}
               </div>
               <input className="field" placeholder="Search name, muscle, or equipment..." value={query} onChange={(event) => setQuery(event.target.value)} />
-              <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-5">
+              <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
                 <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
                   <option value="all">All muscles</option>
                   {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
@@ -3725,57 +3877,133 @@ function LibraryScreen({
                   <option value="all">All equipment</option>
                   {equipmentOptions.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
-                <select className="field" value={patternFilter} onChange={(event) => setPatternFilter(event.target.value)}>
-                  <option value="all">All patterns</option>
-                  {movementOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
                 <select className="field" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
                   <option value="all">Any type</option>
                   <option value="compound">Compound</option>
                   <option value="isolation">Isolation/accessory</option>
                 </select>
-                <select className="field" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
-                  <option value="all">Any source</option>
-                  <option value="default">Default</option>
-                  <option value="custom">User-created</option>
-                </select>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
                 <select className="field" value={gymSpecificFilter} onChange={(event) => setGymSpecificFilter(event.target.value)}>
-                  <option value="all">Gym-specific: any</option>
-                  <option value="enabled">Enabled</option>
-                  <option value="disabled">Disabled</option>
+                  <option value="all">Gym: any</option>
+                  <option value="enabled">Gym-specific</option>
+                  <option value="disabled">Standard</option>
                 </select>
               </div>
               <div className="scrollbar-none mt-4 max-h-[32rem] overflow-y-auto rounded-lg border border-white/10 bg-iron-950/45 p-2">
                 <div className="space-y-2">
-                  {exercises.map((exercise) => (
-                    <div key={exercise.id} className="rounded-lg border border-white/10 bg-white/[0.05] p-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="font-black">{exercise.name}</p>
-                          <p className="mt-1 text-xs text-iron-400">{exercise.primaryMuscles.join(", ")} - {exercise.equipment.join(", ")}</p>
-                          <p className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500">{isCompound(exercise) ? "compound" : "isolation/accessory"} - {exercise.ownerUserId ? "custom" : "default"}{exercise.isGymSpecificEnabled ? " - gym-specific" : ""}</p>
+                  {exercises.map((exercise) => {
+                    const childVariations = !query && !showVariations
+                      ? db.exercises.filter((e) => e.parentExerciseId === exercise.id && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id))
+                      : [];
+                    const isExpanded = expandedVariantParentIds.has(exercise.id);
+                    const parentName = exercise.isVariation && exercise.parentExerciseId
+                      ? db.exercises.find((e) => e.id === exercise.parentExerciseId)?.name
+                      : undefined;
+                    return (
+                      <div key={exercise.id}>
+                        <div className="rounded-lg border border-white/10 bg-white/[0.05] p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <p className="font-black">{exercise.name}</p>
+                              {parentName && (
+                                <p className="mt-0.5 flex items-center gap-1 text-[0.68rem] font-bold text-iron-400">
+                                  <GitBranch className="h-3 w-3" /> Variation of {parentName}
+                                </p>
+                              )}
+                              <p className="mt-1 text-xs text-iron-400">{exercise.primaryMuscles.join(", ")} · {exercise.equipment.join(", ")}</p>
+                              <p className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500">
+                                {isCompound(exercise) ? "compound" : "isolation/accessory"} · {exercise.ownerUserId ? "custom" : "default"}{exercise.userModified ? " (edited)" : ""}{exercise.isArchived ? " · hidden" : ""}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                              {!exercise.isVariation && (
+                                <button className="btn-ghost text-iron-400" onClick={() => startAddVariation(exercise)} title="Add variation">
+                                  <GitBranch className="h-4 w-4" />
+                                </button>
+                              )}
+                              <button className="btn-ghost" onClick={() => startEditExercise(exercise)} title={`Edit ${exercise.name}`}>
+                                <Pencil className="h-4 w-4" />
+                              </button>
+                              <button className="btn-ghost" onClick={() => duplicateExercise(exercise)} title="Duplicate">
+                                <Copy className="h-4 w-4" />
+                              </button>
+                              {!exercise.ownerUserId && exercise.userModified && builtInExercises.some((b) => b.id === exercise.id) && (
+                                <button className="btn-ghost text-volt" onClick={() => resetExerciseToDefault(exercise)} title="Reset to app default">
+                                  <RotateCcw className="h-4 w-4" />
+                                </button>
+                              )}
+                              {exercise.ownerUserId ? (
+                                <button className="btn-ghost text-orange-300" onClick={() => deleteExercise(exercise)} title="Delete custom exercise">
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              ) : !exercise.isArchived ? (
+                                <button className="btn-ghost text-iron-500" onClick={() => deleteExercise(exercise)} title="Hide from library">
+                                  <EyeOff className="h-4 w-4" />
+                                </button>
+                              ) : null}
+                              <button className="btn-ghost" onClick={() => setProgressExerciseId(exercise.id)} title="Progress chart">
+                                <BarChart3 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex shrink-0 gap-1">
-                          <button className="btn-ghost" onClick={() => startEditExercise(exercise)} title={`Edit ${exercise.name}`}>
-                            <Pencil className="h-4 w-4" />
-                          </button>
-                          <button className="btn-ghost" onClick={() => setProgressExerciseId(exercise.id)} title={`Open ${exercise.name} progress`}>
-                            <BarChart3 className="h-4 w-4" />
-                          </button>
-                        </div>
+                        {childVariations.length > 0 && (
+                          <div className="ml-4 mt-1">
+                            <button
+                              className="flex items-center gap-1 rounded px-2 py-1 text-[0.68rem] font-bold text-iron-400 hover:text-iron-200 transition"
+                              onClick={() => setExpandedVariantParentIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(exercise.id)) next.delete(exercise.id); else next.add(exercise.id);
+                                return next;
+                              })}
+                            >
+                              <ChevronDown className={`h-3 w-3 transition ${isExpanded ? "rotate-180" : ""}`} />
+                              {childVariations.length} variation{childVariations.length > 1 ? "s" : ""}
+                              <button className="ml-1 text-iron-500 hover:text-volt" onClick={(e) => { e.stopPropagation(); startAddVariation(exercise); }} title="Add variation">
+                                <Plus className="h-3 w-3" />
+                              </button>
+                            </button>
+                            {isExpanded && (
+                              <div className="mt-1 space-y-1 border-l border-white/10 pl-3">
+                                {childVariations.map((child) => (
+                                  <div key={child.id} className="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div>
+                                        <p className="text-sm font-bold">{child.name}</p>
+                                        {child.variationType && <p className="text-[0.68rem] text-iron-500">{child.variationType}</p>}
+                                      </div>
+                                      <div className="flex shrink-0 gap-1">
+                                        <button className="btn-ghost" onClick={() => startEditExercise(child)} title="Edit"><Pencil className="h-3.5 w-3.5" /></button>
+                                        <button className="btn-ghost" onClick={() => duplicateExercise(child)} title="Duplicate"><Copy className="h-3.5 w-3.5" /></button>
+                                        {child.ownerUserId ? (
+                                          <button className="btn-ghost text-orange-300" onClick={() => deleteExercise(child)} title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
+                                        ) : !child.isArchived ? (
+                                          <button className="btn-ghost text-iron-500" onClick={() => deleteExercise(child)} title="Hide"><EyeOff className="h-3.5 w-3.5" /></button>
+                                        ) : null}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {!exercises.length && <EmptyState title="No exercises match" detail="Clear a filter or add a new exercise." />}
                 </div>
               </div>
             </div>
-            <Panel title={editingExerciseId ? "Edit Exercise" : "Custom Exercise"} icon={editingExerciseId ? Pencil : Plus}>
+            <Panel title={editingExerciseId ? "Edit Exercise" : "Add Exercise"} icon={editingExerciseId ? Pencil : Plus}>
               <div className="space-y-3">
+                {editingExerciseId && (() => {
+                  const editing = db.exercises.find((e) => e.id === editingExerciseId);
+                  return editing && !editing.ownerUserId ? (
+                    <p className="rounded-lg border border-volt/30 bg-volt/5 px-3 py-2 text-xs text-volt">Editing default exercise — {editSaveContext(authMode, cloudStatus)} Use Reset to restore app defaults.</p>
+                  ) : null;
+                })()}
                 <TextField label="Name" value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />
-                <TextField label="Notes" value={draft.notes} onChange={(notes) => setDraft((value) => ({ ...value, notes }))} />
+                <TextField label="Notes / cues" value={draft.notes} onChange={(notes) => setDraft((value) => ({ ...value, notes }))} />
                 <SelectField label="Equipment" value={draft.equipment} options={equipmentOptions} onChange={(value) => setDraft((item) => ({ ...item, equipment: value as EquipmentCategory }))} />
                 <SelectField label="Exercise category" value={draft.exerciseCategory} options={exerciseCategoryOptions} onChange={(value) => setDraft((item) => ({ ...item, exerciseCategory: value as ExerciseCategoryLabel, isCompound: ["sbd", "main_compound", "secondary_compound", "machine_compound"].includes(value) || item.isCompound }))} />
                 <SelectField label="Default unit" value={draft.defaultUnit} options={exerciseUnitOptions} onChange={(defaultUnit) => setDraft((item) => ({ ...item, defaultUnit: defaultUnit as ExerciseUnit, allowedUnits: Array.from(new Set([...item.allowedUnits, defaultUnit as ExerciseUnit])) }))} />
@@ -3783,7 +4011,6 @@ function LibraryScreen({
                   <NumberField label="Default increment" value={draft.defaultIncrement} onChange={(defaultIncrement) => setDraft((item) => ({ ...item, defaultIncrement }))} />
                   <NumberField label="Custom increment" value={draft.customIncrement} onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement }))} />
                 </div>
-                <NumberField label="Fatigue rating" value={draft.fatigueRating} onChange={(fatigueRating) => setDraft((item) => ({ ...item, fatigueRating: Math.min(5, Math.max(1, fatigueRating)) }))} />
                 <div>
                   <p className="label mb-2">Primary muscles</p>
                   <div className="grid grid-cols-2 gap-2">
@@ -3796,6 +4023,68 @@ function LibraryScreen({
                     {muscleOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.secondaryMuscles.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftMuscle("secondaryMuscles", item)}>{item}</button>)}
                   </div>
                 </div>
+                {/* Variation controls */}
+                <div>
+                  <button
+                    className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-300 transition hover:bg-white/[0.07]"
+                    onClick={() => setDraft((d) => ({ ...d, isVariation: !d.isVariation }))}
+                  >
+                    This is a variation of another exercise
+                    <span className={`text-[10px] font-black ${draft.isVariation ? "text-volt" : "text-iron-500"}`}>{draft.isVariation ? "ON" : "OFF"}</span>
+                  </button>
+                  {draft.isVariation && (
+                    <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-3">
+                      <div>
+                        <p className="label mb-1">Parent exercise</p>
+                        {draft.parentExerciseId ? (
+                          <div className="flex items-center gap-2 rounded-lg border border-volt/40 bg-volt/10 px-3 py-2">
+                            <span className="flex-1 text-sm font-bold text-volt">
+                              {db.exercises.find((e) => e.id === draft.parentExerciseId)?.name ?? draft.parentExerciseId}
+                            </span>
+                            <button
+                              className="text-volt/60 hover:text-volt transition"
+                              onClick={() => { setDraft((d) => ({ ...d, parentExerciseId: "" })); setParentSearch(""); }}
+                              title="Clear parent"
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="space-y-1">
+                            <input
+                              className="field"
+                              placeholder="Search exercises..."
+                              value={parentSearch}
+                              onChange={(e) => setParentSearch(e.target.value)}
+                            />
+                            {parentSearch.trim() && (
+                              <div className="max-h-40 overflow-y-auto rounded-lg border border-white/10 bg-iron-900">
+                                {db.exercises
+                                  .filter((e) => !e.isVariation && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id) && e.id !== editingExerciseId && e.name.toLowerCase().includes(parentSearch.toLowerCase()))
+                                  .sort((a, b) => a.name.localeCompare(b.name))
+                                  .map((e) => (
+                                    <button
+                                      key={e.id}
+                                      className="w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition"
+                                      onClick={() => { setDraft((d) => ({ ...d, parentExerciseId: e.id })); setParentSearch(e.name); }}
+                                    >
+                                      {e.name}
+                                    </button>
+                                  ))
+                                }
+                                {db.exercises.filter((e) => !e.isVariation && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id) && e.id !== editingExerciseId && e.name.toLowerCase().includes(parentSearch.toLowerCase())).length === 0 && (
+                                  <p className="px-3 py-2 text-xs text-iron-500">No exercises found</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <TextField label="Variation type (e.g. Paused, Box, Deficit)" value={draft.variationType} onChange={(variationType) => setDraft((d) => ({ ...d, variationType }))} />
+                    </div>
+                  )}
+                </div>
+                {/* Advanced options */}
                 <div>
                   <button
                     className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-300 transition hover:bg-white/[0.07]"
@@ -3805,34 +4094,37 @@ function LibraryScreen({
                     <ChevronRight className={`h-3 w-3 transition ${showAdvancedExercise ? "rotate-90" : ""}`} />
                   </button>
                   {showAdvancedExercise && (
-                    <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                      <p className="label mb-2">Movement patterns</p>
-                      <p className="mb-2 text-xs text-iron-500">Optional. Used internally for program generation suggestions.</p>
-                      <div className="grid grid-cols-2 gap-2">
-                        {movementOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.movementPatterns.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftPattern(item)}>{item}</button>)}
+                    <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-3">
+                      <NumberField label="Fatigue rating (1–5)" value={draft.fatigueRating} onChange={(fatigueRating) => setDraft((item) => ({ ...item, fatigueRating: Math.min(5, Math.max(1, fatigueRating)) }))} />
+                      <div>
+                        <p className="label mb-2">Movement patterns</p>
+                        <p className="mb-2 text-xs text-iron-500">Used internally for program generation suggestions.</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {movementOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.movementPatterns.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftPattern(item)}>{item}</button>)}
+                        </div>
                       </div>
+                      <div>
+                        <p className="label mb-2">Allowed units</p>
+                        <div className="grid grid-cols-2 gap-2">
+                          {exerciseUnitOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.allowedUnits.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftUnit(item)}>{item}</button>)}
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.isCompound} onChange={(event) => setDraft((item) => ({ ...item, isCompound: event.target.checked }))} /> Compound movement</label>
+                        <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.canBeGymSpecific} onChange={(event) => setDraft((item) => ({ ...item, canBeGymSpecific: event.target.checked }))} /> Can vary by gym</label>
+                        <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.isGymSpecificEnabled} onChange={(event) => setDraft((item) => ({ ...item, isGymSpecificEnabled: event.target.checked, canBeGymSpecific: item.canBeGymSpecific || event.target.checked }))} /> Enable gym-specific behavior</label>
+                      </div>
+                      <TextField label="Tags (comma-separated)" value={draft.tags} onChange={(tags) => setDraft((value) => ({ ...value, tags }))} />
                     </div>
                   )}
                 </div>
-                <div>
-                  <p className="label mb-2">Allowed units</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {exerciseUnitOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.allowedUnits.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftUnit(item)}>{item}</button>)}
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.isCompound} onChange={(event) => setDraft((item) => ({ ...item, isCompound: event.target.checked }))} /> Compound movement</label>
-                  <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.canBeGymSpecific} onChange={(event) => setDraft((item) => ({ ...item, canBeGymSpecific: event.target.checked }))} /> Can vary by gym</label>
-                  <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.isGymSpecificEnabled} onChange={(event) => setDraft((item) => ({ ...item, isGymSpecificEnabled: event.target.checked, canBeGymSpecific: item.canBeGymSpecific || event.target.checked }))} /> Enable gym-specific behavior</label>
-                </div>
-                <TextField label="Tags" value={draft.tags} onChange={(tags) => setDraft((value) => ({ ...value, tags }))} />
                 {editingExerciseId ? (
                   <div className="grid gap-2 sm:grid-cols-2">
                     <button className="btn-primary" onClick={saveEditExercise}>
                       <Save className="h-4 w-4" /> Save Changes
                     </button>
                     <button className="btn-secondary" onClick={() => { setEditingExerciseId(undefined); setDraft(emptyDraft); }}>
-                      Cancel Edit
+                      Cancel
                     </button>
                   </div>
                 ) : (
@@ -3993,23 +4285,29 @@ function ExerciseE1rmChart({ points, unit, title = "e1RM trend" }: { points: { l
 function SplitLibraryManager({
   db,
   user,
-  updateDb
+  updateDb,
+  authMode,
+  cloudStatus,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  authMode: "unknown" | "local" | "cloud";
+  cloudStatus: "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed";
 }) {
   const splits = db.splitTemplates
     .filter((split) => !split.ownerUserId || split.ownerUserId === user.id)
     .sort((a, b) => Number(b.favoriteUserIds?.includes(user.id) || false) - Number(a.favoriteUserIds?.includes(user.id) || false) || a.name.localeCompare(b.name));
   const [editingId, setEditingId] = useState<string>(splits[0]?.id || "");
   const [showSplitAdvanced, setShowSplitAdvanced] = useState(false);
+  const [splitSectionFilterState, setSplitSectionFilterState] = useState<"all" | "default" | "custom">("all");
   const activeSplit = splits.find((split) => split.id === editingId) || splits[0];
 
   function createSplit() {
     const split: SplitTemplate = {
       id: createId("split"),
       ownerUserId: user.id,
+      source: "custom",
       name: "",
       goal: user.goal,
       daysPerWeek: 0,
@@ -4033,8 +4331,28 @@ function SplitLibraryManager({
       if (target) {
         mutator(target);
         target.daysPerWeek = target.days.length;
+        if (!target.ownerUserId) target.userModified = true;
         target.updatedAt = nowIso();
       }
+      return draft;
+    });
+  }
+
+  function resetSplitToDefault(split: SplitTemplate) {
+    const seed = seedSplitTemplates.find((s) => s.id === split.id);
+    if (!seed) return;
+    if (!confirm(`Reset "${split.name}" to app defaults? Your edits will be lost.`)) return;
+    void updateDb((draft) => {
+      const target = draft.splitTemplates.find((s) => s.id === split.id);
+      if (!target) return draft;
+      target.name = seed.name;
+      target.description = seed.description;
+      target.goal = seed.goal;
+      target.daysPerWeek = seed.daysPerWeek;
+      target.notes = seed.notes;
+      target.days = structuredClone(seed.days);
+      target.userModified = false;
+      target.updatedAt = nowIso();
       return draft;
     });
   }
@@ -4044,6 +4362,8 @@ function SplitLibraryManager({
     copy.id = createId("split");
     copy.ownerUserId = user.id;
     copy.name = `${split.name} Copy`;
+    copy.source = "custom";
+    copy.copiedFromId = split.id;
     copy.createdAt = nowIso();
     copy.updatedAt = nowIso();
     copy.days = copy.days.map((day) => ({ ...day, id: createId("splitday") }));
@@ -4055,8 +4375,10 @@ function SplitLibraryManager({
   }
 
   function deleteSplit(split: SplitTemplate) {
-    if (db.splitTemplates.length <= 1) return;
-    if (!confirm(`Delete split "${split.name}"? Existing programs keep their already-built workouts.`)) return;
+    if (!split.ownerUserId) return;
+    const customSplits = db.splitTemplates.filter((s) => s.ownerUserId === user.id);
+    if (customSplits.length <= 1 && db.splitTemplates.length <= 1) return;
+    if (!confirm(`Delete "${split.name}"? Existing programs keep their already-built workouts.`)) return;
     void updateDb((draft) => {
       draft.splitTemplates = draft.splitTemplates.filter((item) => item.id !== split.id);
       return draft;
@@ -4076,30 +4398,44 @@ function SplitLibraryManager({
     });
   }
 
+  const splitSectionFilter = splitSectionFilterState;
+  const defaultSplits = splits.filter((s) => !s.ownerUserId);
+  const customSplits = splits.filter((s) => !!s.ownerUserId);
+  const visibleSplits = splitSectionFilter === "default" ? defaultSplits : splitSectionFilter === "custom" ? customSplits : splits;
+
   return (
     <section className="grid gap-4 xl:grid-cols-[20rem_1fr]">
       <Panel title="Split Templates" icon={CalendarDays}>
-        <p className="mb-4 text-sm text-iron-300">Create reusable training structures based on muscles and movement patterns. Splits do not contain exact exercises.</p>
-        <button className="btn-primary mb-3 w-full" onClick={createSplit}><Plus className="h-4 w-4" /> Create Split</button>
+        <p className="mb-3 text-sm text-iron-300">Reusable training structures for program generation.</p>
+        <button className="btn-primary mb-3 w-full" onClick={createSplit}><Plus className="h-4 w-4" /> Create Custom Split</button>
+        <div className="mb-3 flex gap-1">
+          {([["all", "All"], ["default", "Default"], ["custom", "Custom"]] as const).map(([id, label]) => (
+            <button key={id} className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${splitSectionFilter === id ? "bg-volt text-iron-950" : "bg-white/10 text-iron-300 hover:bg-white/20"}`} onClick={() => setSplitSectionFilterState(id)}>{label}</button>
+          ))}
+        </div>
         <div className="space-y-2">
-          {splits.map((split) => (
+          {visibleSplits.map((split) => (
             <div key={split.id} className={`rounded-lg border p-2 ${activeSplit?.id === split.id ? "border-volt bg-volt/10" : "border-white/10 bg-white/[0.05]"}`}>
               <div className="flex items-start justify-between gap-2">
                 <button className="min-w-0 flex-1 text-left" onClick={() => setEditingId(split.id)}>
                   <p className="truncate font-black">{split.name}</p>
-                  <p className="text-xs text-iron-400">{split.days.length || split.daysPerWeek} days - {split.goal}{split.ownerUserId ? " - custom" : " - default"}</p>
+                  <p className="text-xs text-iron-400">{split.days.length || split.daysPerWeek}d · {split.goal} · {split.ownerUserId ? "custom" : "default"}{split.userModified ? " (edited)" : ""}</p>
                 </button>
-                <button className={`btn-ghost min-h-9 px-2 ${split.favoriteUserIds?.includes(user.id) ? "text-volt" : "text-iron-400"}`} onClick={() => toggleFavorite(split)} title={split.favoriteUserIds?.includes(user.id) ? "Unfavorite split" : "Favorite split"}>
+                <button className={`btn-ghost min-h-9 px-2 ${split.favoriteUserIds?.includes(user.id) ? "text-volt" : "text-iron-400"}`} onClick={() => toggleFavorite(split)} title={split.favoriteUserIds?.includes(user.id) ? "Unfavorite" : "Favorite"}>
                   <Star className={`h-4 w-4 ${split.favoriteUserIds?.includes(user.id) ? "fill-current" : ""}`} />
                 </button>
               </div>
             </div>
           ))}
+          {!visibleSplits.length && <EmptyState title="No splits" detail="Create a custom split or switch tabs." />}
         </div>
       </Panel>
       <Panel title="Split Builder" icon={SlidersHorizontal}>
         {activeSplit ? (
           <div className="space-y-4">
+            {!activeSplit.ownerUserId && activeSplit.userModified && (
+              <p className="rounded-lg border border-volt/30 bg-volt/5 px-3 py-2 text-xs text-volt">Default split — {editSaveContext(authMode, cloudStatus)} Use Reset to restore app defaults.</p>
+            )}
             <div className="grid gap-3 md:grid-cols-2">
               <TextField label="Split name" value={activeSplit.name} onChange={(name) => updateSplit((split) => { split.name = name; })} />
               <SelectField label="Goal" value={activeSplit.goal} options={["powerlifting", "bodybuilding", "powerbuilding", "general-health", "conditioning", "maintenance"]} onChange={(goal) => updateSplit((split) => { split.goal = goal as TrainingGoal; })} />
@@ -4119,7 +4455,11 @@ function SplitLibraryManager({
             )}
             <div className="flex flex-wrap gap-2">
               <button className="btn-secondary" onClick={() => duplicateSplit(activeSplit)}><Copy className="h-4 w-4" /> Duplicate</button>
-              <button className="btn-secondary border-ember/40 text-orange-100" onClick={() => deleteSplit(activeSplit)}><Trash2 className="h-4 w-4" /> Delete</button>
+              {activeSplit.ownerUserId ? (
+                <button className="btn-secondary border-ember/40 text-orange-100" onClick={() => deleteSplit(activeSplit)}><Trash2 className="h-4 w-4" /> Delete</button>
+              ) : activeSplit.userModified && seedSplitTemplates.some((s) => s.id === activeSplit.id) ? (
+                <button className="btn-secondary text-volt" onClick={() => resetSplitToDefault(activeSplit)}><RotateCcw className="h-4 w-4" /> Reset to Default</button>
+              ) : null}
               <button className="btn-secondary" onClick={() => updateSplit((split) => { split.days.push(makeSplitDay(`Day ${split.days.length + 1}`, ["chest"], ["horizontal-press"])); })}><Plus className="h-4 w-4" /> Add Day</button>
             </div>
             <div className="space-y-3">

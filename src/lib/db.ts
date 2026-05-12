@@ -436,7 +436,8 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
     // V3.1C: copy rich metadata from built-in definition when missing from stored exercise
     const builtIn = builtInExercises.find((b) => b.id === exercise.id);
     if (builtIn) {
-      if (!exercise.ownerUserId) {
+      // Skip core-field refresh for default exercises the user has explicitly modified.
+      if (!exercise.ownerUserId && !exercise.userModified) {
         const before = JSON.stringify(exercise);
         exercise.name = builtIn.name;
         exercise.description = builtIn.description;
@@ -482,7 +483,23 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       if (exercise.isBodyweight === undefined && builtIn.isBodyweight !== undefined) { exercise.isBodyweight = builtIn.isBodyweight; changed = true; }
       if (exercise.isUnilateral === undefined && builtIn.isUnilateral !== undefined) { exercise.isUnilateral = builtIn.isUnilateral; changed = true; }
     }
+    // Backfill source flag
+    if (!exercise.source) { exercise.source = exercise.ownerUserId ? "custom" : "default"; changed = true; }
   });
+
+  // Backfill hasVariations — true if any exercise names this one as its parent.
+  const parentIds = new Set(next.exercises.filter((e) => e.parentExerciseId).map((e) => e.parentExerciseId as string));
+  next.exercises.forEach((exercise) => {
+    const should = parentIds.has(exercise.id);
+    if (exercise.hasVariations !== should) { exercise.hasVariations = should; changed = true; }
+  });
+
+  // Remove deprecated default split templates that are no longer in the curated seed list.
+  const seedSplitIds = new Set(seedSplitTemplates.map((s) => s.id));
+  const before = next.splitTemplates.length;
+  next.splitTemplates = next.splitTemplates.filter((split) => split.ownerUserId || seedSplitIds.has(split.id));
+  if (next.splitTemplates.length !== before) changed = true;
+
   next.splitTemplates.forEach((split) => {
     if (!split.favoriteUserIds) {
       split.favoriteUserIds = [];
@@ -496,7 +513,8 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       split.updatedAt = split.createdAt;
       changed = true;
     }
-    if (!split.ownerUserId) {
+    if (!split.source) { split.source = split.ownerUserId ? "custom" : "default"; changed = true; }
+    if (!split.ownerUserId && !split.userModified) {
       const seedSplit = seedSplitTemplates.find((item) => item.id === split.id);
       if (seedSplit) {
         if (split.name !== seedSplit.name) { split.name = seedSplit.name; changed = true; }
