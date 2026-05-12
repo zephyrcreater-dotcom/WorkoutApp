@@ -1,5 +1,4 @@
 import { createId, nowIso, todayIso } from "../lib/ids";
-import { hashPin } from "../lib/security";
 import type {
   Exercise,
   Gym,
@@ -2027,7 +2026,7 @@ function makeGyms(userId: string): Gym[] {
   ];
 }
 
-function makeUser(id: string, username: string, displayName: string, goal: TrainingGoal, pinHash: string): UserProfile {
+function makeUser(id: string, username: string, displayName: string, goal: TrainingGoal, pinHash = ""): UserProfile {
   return {
     id,
     username,
@@ -2072,16 +2071,12 @@ function makeUser(id: string, username: string, displayName: string, goal: Train
 }
 
 export async function seedDatabase(): Promise<TrainingDatabase> {
-  const nathanHash = await hashPin("2468");
-  const avaHash = await hashPin("1357");
-  const userPower = makeUser("user_nathan", "nathan", "Nathan", "powerbuilding", nathanHash);
-  const userHealth = makeUser("user_ava", "ava", "Ava", "general-health", avaHash);
-  const powerTemplate = makeTemplate(userPower.id, "Powerbuilding Base Week", "powerbuilding");
-  const healthTemplate = makeTemplate(userHealth.id, "General Health Starter", "general-health");
+  const localUser = makeUser("local_only_user", "local-only", "Local Profile", "powerbuilding");
+  const powerTemplate = makeTemplate(localUser.id, "Powerbuilding Base Week", "powerbuilding");
   const readiness: ReadinessCheckIn[] = [
     {
       id: createId("readiness"),
-      userId: userPower.id,
+      userId: localUser.id,
       date: todayIso(),
       sleepQuality: 3,
       stress: 3,
@@ -2097,17 +2092,17 @@ export async function seedDatabase(): Promise<TrainingDatabase> {
     }
   ];
 
-  const session = sampleSession(userPower.id, `${userPower.id}_gym_commercial`, powerTemplate.id);
+  const session = sampleSession(localUser.id, `${localUser.id}_gym_commercial`, powerTemplate.id);
 
   return {
     version: 1,
     updatedAt: nowIso(),
-    users: [userPower, userHealth],
-    currentUserId: undefined,
-    gyms: [...makeGyms(userPower.id), ...makeGyms(userHealth.id)],
+    users: [localUser],
+    currentUserId: localUser.id,
+    gyms: makeGyms(localUser.id),
     exercises: builtInExercises,
     splitTemplates,
-    workoutTemplates: [powerTemplate, healthTemplate],
+    workoutTemplates: [powerTemplate],
     programs: [],
     sessions: [session],
     readiness,
@@ -2115,7 +2110,7 @@ export async function seedDatabase(): Promise<TrainingDatabase> {
     weakPoints: [
       {
         id: createId("weak"),
-        userId: userPower.id,
+        userId: localUser.id,
         type: "powerlifting",
         label: "Bench weak off chest",
         relatedLift: "Bench",
@@ -2128,7 +2123,7 @@ export async function seedDatabase(): Promise<TrainingDatabase> {
       },
       {
         id: createId("weak"),
-        userId: userPower.id,
+        userId: localUser.id,
         type: "bodybuilding",
         label: "Side delts need more direct volume",
         relatedMuscles: ["side-delts"],

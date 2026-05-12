@@ -4,10 +4,14 @@
 
 ## Supabase Persistence Phase 1
 
-- Conflict handling is intentionally basic: latest snapshot wins between local `updatedAt` and the cloud snapshot timestamp. There is no field-level merge or parallel-device reconciliation yet.
+- Local-only mode and cloud-account mode are now separated, but the explicit import flow is still intentionally conservative. It merges known top-level collections by ID and does not attempt deep per-set or per-block reconciliation yet.
 - Snapshot sync currently stores the full `TrainingDatabase` JSON document for the signed-in Supabase account. This is deliberate for Phase 1 but not the final normalized cloud schema.
-- Cross-device Supabase behavior still needs manual verification in a real configured environment with valid env vars and RLS-enabled `app_snapshots`.
+- Cross-device Supabase behavior still needs final manual verification in a real configured environment with valid env vars and RLS-enabled `app_snapshots`, but the hydration loop and seed-data timestamp bug were fixed in the sync repair pass.
+- The old visible fake user picker has been removed from the active UI, but older local databases may still contain multiple historical local profiles internally. The app now auto-selects/migrates instead of showing them.
+- Signed-out startup now uses a mode gate instead of jumping straight into the main app. This still needs real-device validation for the full choose-local, sign-in, sign-out, and explicit import paths.
+- Export/import wording is aligned with separate local-only vs cloud modes, but richer backup tooling and previews are still future work.
 - In this Codex sandbox session, local browser verification via `npm run dev -- --host 127.0.0.1 --port 5174 --strictPort` was blocked by `listen EPERM`, so runtime UI verification was limited to lint/build rather than live browser testing.
+- Temporary sync debug logging exists behind `localStorage["iron-orbit-sync-debug"] = "1"`. It should stay quiet by default, but can be removed later once Supabase sync is verified in the real app environment.
 
 ## V3.1 Training Intelligence Foundation
 

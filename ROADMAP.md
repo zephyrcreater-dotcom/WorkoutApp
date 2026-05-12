@@ -4,16 +4,31 @@
 
 - Added Supabase frontend client setup with env gating via `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 - Added email/password auth UI and state for sign up, sign in, sign out, and current signed-in email display.
+- Removed the old visible fake/local user picker from the active UI.
+- Added a startup mode gate when signed out so users intentionally choose local-only mode or account mode before entering the app.
+- Made Supabase auth the only cloud identity source of truth.
 - Added JSONB snapshot sync model using one `app_snapshots` row per Supabase auth user.
-- Added startup load flow: local DB first, then signed-in cloud snapshot fetch, latest snapshot wins, then selected snapshot is stored locally.
+- Added startup load flow: local-only instance stays separate, while signed-in startup loads the cloud account snapshot directly.
 - Added debounced auto-sync after local DB changes plus manual `Sync Now`.
 - Preserved full local-only mode when Supabase env vars are missing or the user is signed out.
 - Added `supabase/migrations/001_app_snapshots.sql` and `supabase/README.md`.
+- Repair pass stabilized hydration and autosave:
+  - hydrate only on initial session and `SIGNED_IN`
+  - ignore `TOKEN_REFRESHED`/non-data auth events for app-state hydration
+  - save to cloud from real local mutations instead of a broad `db` effect
+  - treat seed/default local state as lower priority than a real cloud snapshot on fresh/incognito startup
+  - choose the newer local source between IndexedDB and local backup
+- Safe conflict handling now blocks accidental overwrites:
+  - sign-in never auto-uploads meaningful local data over existing cloud data
+  - normal startup/sign-in no longer shows a local-vs-cloud conflict popup
+  - local-only storage and per-user cloud-cache storage are separated
+  - `Import Local Data Into Cloud` is an explicit settings action
+  - merge remains conservative and ID-based for known top-level collections
 
 ## Next Recommended Step
 
-1. Manually verify cross-device persistence in a real Supabase environment.
-2. Decide whether Phase 2 should keep full-document snapshots or begin selective normalization for sessions/programs.
+1. Manually verify cross-device persistence and Supabase table contents in a real configured environment.
+2. Decide whether the next persistence pass should add stronger import/export tools and better merge previews before any schema normalization.
 3. Resume V3 programming rules only after persistence testing is stable.
 
 ## V3 Phase 2: Goal/Block Programming Rules — Completed

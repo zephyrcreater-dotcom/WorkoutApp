@@ -1,21 +1,36 @@
-import type { Session } from "@supabase/supabase-js";
+import type { AuthChangeEvent, Session } from "@supabase/supabase-js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { seedDatabase } from "../data/seedData";
 import {
   buildAppSnapshot,
   fetchAppSnapshot,
-  getSnapshotTimestamp,
   getSupabaseSession,
+  isValidAppSnapshotEnvelope,
+  mergeAppSnapshots,
   signInWithEmail,
   signOutSupabase,
   signUpWithEmail,
   subscribeToSupabaseAuth,
+  summarizeSnapshot,
   upsertAppSnapshot,
+  type SnapshotSummary,
 } from "../lib/cloudSync";
-import { replaceDatabase, resetDatabase, saveDatabase, loadDatabase } from "../lib/db";
+import {
+  bindDatabaseToIdentity,
+  loadDatabase,
+  loadStoredDatabase,
+  replaceDatabase,
+  resetDatabase,
+  saveDatabase,
+  type DatabaseStorageScope,
+} from "../lib/db";
 import { getSupabaseConfigError, isSupabaseConfigured } from "../lib/supabaseClient";
 import type { TrainingDatabase } from "../types/domain";
 
-type SyncPhase = "disabled" | "not-signed-in" | "syncing" | "synced" | "failed";
+type SyncPhase = "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed";
+
+export type AuthMode = "unknown" | "local" | "cloud";
+export type CloudImportAction = "merge" | "replace";
 
 interface CloudSyncState {
   configured: boolean;
@@ -27,103 +42,328 @@ interface CloudSyncState {
 }
 
 const AUTO_SYNC_DELAY_MS = 3000;
+const LOCAL_SCOPE: DatabaseStorageScope = { mode: "local-only" };
 
-function parseTimestamp(value?: string): number {
-  if (!value) return 0;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? 0 : parsed;
+function canUseWindow(): boolean {
+  return typeof window !== "undefined";
+}
+
+function shouldDebugSync(): boolean {
+  if (!canUseWindow()) return false;
+  try {
+    return window.localStorage.getItem("iron-orbit-sync-debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
+function logSync(event: string, detail?: Record<string, unknown>) {
+  if (!shouldDebugSync()) return;
+  console.info(`[sync] ${event}`, detail || {});
+}
+
+function isSeedLikeDatabase(database?: TrainingDatabase): boolean {
+  if (!database) return true;
+  const hasPrograms = database.programs.length > 0;
+  const hasCustomExercises = database.exercises.some((exercise) => "ownerUserId" in exercise && exercise.ownerUserId);
+  const hasUserGyms = database.gyms.some((gym) => gym.userId && !gym.id.endsWith("_gym_commercial"));
+  const hasMultipleSessions = database.sessions.length > 1;
+  return database.users.length <= 1 && !hasPrograms && !hasCustomExercises && !hasUserGyms && !hasMultipleSessions;
+}
+
+function getCloudScope(userId: string): DatabaseStorageScope {
+  return { mode: "cloud-cache", supabaseUserId: userId };
 }
 
 export function useTrainingDb() {
   const [db, setDb] = useState<TrainingDatabase | undefined>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | undefined>();
+  const [authMode, setAuthMode] = useState<AuthMode>("unknown");
+  const [localOnlySummary, setLocalOnlySummary] = useState<SnapshotSummary | undefined>();
+  const [hasMeaningfulLocalOnlyData, setHasMeaningfulLocalOnlyData] = useState(false);
   const [cloud, setCloud] = useState<CloudSyncState>({
     configured: isSupabaseConfigured,
     session: null,
     status: isSupabaseConfigured ? "not-signed-in" : "disabled",
-    message: isSupabaseConfigured ? "Not signed in." : getSupabaseConfigError() || "Cloud sync disabled.",
+    message: isSupabaseConfigured ? "Local only — saved on this device until you sign in." : getSupabaseConfigError() || "Cloud sync disabled.",
   });
 
   const dbRef = useRef<TrainingDatabase | undefined>(undefined);
-  const lastUploadedUpdatedAtRef = useRef<string | undefined>(undefined);
-  const hydratingFromCloudRef = useRef(false);
-  const initSyncHandledRef = useRef(false);
+  const localOnlyDbRef = useRef<TrainingDatabase | undefined>(undefined);
+  const authModeRef = useRef<AuthMode>("unknown");
+  const sessionRef = useRef<Session | null>(null);
+  const pendingCloudSaveRef = useRef<number | undefined>(undefined);
+  const pendingSerializedSnapshotRef = useRef<string | undefined>(undefined);
+  const isHydratingFromCloudRef = useRef(false);
+  const hasHydratedFromCloudRef = useRef(false);
+  const isSavingToCloudRef = useRef(false);
+  const lastSavedSerializedSnapshotRef = useRef<string | undefined>(undefined);
+
+  const updateCloudState = useCallback((patch: Partial<CloudSyncState>) => {
+    setCloud((current) => ({ ...current, ...patch }));
+  }, []);
 
   useEffect(() => {
     dbRef.current = db;
   }, [db]);
 
-  const persistDb = useCallback(async (next: TrainingDatabase, options?: { preserveUpdatedAt?: boolean }) => {
-    const saved = await saveDatabase(next, options);
-    setDb(saved);
-    return saved;
+  useEffect(() => {
+    authModeRef.current = authMode;
+  }, [authMode]);
+
+  const currentCloudScope = useCallback((): DatabaseStorageScope | undefined => {
+    const userId = sessionRef.current?.user.id;
+    return userId ? getCloudScope(userId) : undefined;
   }, []);
 
-  const importDb = useCallback(async (next: TrainingDatabase) => {
-    const saved = await replaceDatabase(next, { preserveUpdatedAt: true });
-    setDb(saved);
+  const refreshLocalOnlySummary = useCallback((database?: TrainingDatabase) => {
+    localOnlyDbRef.current = database;
+    const meaningful = !!database && !isSeedLikeDatabase(database);
+    setHasMeaningfulLocalOnlyData(meaningful);
+    setLocalOnlySummary(database ? summarizeSnapshot(buildAppSnapshot(database)) : undefined);
   }, []);
 
-  const reseed = useCallback(async () => {
-    const next = await resetDatabase();
+  const clearPendingCloudSave = useCallback(() => {
+    if (pendingCloudSaveRef.current !== undefined && canUseWindow()) {
+      window.clearTimeout(pendingCloudSaveRef.current);
+    }
+    pendingCloudSaveRef.current = undefined;
+    pendingSerializedSnapshotRef.current = undefined;
+  }, []);
+
+  const applyDbToState = useCallback((next: TrainingDatabase) => {
+    dbRef.current = next;
     setDb(next);
   }, []);
 
-  const syncSnapshotToCloud = useCallback(async (database?: TrainingDatabase) => {
-    const session = cloud.session;
-    const source = database || dbRef.current;
+  const signedOutMessage = isSupabaseConfigured
+    ? "Local only — saved on this device. Sign in to sync across devices."
+    : getSupabaseConfigError() || "Cloud sync disabled.";
+
+  const saveForScope = useCallback(async (
+    scope: DatabaseStorageScope,
+    next: TrainingDatabase,
+    options?: { preserveUpdatedAt?: boolean }
+  ) => {
+    const saved = await saveDatabase(scope, next, { preserveUpdatedAt: options?.preserveUpdatedAt });
+    if (scope.mode === "local-only") {
+      refreshLocalOnlySummary(saved);
+    }
+    return saved;
+  }, [refreshLocalOnlySummary]);
+
+  const pushSnapshotToCloud = useCallback(async (database: TrainingDatabase, reason: "auto" | "manual" | "import"): Promise<boolean> => {
+    const session = sessionRef.current;
     if (!isSupabaseConfigured) {
-      setCloud((current) => ({
-        ...current,
+      updateCloudState({
         status: "disabled",
         message: getSupabaseConfigError() || "Cloud sync disabled.",
-      }));
+      });
       return false;
     }
-    if (!session || !source) {
-      setCloud((current) => ({
-        ...current,
+    if (!session || authModeRef.current !== "cloud") {
+      updateCloudState({
         status: "not-signed-in",
-        message: "Sign in to sync this device.",
-      }));
+        message: signedOutMessage,
+      });
+      return false;
+    }
+    if (isHydratingFromCloudRef.current) {
+      logSync("save-skipped-hydrating", { reason });
       return false;
     }
 
-    setCloud((current) => ({
-      ...current,
+    const snapshot = buildAppSnapshot(database);
+    const serialized = JSON.stringify(snapshot);
+    if (reason === "auto" && serialized === lastSavedSerializedSnapshotRef.current) {
+      logSync("save-skipped-unchanged", { reason, updatedAt: snapshot.updatedAt });
+      return true;
+    }
+
+    isSavingToCloudRef.current = true;
+    updateCloudState({
       status: "syncing",
-      message: "Syncing to Supabase...",
+      message: reason === "manual" ? "Syncing current cloud account data..." : "Saving cloud account data...",
       lastError: undefined,
-    }));
+    });
 
     try {
-      const snapshot = buildAppSnapshot(source);
       const row = await upsertAppSnapshot(session.user.id, snapshot);
-      lastUploadedUpdatedAtRef.current = snapshot.updatedAt;
-      setCloud((current) => ({
-        ...current,
+      lastSavedSerializedSnapshotRef.current = serialized;
+      pendingSerializedSnapshotRef.current = undefined;
+      updateCloudState({
         status: "synced",
-        message: "Cloud snapshot is up to date.",
+        message: "Synced.",
         lastSyncedAt: row.updated_at,
         lastError: undefined,
-      }));
+      });
       return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Cloud sync failed.";
-      setCloud((current) => ({
-        ...current,
+      updateCloudState({
         status: "failed",
-        message: "Cloud sync failed.",
+        message: "Sync failed.",
         lastError: message,
-      }));
+      });
       return false;
+    } finally {
+      isSavingToCloudRef.current = false;
     }
-  }, [cloud.session]);
+  }, [signedOutMessage, updateCloudState]);
 
-  const hydrateFromCloud = useCallback(async (session: Session | null, localDatabase?: TrainingDatabase) => {
+  const persistDb = useCallback(async (
+    next: TrainingDatabase,
+    options?: { preserveUpdatedAt?: boolean; scheduleCloud?: boolean; reason?: string }
+  ) => {
+    const scope = authModeRef.current === "cloud"
+      ? currentCloudScope()
+      : LOCAL_SCOPE;
+    if (!scope) {
+      throw new Error("Cloud account mode is missing a signed-in user.");
+    }
+
+    const identity = scope.mode === "cloud-cache" && sessionRef.current
+      ? { mode: "supabase" as const, supabaseUserId: sessionRef.current.user.id, email: sessionRef.current.user.email }
+      : { mode: "local" as const };
+    const saved = await saveForScope(scope, bindDatabaseToIdentity(next, identity), { preserveUpdatedAt: options?.preserveUpdatedAt });
+    applyDbToState(saved);
+    if (options?.scheduleCloud && scope.mode === "cloud-cache") {
+      const snapshot = buildAppSnapshot(saved);
+      const serialized = JSON.stringify(snapshot);
+      if (serialized !== lastSavedSerializedSnapshotRef.current && serialized !== pendingSerializedSnapshotRef.current) {
+        clearPendingCloudSave();
+        pendingSerializedSnapshotRef.current = serialized;
+        updateCloudState({
+          status: "syncing",
+          message: "Syncing soon...",
+          lastError: undefined,
+        });
+        logSync("schedule-save", { reason: options.reason || "local-mutation", updatedAt: snapshot.updatedAt });
+        if (canUseWindow()) {
+          pendingCloudSaveRef.current = window.setTimeout(() => {
+            clearPendingCloudSave();
+            const latest = dbRef.current;
+            if (latest && authModeRef.current === "cloud") {
+              void pushSnapshotToCloud(latest, "auto");
+            }
+          }, AUTO_SYNC_DELAY_MS);
+        }
+      }
+    }
+    return saved;
+  }, [applyDbToState, clearPendingCloudSave, currentCloudScope, pushSnapshotToCloud, saveForScope, updateCloudState]);
+
+  const hydrateCloudMode = useCallback(async (session: Session, reason: "initial-session" | "signed-in") => {
+    const scope = getCloudScope(session.user.id);
+    const cached = await loadStoredDatabase(scope);
+    const cachedBound = cached
+      ? bindDatabaseToIdentity(cached, { mode: "supabase", supabaseUserId: session.user.id, email: session.user.email })
+      : undefined;
+
+    clearPendingCloudSave();
+    isHydratingFromCloudRef.current = true;
+    updateCloudState({
+      configured: true,
+      session,
+      status: "hydrating",
+      message: "Loading cloud account data...",
+      lastError: undefined,
+    });
+    logSync("hydrate-start", { reason, userId: session.user.id });
+
+    try {
+      const remote = await fetchAppSnapshot(session.user.id);
+      if (remote && isValidAppSnapshotEnvelope(remote.data)) {
+        const remoteBound = bindDatabaseToIdentity(remote.data.data, {
+          mode: "supabase",
+          supabaseUserId: session.user.id,
+          email: session.user.email,
+        });
+        const saved = await replaceDatabase(scope, remoteBound, { preserveUpdatedAt: true });
+        applyDbToState(saved);
+        lastSavedSerializedSnapshotRef.current = JSON.stringify(buildAppSnapshot(saved));
+        hasHydratedFromCloudRef.current = true;
+        setAuthMode("cloud");
+        updateCloudState({
+          configured: true,
+          session,
+          status: "synced",
+          message: "Loaded cloud account data.",
+          lastSyncedAt: remote.updated_at,
+          lastError: undefined,
+        });
+        return;
+      }
+
+      if (remote && !isValidAppSnapshotEnvelope(remote.data)) {
+        const fallback = cachedBound || bindDatabaseToIdentity(await seedDatabase(), {
+          mode: "supabase",
+          supabaseUserId: session.user.id,
+          email: session.user.email,
+        });
+        const saved = await replaceDatabase(scope, fallback, { preserveUpdatedAt: true });
+        applyDbToState(saved);
+        lastSavedSerializedSnapshotRef.current = JSON.stringify(buildAppSnapshot(saved));
+        hasHydratedFromCloudRef.current = true;
+        setAuthMode("cloud");
+        updateCloudState({
+          configured: true,
+          session,
+          status: "failed",
+          message: "Cloud snapshot was malformed. Using cloud account cache on this device.",
+          lastError: "Cloud snapshot is malformed.",
+        });
+        return;
+      }
+
+      const fallback = cachedBound || bindDatabaseToIdentity(await seedDatabase(), {
+        mode: "supabase",
+        supabaseUserId: session.user.id,
+        email: session.user.email,
+      });
+      const saved = await replaceDatabase(scope, fallback, { preserveUpdatedAt: true });
+      applyDbToState(saved);
+      lastSavedSerializedSnapshotRef.current = undefined;
+      hasHydratedFromCloudRef.current = true;
+      setAuthMode("cloud");
+      updateCloudState({
+        configured: true,
+        session,
+        status: "synced",
+        message: "No cloud snapshot yet. This cloud account is separate until you sync changes or explicitly import local-only data.",
+        lastError: undefined,
+      });
+    } catch (err) {
+      console.error("Failed to hydrate cloud mode.", err);
+      const message = err instanceof Error ? err.message : "Could not load the cloud snapshot.";
+      const fallback = cachedBound || bindDatabaseToIdentity(await seedDatabase(), {
+        mode: "supabase",
+        supabaseUserId: session.user.id,
+        email: session.user.email,
+      });
+      const saved = await replaceDatabase(scope, fallback, { preserveUpdatedAt: true });
+      applyDbToState(saved);
+      hasHydratedFromCloudRef.current = true;
+      setAuthMode("cloud");
+      updateCloudState({
+        configured: true,
+        session,
+        status: "failed",
+        message: "Could not load the cloud snapshot. Using this account's device cache for now.",
+        lastError: message,
+      });
+    } finally {
+      isHydratingFromCloudRef.current = false;
+    }
+  }, [applyDbToState, clearPendingCloudSave, updateCloudState]);
+
+  const handleAuthEvent = useCallback(async (event: AuthChangeEvent, session: Session | null) => {
+    sessionRef.current = session;
+    logSync("auth-event", { event, userId: session?.user.id });
+
     if (!isSupabaseConfigured) {
-      setCloud({
+      updateCloudState({
         configured: false,
         session: null,
         status: "disabled",
@@ -131,102 +371,33 @@ export function useTrainingDb() {
       });
       return;
     }
-    if (!session) {
-      setCloud((current) => ({
-        ...current,
+
+    if (event === "SIGNED_OUT" || !session) {
+      clearPendingCloudSave();
+      isHydratingFromCloudRef.current = false;
+      isSavingToCloudRef.current = false;
+      hasHydratedFromCloudRef.current = false;
+      lastSavedSerializedSnapshotRef.current = undefined;
+      setAuthMode("unknown");
+      updateCloudState({
         configured: true,
         session: null,
         status: "not-signed-in",
-        message: "Sign in to sync this device.",
+        message: signedOutMessage,
         lastError: undefined,
-      }));
+      });
       return;
     }
 
-    const local = localDatabase || dbRef.current;
-    setCloud((current) => ({
-      ...current,
-      configured: true,
-      session,
-      status: "syncing",
-      message: "Checking cloud snapshot...",
-      lastError: undefined,
-    }));
-
-    try {
-      const remote = await fetchAppSnapshot(session.user.id);
-      if (!remote) {
-        setCloud((current) => ({
-          ...current,
-          configured: true,
-          session,
-          status: "syncing",
-          message: "Creating first cloud snapshot...",
-          lastError: undefined,
-        }));
-        if (local) {
-          await syncSnapshotToCloud(local);
-        } else {
-          setCloud((current) => ({
-            ...current,
-            configured: true,
-            session,
-            status: "synced",
-            message: "Signed in. No local data to upload yet.",
-          }));
-        }
-        return;
-      }
-
-      const remoteUpdatedAt = getSnapshotTimestamp(remote);
-      const localUpdatedAt = local?.updatedAt;
-      const remoteIsNewer = parseTimestamp(remoteUpdatedAt) > parseTimestamp(localUpdatedAt);
-
-      if (remoteIsNewer && remote.data?.data) {
-        hydratingFromCloudRef.current = true;
-        const saved = await replaceDatabase(remote.data.data, { preserveUpdatedAt: true });
-        setDb(saved);
-        hydratingFromCloudRef.current = false;
-        lastUploadedUpdatedAtRef.current = remote.data.updatedAt;
-        setCloud((current) => ({
-          ...current,
-          configured: true,
-          session,
-          status: "synced",
-          message: "Loaded the newer cloud snapshot.",
-          lastSyncedAt: remote.updated_at,
-          lastError: undefined,
-        }));
-        return;
-      }
-
-      lastUploadedUpdatedAtRef.current = remote.data.updatedAt;
-      setCloud((current) => ({
-        ...current,
-        configured: true,
-        session,
-        status: "synced",
-        message: "Using the newest local snapshot.",
-        lastSyncedAt: remote.updated_at,
-        lastError: undefined,
-      }));
-
-      if (local && parseTimestamp(local.updatedAt) > parseTimestamp(remoteUpdatedAt)) {
-        await syncSnapshotToCloud(local);
-      }
-    } catch (err) {
-      hydratingFromCloudRef.current = false;
-      const message = err instanceof Error ? err.message : "Unable to reach Supabase.";
-      setCloud((current) => ({
-        ...current,
-        configured: true,
-        session,
-        status: "failed",
-        message: "Could not load the cloud snapshot.",
-        lastError: message,
-      }));
+    if (event === "TOKEN_REFRESHED" || event === "USER_UPDATED" || event === "PASSWORD_RECOVERY") {
+      updateCloudState({ configured: true, session });
+      return;
     }
-  }, [syncSnapshotToCloud]);
+
+    if (event === "INITIAL_SESSION" || event === "SIGNED_IN") {
+      await hydrateCloudMode(session, event === "INITIAL_SESSION" ? "initial-session" : "signed-in");
+    }
+  }, [clearPendingCloudSave, hydrateCloudMode, signedOutMessage, updateCloudState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,11 +405,37 @@ export function useTrainingDb() {
 
     async function init() {
       try {
-        const local = await loadDatabase();
+        const localOnly = await loadDatabase(LOCAL_SCOPE, { seedIfMissing: true });
         if (cancelled) return;
-        setDb(local);
-        dbRef.current = local;
+        refreshLocalOnlySummary(bindDatabaseToIdentity(localOnly, { mode: "local" }));
+
+        if (!isSupabaseConfigured) {
+          setAuthMode("unknown");
+          updateCloudState({
+            configured: false,
+            session: null,
+            status: "disabled",
+            message: getSupabaseConfigError() || "Cloud sync disabled.",
+          });
+          return;
+        }
+
+        const session = await getSupabaseSession();
+        if (cancelled) return;
+        if (session) {
+          await handleAuthEvent("INITIAL_SESSION", session);
+        } else {
+          setAuthMode("unknown");
+          updateCloudState({
+            configured: true,
+            session: null,
+            status: "not-signed-in",
+            message: "Choose local-only mode or sign in to sync across devices.",
+            lastError: undefined,
+          });
+        }
       } catch (err) {
+        console.error("Failed to initialize training database state.", err);
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Unable to load local database.");
         }
@@ -249,34 +446,9 @@ export function useTrainingDb() {
       }
 
       if (!isSupabaseConfigured || cancelled) return;
-
-      try {
-        const session = await getSupabaseSession();
+      subscription = subscribeToSupabaseAuth((event, session) => {
         if (cancelled) return;
-        setCloud((current) => ({ ...current, configured: true, session }));
-        initSyncHandledRef.current = true;
-        await hydrateFromCloud(session, dbRef.current);
-      } catch (err) {
-        if (!cancelled) {
-          setCloud((current) => ({
-            ...current,
-            configured: true,
-            session: null,
-            status: "failed",
-            message: "Could not initialize Supabase auth.",
-            lastError: err instanceof Error ? err.message : "Unknown auth error.",
-          }));
-        }
-      }
-
-      subscription = subscribeToSupabaseAuth((_event, session) => {
-        if (cancelled) return;
-        setCloud((current) => ({ ...current, configured: true, session }));
-        if (!initSyncHandledRef.current) {
-          initSyncHandledRef.current = true;
-          return;
-        }
-        void hydrateFromCloud(session, dbRef.current);
+        void handleAuthEvent(event, session);
       });
     }
 
@@ -284,79 +456,194 @@ export function useTrainingDb() {
 
     return () => {
       cancelled = true;
+      clearPendingCloudSave();
       subscription?.unsubscribe();
     };
-  }, [hydrateFromCloud]);
+  }, [clearPendingCloudSave, handleAuthEvent, refreshLocalOnlySummary, updateCloudState]);
+
+  const continueLocalOnly = useCallback(async () => {
+    try {
+      const localOnly = localOnlyDbRef.current || await loadDatabase(LOCAL_SCOPE, { seedIfMissing: true });
+      const bound = bindDatabaseToIdentity(localOnly, { mode: "local" });
+      applyDbToState(bound);
+      refreshLocalOnlySummary(bound);
+      setAuthMode("local");
+      updateCloudState({
+        configured: isSupabaseConfigured,
+        session: null,
+        status: isSupabaseConfigured ? "not-signed-in" : "disabled",
+        message: signedOutMessage,
+        lastError: undefined,
+      });
+    } catch (err) {
+      console.error("Failed to enter local-only mode.", err);
+      setError(err instanceof Error ? err.message : "Unable to open local-only mode.");
+    }
+  }, [applyDbToState, refreshLocalOnlySummary, signedOutMessage, updateCloudState]);
 
   useEffect(() => {
-    if (!db || !cloud.session || !isSupabaseConfigured) return;
-    if (hydratingFromCloudRef.current) return;
-    if (!db.updatedAt || db.updatedAt === lastUploadedUpdatedAtRef.current) return;
+    let cancelled = false;
 
-    const timeout = window.setTimeout(() => {
-      void syncSnapshotToCloud(db);
-    }, AUTO_SYNC_DELAY_MS);
+    async function ensureModeDatabase() {
+      try {
+        if (authMode === "local" && !dbRef.current) {
+          const localOnly = localOnlyDbRef.current || await loadDatabase(LOCAL_SCOPE, { seedIfMissing: true });
+          if (cancelled) return;
+          const bound = bindDatabaseToIdentity(localOnly, { mode: "local" });
+          applyDbToState(bound);
+          refreshLocalOnlySummary(bound);
+          return;
+        }
 
-    return () => window.clearTimeout(timeout);
-  }, [cloud.session, db, syncSnapshotToCloud]);
+        if (authMode === "cloud" && !dbRef.current && sessionRef.current) {
+          const scope = getCloudScope(sessionRef.current.user.id);
+          const cached = await loadStoredDatabase(scope);
+          const fallback = bindDatabaseToIdentity(
+            cached || await seedDatabase(),
+            { mode: "supabase", supabaseUserId: sessionRef.current.user.id, email: sessionRef.current.user.email }
+          );
+          const saved = await replaceDatabase(scope, fallback, { preserveUpdatedAt: true });
+          if (cancelled) return;
+          applyDbToState(saved);
+        }
+      } catch (err) {
+        console.error("Failed to prepare database for selected mode.", err);
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Unable to prepare the selected workspace.");
+        }
+      }
+    }
+
+    if ((authMode === "local" || authMode === "cloud") && !db) {
+      void ensureModeDatabase();
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authMode, db, applyDbToState, refreshLocalOnlySummary]);
 
   const updateDb = useCallback(async (updater: (draft: TrainingDatabase) => TrainingDatabase) => {
     if (!dbRef.current) return;
     const next = updater(structuredClone(dbRef.current));
-    await persistDb(next);
+    await persistDb(next, { scheduleCloud: true, reason: "local-update" });
   }, [persistDb]);
 
-  const currentUser = useMemo(() => db?.users.find((user) => user.id === db.currentUserId), [db]);
+  const importDb = useCallback(async (next: TrainingDatabase) => {
+    await persistDb(next, { preserveUpdatedAt: true, scheduleCloud: true, reason: "import" });
+  }, [persistDb]);
+
+  const reseed = useCallback(async () => {
+    const scope = authModeRef.current === "cloud"
+      ? currentCloudScope()
+      : LOCAL_SCOPE;
+    if (!scope) return;
+    const next = await resetDatabase(scope);
+    const rebound = scope.mode === "cloud-cache" && sessionRef.current
+      ? bindDatabaseToIdentity(next, { mode: "supabase", supabaseUserId: sessionRef.current.user.id, email: sessionRef.current.user.email })
+      : bindDatabaseToIdentity(next, { mode: "local" });
+    const saved = await replaceDatabase(scope, rebound, { preserveUpdatedAt: true });
+    applyDbToState(saved);
+    if (scope.mode === "local-only") {
+      refreshLocalOnlySummary(saved);
+    }
+    if (scope.mode === "cloud-cache") {
+      lastSavedSerializedSnapshotRef.current = undefined;
+    }
+  }, [applyDbToState, currentCloudScope, refreshLocalOnlySummary]);
+
+  const currentUser = useMemo(() => {
+    if (!db) return undefined;
+    return db.users.find((user) => user.id === db.currentUserId) || db.users[0];
+  }, [db]);
 
   const signUp = useCallback(async (email: string, password: string) => {
-    const result = await signUpWithEmail(email, password);
-    setCloud((current) => ({
-      ...current,
-      configured: true,
-      session: result.session,
-      status: result.session ? "syncing" : "not-signed-in",
-      message: result.needsEmailConfirmation
-        ? "Check your email to confirm your account before signing in."
-        : "Account created. Syncing...",
+    updateCloudState({
+      status: "syncing",
+      message: "Creating account...",
       lastError: undefined,
-    }));
-    if (result.session) {
-      await hydrateFromCloud(result.session, dbRef.current);
+    });
+    const result = await signUpWithEmail(email, password);
+    if (!result.session) {
+      updateCloudState({
+        configured: true,
+        session: null,
+        status: "not-signed-in",
+        message: "Check your email to confirm your account before signing in.",
+        lastError: undefined,
+      });
     }
     return result;
-  }, [hydrateFromCloud]);
+  }, [updateCloudState]);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    const session = await signInWithEmail(email, password);
-    await hydrateFromCloud(session, dbRef.current);
-    return session;
-  }, [hydrateFromCloud]);
+    updateCloudState({
+      status: "syncing",
+      message: "Signing in...",
+      lastError: undefined,
+    });
+    return signInWithEmail(email, password);
+  }, [updateCloudState]);
 
   const signOut = useCallback(async () => {
+    clearPendingCloudSave();
     await signOutSupabase();
-    lastUploadedUpdatedAtRef.current = undefined;
-    setCloud((current) => ({
-      ...current,
-      session: null,
-      status: "not-signed-in",
-      message: "Signed out. Local mode is still active.",
-      lastError: undefined,
-    }));
-  }, []);
+  }, [clearPendingCloudSave]);
+
+  const syncNow = useCallback(async () => {
+    clearPendingCloudSave();
+    const latest = dbRef.current;
+    if (!latest || authModeRef.current !== "cloud") return false;
+    return pushSnapshotToCloud(latest, "manual");
+  }, [clearPendingCloudSave, pushSnapshotToCloud]);
+
+  const importLocalIntoCloud = useCallback(async (action: CloudImportAction) => {
+    if (authModeRef.current !== "cloud" || !sessionRef.current) return false;
+    const localOnly = localOnlyDbRef.current;
+    const currentCloud = dbRef.current;
+    if (!localOnly || !currentCloud) return false;
+
+    const localBound = bindDatabaseToIdentity(localOnly, {
+      mode: "supabase",
+      supabaseUserId: sessionRef.current.user.id,
+      email: sessionRef.current.user.email,
+    });
+    const cloudBound = bindDatabaseToIdentity(currentCloud, {
+      mode: "supabase",
+      supabaseUserId: sessionRef.current.user.id,
+      email: sessionRef.current.user.email,
+    });
+    const next = action === "replace"
+      ? localBound
+      : mergeAppSnapshots(buildAppSnapshot(localBound), buildAppSnapshot(cloudBound)).data;
+
+    const scope = currentCloudScope();
+    if (!scope) return false;
+    const saved = await replaceDatabase(scope, next, { preserveUpdatedAt: true });
+    applyDbToState(saved);
+    lastSavedSerializedSnapshotRef.current = undefined;
+    return pushSnapshotToCloud(saved, "import");
+  }, [applyDbToState, currentCloudScope, pushSnapshotToCloud]);
 
   return {
     db,
     currentUser,
     loading,
     error,
+    authMode,
     updateDb,
     importDb,
     reseed,
     setDb,
     cloud: {
       ...cloud,
+      authMode,
       userEmail: cloud.session?.user.email,
-      syncNow: () => syncSnapshotToCloud(dbRef.current),
+      localOnlySummary,
+      hasMeaningfulLocalOnlyData,
+      continueLocalOnly,
+      importLocalIntoCloud,
+      syncNow,
       signIn,
       signOut,
       signUp,
