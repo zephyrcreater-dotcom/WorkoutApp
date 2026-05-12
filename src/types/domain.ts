@@ -740,6 +740,7 @@ export interface DashboardMetric {
 
 export interface TrainingDatabase {
   version: number;
+  updatedAt?: string;
   users: UserProfile[];
   currentUserId?: ID;
   gyms: Gym[];

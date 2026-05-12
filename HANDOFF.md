@@ -8,6 +8,89 @@ The app supports multiple local users with separate data. It works well on iPhon
 
 ---
 
+## Current Handoff for Codex — Supabase Persistence Phase 1: Auth + Cloud Snapshot Sync
+
+### What landed
+
+**Supabase client + env gating**
+- Added `src/lib/supabaseClient.ts` using `@supabase/supabase-js`.
+- Frontend uses `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` only.
+- If env vars are missing, the app stays fully usable in local mode and cloud sync shows a disabled status instead of crashing.
+
+**Snapshot sync model**
+- Added top-level `updatedAt?: string` to `TrainingDatabase`.
+- Local IndexedDB remains the working source of truth.
+- Added Supabase snapshot helpers in `src/lib/cloudSync.ts`.
+- Snapshot envelope shape is:
+  - `version`
+  - `updatedAt`
+  - `data` = full current `TrainingDatabase`
+- On sign-in/startup:
+  - local DB loads first
+  - Supabase session is checked
+  - `app_snapshots` is fetched if signed in
+  - latest snapshot wins using local `updatedAt` vs cloud timestamp
+  - selected snapshot is persisted locally
+- On local edits:
+  - local save still happens immediately
+  - cloud save is debounced at 3 seconds when signed in
+- Manual `Sync Now` is available in Settings.
+
+**Auth**
+- Added email/password Supabase auth controls in Settings:
+  - sign up
+  - sign in
+  - sign out
+  - signed-in email display
+- If sign-up requires email confirmation, the UI tells the user to confirm before signing in.
+- Existing local PIN profile login remains untouched.
+
+**UI**
+- Header now shows a lightweight cloud sync status pill that links users to Settings.
+- Settings now includes a Cloud Sync panel with:
+  - auth controls
+  - sync status
+  - last synced time
+  - local snapshot time
+  - manual sync
+  - error messaging
+
+**Supabase SQL**
+- Added `supabase/migrations/001_app_snapshots.sql`.
+- Added `supabase/README.md` with SQL Editor setup steps for teams not using the Supabase CLI yet.
+
+### Rules preserved
+
+- Local-only mode still works exactly as before when not signed in.
+- Missing Supabase env vars do not break the app.
+- No service-role or secret key is used in the browser app.
+- This phase stores one JSONB snapshot row per Supabase auth user; full table normalization is still deferred.
+
+### Known limitations in this phase
+
+- Conflict handling is intentionally simple: latest snapshot wins.
+- Snapshot sync stores the full current training database document, including the current local multi-user document shape.
+- No advanced offline merge/conflict resolution yet.
+- Manual cross-device Supabase verification still needs to be done in a real configured environment.
+- Dev-server browser verification was blocked in this Codex session by sandbox port binding (`listen EPERM` on `127.0.0.1:5174`).
+
+### Lint/build
+
+- **Lint:** passing
+- **Build:** passing
+
+### Recommended next step
+
+- Manually test cross-device persistence in a real Supabase-configured environment:
+  - no-env local fallback
+  - sign up / sign in / sign out
+  - create/edit local data
+  - auto snapshot sync
+  - refresh persistence
+  - second-device load
+  - `Sync Now`
+- After persistence testing passes, resume V3 programming work.
+
 ## Current Handoff for Codex — V3 Phase 2: Goal/Block Programming Rules
 
 ### What landed in V3 Phase 2

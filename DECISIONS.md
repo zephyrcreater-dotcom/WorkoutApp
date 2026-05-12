@@ -16,6 +16,12 @@
 - No backend exists in the current MVP.
 - IndexedDB stores a single `TrainingDatabase` document through `src/lib/db.ts`.
 - `src/lib/db.ts` also maintains a localStorage mirror backup of the same document to reduce refresh/restart data-loss risk. IndexedDB remains the primary persistence pattern.
+- Supabase is the first cloud backend for persistence. Phase 1 uses Supabase Auth plus one JSONB snapshot row per Supabase auth user instead of a normalized training schema.
+- The frontend uses only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. No service-role key belongs in the browser app.
+- Local-first remains the core persistence rule even with Supabase enabled: local IndexedDB loads first and remains the working copy; cloud snapshot sync is additive.
+- `TrainingDatabase.updatedAt` is the local snapshot timestamp used for Phase 1 latest-wins snapshot selection.
+- Phase 1 conflict handling is intentionally simple: latest snapshot wins. Full offline merge/conflict resolution is deferred.
+- Full relational normalization of workouts, programs, and logs is explicitly deferred until the data model settles further.
 - Use `normalizeDatabase` in `src/lib/db.ts` to handle older local data after model changes.
 - Domain types live in `src/types/domain.ts`.
 - Seed data lives in `src/data/seedData.ts`.
@@ -128,6 +134,7 @@
 - Do not keep “Priority Lifts” as a plain text box.
 - Do not build exercise transfer prediction in V3.1.
 - Do not overhaul analytics or settings before the training-intelligence layer proves out.
+- Do not normalize the Supabase persistence schema yet; Phase 1 should stay on a JSONB snapshot while the local domain model is still moving quickly.
 - Do not use “compound lift settings” to govern every multi-joint exercise. Keep SBD controls separate from broader exercise filtering.
 - Do not treat each gym as a totally separate exercise universe.
 - Do not make weak spots only about “weak off chest” or “slow off floor” right now.

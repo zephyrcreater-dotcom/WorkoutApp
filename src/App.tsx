@@ -273,8 +273,37 @@ const dayFocusOptions: DayFocus[] = ["strength", "hypertrophy", "technical", "re
 const exerciseUnitOptions: ExerciseUnit[] = ["lb", "kg", "bodyweight", "assisted", "distance", "time", "reps-only"];
 const exerciseCategoryOptions: ExerciseCategoryLabel[] = ["sbd", "main_compound", "secondary_compound", "machine_compound", "isolation", "bodyweight", "conditioning"];
 
+function formatDateTime(value?: string): string {
+  if (!value) return "Never";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function renderCloudStatusLabel(status: "disabled" | "not-signed-in" | "syncing" | "synced" | "failed"): string {
+  switch (status) {
+    case "disabled":
+      return "Cloud Off";
+    case "not-signed-in":
+      return "Not Signed In";
+    case "syncing":
+      return "Syncing";
+    case "synced":
+      return "Synced";
+    case "failed":
+      return "Sync Failed";
+    default:
+      return "Cloud";
+  }
+}
+
 function App() {
-  const { db, currentUser, loading, error, updateDb, importDb, reseed } = useTrainingDb();
+  const { db, currentUser, loading, error, updateDb, importDb, reseed, cloud } = useTrainingDb();
   const [screen, setScreen] = useState<Screen>("today");
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [planWeekRequest, setPlanWeekRequest] = useState<number | undefined>();
@@ -326,6 +355,21 @@ function App() {
             </div>
           </button>
           <div className="flex items-center gap-2">
+            <button
+              className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
+                cloud.status === "synced"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                  : cloud.status === "syncing"
+                    ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+                    : cloud.status === "failed"
+                      ? "border-ember/30 bg-ember/10 text-orange-100"
+                      : "border-white/10 bg-white/5 text-iron-300"
+              }`}
+              onClick={() => setScreen("settings")}
+              title={cloud.message}
+            >
+              {renderCloudStatusLabel(cloud.status)}
+            </button>
             {activeSession && (
               <button className="btn-primary hidden sm:inline-flex" onClick={() => setScreen("logger")}>
                 <Timer className="h-4 w-4" />
@@ -373,7 +417,7 @@ function App() {
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} />}
-          {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} />}
+          {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} />}
         </section>
       </main>
 
@@ -5179,14 +5223,34 @@ function SettingsScreen({
   user,
   updateDb,
   importDb,
-  reseed
+  reseed,
+  cloud
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   importDb: (db: TrainingDatabase) => Promise<void>;
   reseed: () => Promise<void>;
+  cloud: {
+    configured: boolean;
+    session: { user: { email?: string } } | null;
+    status: "disabled" | "not-signed-in" | "syncing" | "synced" | "failed";
+    message: string;
+    lastSyncedAt?: string;
+    lastError?: string;
+    userEmail?: string;
+    syncNow: () => Promise<boolean>;
+    signIn: (email: string, password: string) => Promise<unknown>;
+    signOut: () => Promise<void>;
+    signUp: (email: string, password: string) => Promise<{ needsEmailConfirmation: boolean }>;
+  };
 }) {
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState<string | undefined>();
+  const [authError, setAuthError] = useState<string | undefined>();
+  const [authLoading, setAuthLoading] = useState<"signup" | "signin" | "sync" | "signout" | undefined>();
+
   function exportJson() {
     const blob = new Blob([JSON.stringify(db, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -5207,6 +5271,71 @@ function SettingsScreen({
     reader.readAsText(file);
   }
 
+  async function handleSignUp() {
+    setAuthLoading("signup");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      const result = await cloud.signUp(authEmail, authPassword);
+      setAuthMessage(
+        result.needsEmailConfirmation
+          ? "Check your email to confirm your account before signing in."
+          : "Account created and connected."
+      );
+      if (!result.needsEmailConfirmation) {
+        setAuthPassword("");
+      }
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-up failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSignIn(event: FormEvent) {
+    event.preventDefault();
+    setAuthLoading("signin");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      await cloud.signIn(authEmail, authPassword);
+      setAuthMessage("Signed in. Cloud sync is active for this device.");
+      setAuthPassword("");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-in failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSignOut() {
+    setAuthLoading("signout");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      await cloud.signOut();
+      setAuthMessage("Signed out. Local mode is still active.");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-out failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSyncNow() {
+    setAuthLoading("sync");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      const ok = await cloud.syncNow();
+      setAuthMessage(ok ? "Sync complete." : "Cloud sync is unavailable until you sign in.");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Manual sync failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <PageTitle eyebrow="Settings" title="Profile, backup, and local app controls." />
@@ -5225,11 +5354,57 @@ function SettingsScreen({
             })} />
           </div>
         </Panel>
+        <Panel title="Cloud Sync" icon={RefreshCcw}>
+          <div className="space-y-3">
+            <div className="rounded-lg border border-white/10 bg-iron-950/50 p-3 text-sm">
+              <p className="font-bold text-white">{renderCloudStatusLabel(cloud.status)}</p>
+              <p className="mt-1 text-iron-300">{cloud.message}</p>
+              <p className="mt-2 text-xs text-iron-500">Latest snapshot wins for now. Complex merge/conflict resolution is deferred to a later phase.</p>
+              <div className="mt-3 space-y-1 text-xs text-iron-400">
+                <p>Supabase account: {cloud.userEmail || "Not signed in"}</p>
+                <p>Last synced: {formatDateTime(cloud.lastSyncedAt)}</p>
+                <p>Local snapshot updated: {formatDateTime(db.updatedAt)}</p>
+              </div>
+              {cloud.lastError && <p className="mt-3 rounded-lg border border-ember/30 bg-ember/10 p-2 text-xs text-orange-100">{cloud.lastError}</p>}
+            </div>
+
+            {!cloud.userEmail ? (
+              <form className="space-y-3" onSubmit={handleSignIn}>
+                <TextField label="Email" type="email" value={authEmail} onChange={setAuthEmail} />
+                <TextField label="Password" type="password" value={authPassword} onChange={setAuthPassword} />
+                {authMessage && <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100">{authMessage}</p>}
+                {authError && <p className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-xs text-orange-100">{authError}</p>}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button className="btn-primary w-full" type="submit" disabled={authLoading !== undefined || !authEmail || !authPassword}>
+                    <UserRound className="h-4 w-4" />
+                    {authLoading === "signin" ? "Signing In..." : "Sign In"}
+                  </button>
+                  <button className="btn-secondary w-full" type="button" disabled={authLoading !== undefined || !authEmail || !authPassword} onClick={() => void handleSignUp()}>
+                    <Plus className="h-4 w-4" />
+                    {authLoading === "signup" ? "Creating..." : "Sign Up"}
+                  </button>
+                </div>
+                <p className="text-xs text-iron-500">If email confirmation is enabled in Supabase, confirm your email before trying to sign in.</p>
+              </form>
+            ) : (
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button className="btn-primary w-full" onClick={() => void handleSyncNow()} disabled={authLoading !== undefined || cloud.status === "disabled"}>
+                  <RefreshCcw className="h-4 w-4" />
+                  {authLoading === "sync" ? "Syncing..." : "Sync Now"}
+                </button>
+                <button className="btn-secondary w-full" onClick={() => void handleSignOut()} disabled={authLoading !== undefined}>
+                  <LogOut className="h-4 w-4" />
+                  {authLoading === "signout" ? "Signing Out..." : "Sign Out"}
+                </button>
+              </div>
+            )}
+          </div>
+        </Panel>
         <Panel title="Backup" icon={FileDown}>
           <div className="space-y-3">
             <div className="rounded-lg border border-white/10 bg-iron-950/50 p-3">
-              <p className="text-xs font-bold text-iron-300">Data is stored locally in this browser only.</p>
-              <p className="mt-1 text-xs text-iron-500">To move data between devices (phone ↔ computer), export a backup here and import it on the other device. Cloud sync is not yet available.</p>
+              <p className="text-xs font-bold text-iron-300">The app stays local-first even when cloud sync is enabled.</p>
+              <p className="mt-1 text-xs text-iron-500">Local IndexedDB remains the working copy. Export/import is still the manual fallback if Supabase is unavailable or you prefer offline-only use.</p>
             </div>
             <button className="btn-primary w-full" onClick={exportJson}><FileDown className="h-4 w-4" /> Export Backup</button>
             <label className="btn-secondary w-full cursor-pointer">
@@ -5733,11 +5908,25 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function TextField({ label, value, placeholder, onChange, disabled = false }: { label: string; value: string; placeholder?: string; onChange: (value: string) => void; disabled?: boolean }) {
+function TextField({
+  label,
+  value,
+  placeholder,
+  onChange,
+  disabled = false,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  type?: "text" | "email" | "password";
+}) {
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="field mt-2 disabled:opacity-60" placeholder={placeholder} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+      <input className="field mt-2 disabled:opacity-60" type={type} placeholder={placeholder} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }

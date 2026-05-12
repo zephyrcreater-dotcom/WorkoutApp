@@ -1,5 +1,6 @@
 import { builtInExercises, seedDatabase } from "../data/seedData";
 import { syncActiveBlockProgress } from "./blockProgression";
+import { nowIso } from "./ids";
 import { defaultCompoundSettings } from "./programmingLogic";
 import { calculateSetPerformanceScore, calculateWorkoutScore } from "./trainingMath";
 import type { ExerciseCategoryLabel, FatigueLevel, MuscleGroup, TrainingDatabase } from "../types/domain";
@@ -66,11 +67,11 @@ export async function loadDatabase(): Promise<TrainingDatabase> {
   const source = backup || existing;
   if (source) {
     const normalized = normalizeDatabase(source);
-    if (normalized !== existing) await saveDatabase(normalized);
+    if (normalized !== existing) await saveDatabase(normalized, { preserveUpdatedAt: true });
     return normalized;
   }
   const seeded = await seedDatabase();
-  await saveDatabase(seeded);
+  await saveDatabase(seeded, { preserveUpdatedAt: true });
   return seeded;
 }
 
@@ -361,25 +362,47 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       if (before !== after) changed = true;
     });
   });
+  if (!next.updatedAt) {
+    next.updatedAt = nowIso();
+    changed = true;
+  }
   return changed ? next : data;
 }
 
-export async function saveDatabase(data: TrainingDatabase): Promise<void> {
-  saveLocalBackup(data);
+function prepareDatabaseForSave(
+  data: TrainingDatabase,
+  options?: { preserveUpdatedAt?: boolean }
+): TrainingDatabase {
+  const normalized = normalizeDatabase(structuredClone(data));
+  if (!options?.preserveUpdatedAt || !normalized.updatedAt) {
+    normalized.updatedAt = nowIso();
+  }
+  return normalized;
+}
+
+export async function saveDatabase(
+  data: TrainingDatabase,
+  options?: { preserveUpdatedAt?: boolean }
+): Promise<TrainingDatabase> {
+  const next = prepareDatabaseForSave(data, options);
+  saveLocalBackup(next);
   const db = await openDatabase();
   const transaction = db.transaction(STORE, "readwrite");
   const store = transaction.objectStore(STORE);
-  await requestToPromise(store.put(data, KEY));
+  await requestToPromise(store.put(next, KEY));
   await transactionDone(transaction);
   db.close();
+  return next;
 }
 
-export async function replaceDatabase(data: TrainingDatabase): Promise<void> {
-  await saveDatabase({ ...data, version: 1 });
+export async function replaceDatabase(
+  data: TrainingDatabase,
+  options?: { preserveUpdatedAt?: boolean }
+): Promise<TrainingDatabase> {
+  return saveDatabase({ ...data, version: 1 }, options);
 }
 
 export async function resetDatabase(): Promise<TrainingDatabase> {
   const seeded = await seedDatabase();
-  await saveDatabase(seeded);
-  return seeded;
+  return saveDatabase(seeded, { preserveUpdatedAt: true });
 }

@@ -1,5 +1,21 @@
 # ROADMAP.md
 
+## Supabase Persistence Phase 1 — Completed
+
+- Added Supabase frontend client setup with env gating via `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+- Added email/password auth UI and state for sign up, sign in, sign out, and current signed-in email display.
+- Added JSONB snapshot sync model using one `app_snapshots` row per Supabase auth user.
+- Added startup load flow: local DB first, then signed-in cloud snapshot fetch, latest snapshot wins, then selected snapshot is stored locally.
+- Added debounced auto-sync after local DB changes plus manual `Sync Now`.
+- Preserved full local-only mode when Supabase env vars are missing or the user is signed out.
+- Added `supabase/migrations/001_app_snapshots.sql` and `supabase/README.md`.
+
+## Next Recommended Step
+
+1. Manually verify cross-device persistence in a real Supabase environment.
+2. Decide whether Phase 2 should keep full-document snapshots or begin selective normalization for sessions/programs.
+3. Resume V3 programming rules only after persistence testing is stable.
+
 ## V3 Phase 2: Goal/Block Programming Rules — Completed
 
 - Added `goalOverride?: TrainingGoal` to `TrainingBlock`; `getGoalUsed()` resolves `blockGoalOverride ?? splitGoal ?? programGoal`.

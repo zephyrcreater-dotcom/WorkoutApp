@@ -2101,6 +2101,7 @@ export async function seedDatabase(): Promise<TrainingDatabase> {
 
   return {
     version: 1,
+    updatedAt: nowIso(),
     users: [userPower, userHealth],
     currentUserId: undefined,
     gyms: [...makeGyms(userPower.id), ...makeGyms(userHealth.id)],

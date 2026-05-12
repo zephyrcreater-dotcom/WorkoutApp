@@ -2,6 +2,13 @@
 
 ## Known Bugs
 
+## Supabase Persistence Phase 1
+
+- Conflict handling is intentionally basic: latest snapshot wins between local `updatedAt` and the cloud snapshot timestamp. There is no field-level merge or parallel-device reconciliation yet.
+- Snapshot sync currently stores the full `TrainingDatabase` JSON document for the signed-in Supabase account. This is deliberate for Phase 1 but not the final normalized cloud schema.
+- Cross-device Supabase behavior still needs manual verification in a real configured environment with valid env vars and RLS-enabled `app_snapshots`.
+- In this Codex sandbox session, local browser verification via `npm run dev -- --host 127.0.0.1 --port 5174 --strictPort` was blocked by `listen EPERM`, so runtime UI verification was limited to lint/build rather than live browser testing.
+
 ## V3.1 Training Intelligence Foundation
 
 - Same-exercise recommendation v1 is intentionally conservative and does not yet predict across exercise families or variations.
