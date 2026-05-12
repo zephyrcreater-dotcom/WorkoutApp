@@ -2,6 +2,39 @@
 
 ## Supabase Persistence Phase 1 — Completed
 
+## Split Template Library Cleanup — Completed
+
+- Curated the built-in split template library from 9 to 12 templates.
+- Renamed PPL templates to shorter names (`Bodybuilding PPL 3-Day`, `Bodybuilding PPL 6-Day`).
+- Added three new templates: Full Body 4-Day, Powerbuilding 5-Day, Conditioning + Strength.
+- Implemented frequency-aware exercise slot counts:
+  - 1x/week muscles (PPL 3-Day): more exercise slots per session (e.g., chest x2 on Push day)
+  - 2x/week muscles (Upper/Lower, PPL 6-Day): one slot per muscle per session
+  - 3x/week muscles (Full Body): one slot per muscle per session, minimal volume
+- Corrected PPL 6-Day: removed misplaced rear-delts from Push B; removed front-delts from Push A; biceps reduced to x1/session; mid-back introduced as A/B variation with upper-back
+- Corrected Maintenance templates: removed redundant front-delts slots (pressing covers it), reduced weekly set targets
+- Corrected Deload: trimmed to 3 exercises per day at 2 sets each
+- All templates have accurate descriptions and real per-muscle requirement counts
+
+## Workout Expansion Cleanup — Completed
+
+- Removed built-in fake starter weights from seeded templates and fresh local-profile defaults.
+- Seeded workout/session history is now empty by default so fresh installs do not inherit fake suggested loads.
+- Expanded the starter exercise library with richer metadata, added missing movements, and standardized default unit/increment/bodyweight/unilateral flags.
+- Initial split template library built around explicit muscle requirement counts (9 templates).
+- Added conservative weekly hard-set guidance and per-session exercise-count guidance in `trainingRules.ts`.
+- Updated normalization so older local databases receive refreshed built-in exercises and split templates.
+
+## Next Recommended Step
+
+1. Manually verify the updated split library in the browser:
+   - PPL 3-Day Push shows 2 chest slots, no front-delts slot
+   - PPL 6-Day pull days show biceps x1; Pull B uses mid-back
+   - Deload shows 3 sessions × 3 exercises × 2 sets each
+   - Three new templates appear in the split picker
+2. Wire weekly-volume and exercise-count guidance into split-quality warnings in the generator.
+3. Keep future weight estimation based on real user history only; do not reintroduce seeded fake history.
+
 - Added Supabase frontend client setup with env gating via `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 - Added email/password auth UI and state for sign up, sign in, sign out, and current signed-in email display.
 - Removed the old visible fake/local user picker from the active UI.

@@ -45,6 +45,7 @@ export interface TrainingTargetProfile {
   accessoryRpeRange: RpeRangeTarget;
   defaultSetsPerExercise: number;
   weeklyHardSetRangeByMuscle: Partial<Record<MuscleGroup, RepRangeTarget>>;
+  exerciseCountRangeByMuscle: Partial<Record<MuscleGroup, RepRangeTarget>>;
   exerciseSelectionBias: ExerciseBias;
   progressionStyle: ProgressionStyle;
   fatigueTolerance: FatigueTolerance;
@@ -56,34 +57,87 @@ export interface TrainingTargetProfile {
 }
 
 const DEFAULT_WEEKLY_SETS: Partial<Record<MuscleGroup, RepRangeTarget>> = {
-  chest: { min: 8, max: 14 },
-  back: { min: 10, max: 16 },
-  lats: { min: 8, max: 14 },
+  chest: { min: 8, max: 16 },
+  back: { min: 10, max: 18 },
+  lats: { min: 6, max: 12 },
   "upper-back": { min: 6, max: 12 },
-  quads: { min: 8, max: 14 },
+  quads: { min: 8, max: 16 },
   hamstrings: { min: 6, max: 12 },
-  glutes: { min: 4, max: 10 },
-  calves: { min: 6, max: 12 },
+  glutes: { min: 6, max: 14 },
+  calves: { min: 4, max: 10 },
   biceps: { min: 6, max: 12 },
   triceps: { min: 6, max: 12 },
   "side-delts": { min: 6, max: 14 },
   "rear-delts": { min: 6, max: 14 },
   abs: { min: 4, max: 10 },
+  obliques: { min: 4, max: 8 },
 };
 
 const LOW_VOLUME_SETS: Partial<Record<MuscleGroup, RepRangeTarget>> = Object.fromEntries(
   Object.entries(DEFAULT_WEEKLY_SETS).map(([muscle, range]) => [
     muscle,
-    { min: Math.max(2, Math.round(range.min * 0.6)), max: Math.max(4, Math.round(range.max * 0.65)) },
+    { min: Math.max(2, Math.round(range.min * 0.45)), max: Math.max(4, Math.round(range.max * 0.6)) },
   ])
 ) as Partial<Record<MuscleGroup, RepRangeTarget>>;
 
 const HIGH_VOLUME_SETS: Partial<Record<MuscleGroup, RepRangeTarget>> = Object.fromEntries(
   Object.entries(DEFAULT_WEEKLY_SETS).map(([muscle, range]) => [
     muscle,
-    { min: Math.round(range.min * 1.1), max: Math.round(range.max * 1.2) },
+    { min: range.min, max: range.max },
   ])
 ) as Partial<Record<MuscleGroup, RepRangeTarget>>;
+
+const BODYBUILDING_EXERCISE_COUNTS: Partial<Record<MuscleGroup, RepRangeTarget>> = {
+  chest: { min: 1, max: 3 },
+  "upper-chest": { min: 1, max: 2 },
+  back: { min: 2, max: 4 },
+  lats: { min: 1, max: 2 },
+  "upper-back": { min: 1, max: 2 },
+  quads: { min: 1, max: 2 },
+  hamstrings: { min: 1, max: 2 },
+  glutes: { min: 1, max: 2 },
+  "side-delts": { min: 1, max: 2 },
+  "rear-delts": { min: 1, max: 2 },
+  biceps: { min: 1, max: 2 },
+  triceps: { min: 1, max: 2 },
+  calves: { min: 1, max: 1 },
+  abs: { min: 1, max: 1 },
+  obliques: { min: 1, max: 1 },
+};
+
+const POWERBUILDING_EXERCISE_COUNTS: Partial<Record<MuscleGroup, RepRangeTarget>> = {
+  chest: { min: 1, max: 2 },
+  "upper-chest": { min: 1, max: 1 },
+  back: { min: 1, max: 3 },
+  lats: { min: 1, max: 2 },
+  "upper-back": { min: 1, max: 2 },
+  quads: { min: 1, max: 2 },
+  hamstrings: { min: 1, max: 2 },
+  glutes: { min: 1, max: 2 },
+  "side-delts": { min: 1, max: 2 },
+  "rear-delts": { min: 1, max: 1 },
+  biceps: { min: 1, max: 1 },
+  triceps: { min: 1, max: 1 },
+  calves: { min: 0, max: 1 },
+  abs: { min: 0, max: 1 },
+};
+
+const LOW_VOLUME_EXERCISE_COUNTS: Partial<Record<MuscleGroup, RepRangeTarget>> = {
+  chest: { min: 1, max: 1 },
+  back: { min: 1, max: 2 },
+  lats: { min: 1, max: 1 },
+  "upper-back": { min: 1, max: 1 },
+  quads: { min: 1, max: 1 },
+  hamstrings: { min: 1, max: 1 },
+  glutes: { min: 1, max: 1 },
+  "side-delts": { min: 0, max: 1 },
+  "rear-delts": { min: 0, max: 1 },
+  biceps: { min: 0, max: 1 },
+  triceps: { min: 0, max: 1 },
+  calves: { min: 0, max: 1 },
+  abs: { min: 0, max: 1 },
+  conditioning: { min: 0, max: 1 },
+};
 
 const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
   powerlifting: {
@@ -93,6 +147,7 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     accessoryRpeRange: { min: 7, max: 9 },
     defaultSetsPerExercise: 3,
     weeklyHardSetRangeByMuscle: DEFAULT_WEEKLY_SETS,
+    exerciseCountRangeByMuscle: POWERBUILDING_EXERCISE_COUNTS,
     exerciseSelectionBias: "main_lift",
     progressionStyle: "load_first",
     fatigueTolerance: "moderate",
@@ -109,6 +164,7 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     accessoryRpeRange: { min: 7, max: 9 },
     defaultSetsPerExercise: 3,
     weeklyHardSetRangeByMuscle: DEFAULT_WEEKLY_SETS,
+    exerciseCountRangeByMuscle: POWERBUILDING_EXERCISE_COUNTS,
     exerciseSelectionBias: "compound",
     progressionStyle: "load_first",
     fatigueTolerance: "moderate",
@@ -119,12 +175,13 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     peakingBehavior: "moderate",
   },
   bodybuilding: {
-    mainLiftRepRange: { min: 5, max: 10 },
-    accessoryRepRange: { min: 8, max: 20 },
+    mainLiftRepRange: { min: 6, max: 12 },
+    accessoryRepRange: { min: 10, max: 20 },
     mainLiftRpeRange: { min: 7, max: 9 },
-    accessoryRpeRange: { min: 7, max: 9.5 },
-    defaultSetsPerExercise: 3,
+    accessoryRpeRange: { min: 8, max: 10 },
+    defaultSetsPerExercise: 4,
     weeklyHardSetRangeByMuscle: HIGH_VOLUME_SETS,
+    exerciseCountRangeByMuscle: BODYBUILDING_EXERCISE_COUNTS,
     exerciseSelectionBias: "isolation",
     progressionStyle: "reps_first",
     fatigueTolerance: "moderate",
@@ -135,12 +192,13 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     peakingBehavior: "none",
   },
   hypertrophy: {
-    mainLiftRepRange: { min: 5, max: 10 },
-    accessoryRepRange: { min: 8, max: 18 },
+    mainLiftRepRange: { min: 6, max: 12 },
+    accessoryRepRange: { min: 10, max: 20 },
     mainLiftRpeRange: { min: 6.5, max: 8.5 },
-    accessoryRpeRange: { min: 7, max: 9.5 },
-    defaultSetsPerExercise: 3,
+    accessoryRpeRange: { min: 8, max: 10 },
+    defaultSetsPerExercise: 4,
     weeklyHardSetRangeByMuscle: HIGH_VOLUME_SETS,
+    exerciseCountRangeByMuscle: BODYBUILDING_EXERCISE_COUNTS,
     exerciseSelectionBias: "compound",
     progressionStyle: "reps_first",
     fatigueTolerance: "moderate",
@@ -157,6 +215,7 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     accessoryRpeRange: { min: 6.5, max: 8.5 },
     defaultSetsPerExercise: 3,
     weeklyHardSetRangeByMuscle: DEFAULT_WEEKLY_SETS,
+    exerciseCountRangeByMuscle: POWERBUILDING_EXERCISE_COUNTS,
     exerciseSelectionBias: "compound",
     progressionStyle: "load_first",
     fatigueTolerance: "moderate",
@@ -173,6 +232,7 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     accessoryRpeRange: { min: 6.5, max: 8.5 },
     defaultSetsPerExercise: 2,
     weeklyHardSetRangeByMuscle: LOW_VOLUME_SETS,
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     exerciseSelectionBias: "general",
     progressionStyle: "maintain",
     fatigueTolerance: "low",
@@ -183,12 +243,13 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     peakingBehavior: "none",
   },
   maintenance: {
-    mainLiftRepRange: { min: 3, max: 8 },
-    accessoryRepRange: { min: 6, max: 15 },
-    mainLiftRpeRange: { min: 6, max: 8 },
-    accessoryRpeRange: { min: 6.5, max: 8.5 },
+    mainLiftRepRange: { min: 5, max: 10 },
+    accessoryRepRange: { min: 8, max: 15 },
+    mainLiftRpeRange: { min: 6.5, max: 8 },
+    accessoryRpeRange: { min: 7, max: 8 },
     defaultSetsPerExercise: 2,
     weeklyHardSetRangeByMuscle: LOW_VOLUME_SETS,
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     exerciseSelectionBias: "general",
     progressionStyle: "maintain",
     fatigueTolerance: "low",
@@ -205,6 +266,7 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     accessoryRpeRange: { min: 6.5, max: 8 },
     defaultSetsPerExercise: 2,
     weeklyHardSetRangeByMuscle: LOW_VOLUME_SETS,
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     exerciseSelectionBias: "general",
     progressionStyle: "volume_first",
     fatigueTolerance: "low",
@@ -221,6 +283,7 @@ const GOAL_BASE_RULES: Record<IntelligenceGoalType, TrainingTargetProfile> = {
     accessoryRpeRange: { min: 7, max: 9 },
     defaultSetsPerExercise: 3,
     weeklyHardSetRangeByMuscle: DEFAULT_WEEKLY_SETS,
+    exerciseCountRangeByMuscle: POWERBUILDING_EXERCISE_COUNTS,
     exerciseSelectionBias: "general",
     progressionStyle: "maintain",
     fatigueTolerance: "moderate",
@@ -258,6 +321,7 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
     accessoryRpeRange: { min: 6.5, max: 8 },
     defaultSetsPerExercise: 2,
     weeklyHardSetRangeByMuscle: LOW_VOLUME_SETS,
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     progressionStyle: "load_first",
     fatigueTolerance: "low",
     specificity: "high",
@@ -273,6 +337,7 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
     accessoryRpeRange: { min: 6, max: 7.5 },
     defaultSetsPerExercise: 2,
     weeklyHardSetRangeByMuscle: LOW_VOLUME_SETS,
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     progressionStyle: "deload",
     fatigueTolerance: "low",
     specificity: "moderate",
@@ -286,6 +351,7 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
     mainLiftRpeRange: { min: 6.5, max: 8.5 },
     accessoryRpeRange: { min: 7, max: 9.5 },
     weeklyHardSetRangeByMuscle: HIGH_VOLUME_SETS,
+    exerciseCountRangeByMuscle: BODYBUILDING_EXERCISE_COUNTS,
     progressionStyle: "reps_first",
     specificity: "low",
   },
@@ -295,11 +361,13 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
     mainLiftRpeRange: { min: 7, max: 9 },
     accessoryRpeRange: { min: 6.5, max: 8.5 },
     progressionStyle: "load_first",
+    exerciseCountRangeByMuscle: POWERBUILDING_EXERCISE_COUNTS,
     specificity: "high",
   },
   maintenance: {
     defaultSetsPerExercise: 2,
     weeklyHardSetRangeByMuscle: LOW_VOLUME_SETS,
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     progressionStyle: "maintain",
     fatigueTolerance: "low",
     specificity: "moderate",
@@ -311,6 +379,7 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
     mainLiftRpeRange: { min: 6, max: 7.5 },
     accessoryRpeRange: { min: 6.5, max: 8 },
     progressionStyle: "volume_first",
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     fatigueTolerance: "low",
     specificity: "low",
   },
@@ -320,6 +389,7 @@ const BLOCK_OVERRIDES: Record<IntelligenceBlockType, Partial<TrainingTargetProfi
     mainLiftRpeRange: { min: 6, max: 7.5 },
     accessoryRpeRange: { min: 6.5, max: 8 },
     progressionStyle: "maintain",
+    exerciseCountRangeByMuscle: LOW_VOLUME_EXERCISE_COUNTS,
     fatigueTolerance: "low",
     specificity: "low",
     accessoryEmphasis: "moderate",
@@ -377,6 +447,7 @@ function mergeTargets(base: TrainingTargetProfile, override: Partial<TrainingTar
     mainLiftRpeRange: override.mainLiftRpeRange ?? base.mainLiftRpeRange,
     accessoryRpeRange: override.accessoryRpeRange ?? base.accessoryRpeRange,
     weeklyHardSetRangeByMuscle: override.weeklyHardSetRangeByMuscle ?? base.weeklyHardSetRangeByMuscle,
+    exerciseCountRangeByMuscle: override.exerciseCountRangeByMuscle ?? base.exerciseCountRangeByMuscle,
   };
 }
 

@@ -85,6 +85,7 @@ function deriveFamily(exercise: Exercise): string {
   if (pat === "vertical-press") return "vertical_press";
   if (pat === "horizontal-pull") return "row";
   if (pat === "vertical-pull") return "vertical_pull";
+  if (pat === "knee-flexion") return "knee_flexion";
   if (pat === "elbow-flexion") return "curl";
   if (pat === "elbow-extension") return "triceps_extension";
   if (pat === "knee-extension") return "knee_extension";
@@ -267,7 +268,7 @@ export function getPrescriptionProfile(exercise: Exercise): Required<ExercisePre
 }
 
 export function getRoleHint(exercise: Exercise, goalType: TrainingGoal): ExerciseRole {
-  const goalRole = exercise.defaultRoleByGoal?.[goalType];
+  const goalRole = exercise.roleHints?.[goalType] ?? exercise.defaultRoleByGoal?.[goalType];
   if (goalRole) return goalRole;
   return deriveRoleForGoal(exercise, goalType);
 }
@@ -307,6 +308,7 @@ export function normalizeExerciseMetadata(exercise: Exercise): Exercise {
   }
   if (!out.specificity) out.specificity = deriveSpecificity(exercise);
   if (!out.prescriptionProfile) out.prescriptionProfile = derivePrescriptionProfile(exercise);
+  if (!out.roleHints && out.defaultRoleByGoal) out.roleHints = out.defaultRoleByGoal;
   return out;
 }
 

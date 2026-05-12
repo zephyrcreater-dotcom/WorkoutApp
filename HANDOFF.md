@@ -8,7 +8,160 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
-## Current Handoff for Codex — Supabase Persistence Phase 1: Auth + Cloud Snapshot Sync
+## Current Handoff for Codex — Split Template Library Cleanup
+
+### What changed
+
+Curated the built-in split template library from 9 templates to 12. All templates now use frequency-aware exercise slot counts and have accurate descriptions and muscle coverage.
+
+**Templates renamed:**
+- `Bodybuilding Push/Pull/Legs 3-Day` → `Bodybuilding PPL 3-Day`
+- `Bodybuilding Push/Pull/Legs 6-Day` → `Bodybuilding PPL 6-Day`
+
+**Templates added (new IDs):**
+- `Full Body 4-Day` (`split_full_body_4`) — A/B full-body rotation, most muscles 2x/week
+- `Powerbuilding 5-Day` (`split_powerbuilding_5`) — squat/bench/deadlift days plus two accessory sessions
+- `Conditioning + Strength` (`split_conditioning_strength`) — two strength days plus a dedicated conditioning day
+
+**Requirement changes by template:**
+
+*Bodybuilding PPL 3-Day (1x/week — more slots per session):*
+- Push: chest upgraded to x2; front-delts slot removed (pressing covers it)
+- Pull: mid-back x1 added; biceps remains x2
+- Legs: unchanged
+
+*Bodybuilding PPL 6-Day (2x/week — moderate slots per session):*
+- Push A: front-delts slot removed
+- Pull A: biceps reduced from x2 to x1
+- Push B: rear-delts slot removed (pull muscle; was misplaced here)
+- Pull B: upper-back replaced with mid-back for A/B variation; biceps reduced from x2 to x1
+- Legs A: abs slot removed (focus on quad/ham/calf)
+- Legs B: abs slot removed (focus on posterior chain)
+
+*Maintenance 2-Day:*
+- Weekly set targets reduced; redundant arm/calf slots removed from Day 2; side-delts replaces vertical-press for the shoulder slot
+
+*Maintenance 3-Day:*
+- front-delts replaced with side-delts in Day 2 (pressing already covers anterior shoulder)
+- Weekly set targets reduced slightly
+
+*Deload / Recovery Week:*
+- Abs slot removed from Day 1; conditioning slot removed from Day 3
+- Weekly set targets reduced to 2 sets per muscle
+
+**Frequency-aware slot rule (now documented in seed):**
+- 1x/week: more exercise slots per session (e.g., chest x2 on PPL 3-Day Push)
+- 2x/week: one exercise slot per muscle per session is sufficient
+- 3x/week: one slot per session; keep per-session volume modest
+
+### Current built-in split templates (12 total)
+
+1. Bodybuilding PPL 3-Day (`split_bodybuilding_ppl_3`)
+2. Bodybuilding PPL 6-Day (`split_bodybuilding_ppl_6`)
+3. Upper/Lower 4-Day (`split_upper_lower_4`)
+4. Full Body 3-Day (`split_full_body_3`)
+5. Full Body 4-Day (`split_full_body_4`) ← new
+6. Powerbuilding Upper/Lower 4-Day (`split_powerbuilding_ul_4`)
+7. Powerbuilding 5-Day (`split_powerbuilding_5`) ← new
+8. Maintenance 2-Day (`split_maintenance_2`)
+9. Maintenance 3-Day (`split_maintenance_3`)
+10. General Fitness 3-Day (`split_general_fitness_3`)
+11. Conditioning + Strength (`split_conditioning_strength`) ← new
+12. Deload / Recovery Week (`split_deload_recovery`)
+
+### Normalization behavior
+
+- Existing built-in templates are refreshed by seed ID on next load (name, description, requirements, weeklySetTargets).
+- The three new templates are auto-inserted into existing databases via the missing-ID backfill in `normalizeDatabase`.
+- Custom (user-owned) split templates are never overwritten.
+
+### Validation
+
+- Lint: passing
+- Build: passing
+
+### Remaining manual verification
+
+- Split library shows all 12 templates with correct requirement counts
+- PPL 3-Day Push shows 2 chest slots, no front-delts slot
+- PPL 6-Day pull days show biceps x1; pull B shows mid-back instead of upper-back
+- Deload shows 3 sessions of 3 exercises each at 2 sets per muscle
+- New templates (Full Body 4-Day, Powerbuilding 5-Day, Conditioning + Strength) appear in split picker
+
+## Prior Handoff — Supabase Persistence Phase 1: Auth + Cloud Snapshot Sync
+
+## Prior Handoff — Workout Expansion Cleanup: Exercise Library, Splits, and Seed Defaults
+
+### What changed
+
+- Removed built-in fake starter weights from seeded workout templates and fresh local profiles.
+- Seeded workout/session history is now blank by default, so new installs do not inherit fake 225/315-style load history.
+- Expanded the built-in exercise library with richer metadata coverage for:
+  - pressing, pulling, shoulder, quad, hamstring/glute, arm, calf/core, and conditioning movements
+  - default unit/increment
+  - bodyweight/time/unilateral flags
+  - exercise family, variation group, fatigue profile, specificity, prescription profile, and role hints
+- Added missing starter movements including:
+  - Assisted Pull-Up
+  - Front Raise
+  - Cable Pull-Through
+  - Ab Wheel
+  - Bike
+  - Rower
+  - Sled Push
+- Cleaned up exercise metadata details:
+  - `Dumbbell Bench Press` renamed to `Flat Dumbbell Press`
+  - `Dips` renamed to `Weighted Dip`
+  - `Single-Arm Dumbbell Row` renamed to `One-Arm Dumbbell Row`
+  - `Overhead Cable Triceps Extension` renamed to `Overhead Triceps Extension`
+  - hamstring curl movement patterns corrected to `knee-flexion`
+  - weighted pull-ups/dips now carry higher fatigue defaults than easy bodyweight accessories
+- Rebuilt default split templates around real requirement slots instead of placeholder structures.
+
+### New built-in split templates (prior pass — 9 templates)
+
+- Bodybuilding Push/Pull/Legs 3-Day
+- Bodybuilding Push/Pull/Legs 6-Day
+- Upper/Lower 4-Day
+- Full Body 3-Day
+- Maintenance 2-Day
+- Maintenance 3-Day
+- Powerbuilding Upper/Lower 4-Day
+- Deload / Recovery Week
+- General Fitness 3-Day
+
+### Programming defaults updated
+
+- Weekly hard-set guidance is now more conservative and goal-aware.
+- Per-session exercise-count guidance is now stored in `trainingRules.ts` for future warnings and planning logic.
+- Bodybuilding defaults now bias moderate-to-higher reps and higher RPE on safer accessory work.
+- Maintenance and deload defaults now bias fewer sets, lower RPE, and less redundant exercise selection.
+
+### Normalization / migration behavior
+
+- Existing local databases now backfill the richer built-in exercise metadata.
+- Existing built-in exercises are refreshed by built-in ID so older installs receive the updated names and metadata.
+- Existing built-in split templates are refreshed from seed definitions and any newly added default templates are inserted on load.
+- Custom exercises and custom split templates remain user-owned and are not overwritten.
+
+### Validation
+
+- Lint: passing
+- Build: passing
+
+### Remaining manual verification
+
+- Fresh app start:
+  - no fake planned weights in default templates
+  - no fake last-used history leaking into generated weights
+- Library:
+  - expanded exercise list appears in Exercise Library
+  - renamed exercises and new conditioning/core entries appear as expected
+- Split builder / generation:
+  - PPL, Upper/Lower, Maintenance, Powerbuilding, Deload, and General Fitness templates show correct requirement counts
+  - generated planned weights stay blank unless real history exists
+- Legacy data:
+  - older local DBs normalize safely into the richer built-in metadata and rebuilt default split definitions
 
 ### Mode simplification pass: separate local-only and cloud instances
 

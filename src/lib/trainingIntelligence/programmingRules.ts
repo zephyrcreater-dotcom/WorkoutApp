@@ -125,7 +125,7 @@ export function getExerciseFatigueTag(exercise: Exercise): ExerciseFatigueTag {
 }
 
 export function getExerciseRoleForGoal(exercise: Exercise, goalType: TrainingGoal): ExerciseRole {
-  const goalRole = exercise.defaultRoleByGoal?.[goalType];
+  const goalRole = exercise.roleHints?.[goalType] ?? exercise.defaultRoleByGoal?.[goalType];
   if (goalRole) return goalRole;
   return inferBaseExerciseRole(exercise);
 }
@@ -144,6 +144,7 @@ export function inferBaseExerciseRole(exercise: Exercise): ExerciseRole {
   const name = exercise.name.toLowerCase();
   if (id === "ex_push_up" || name.includes("push-up")) return "accessory_compound";
   if (id === "ex_back_extension" || name.includes("back extension")) return "support_stability";
+  if (id === "ex_assisted_pull_up" || name.includes("assisted pull-up")) return "accessory_compound";
   if (id === "ex_cable_triceps_pressdown" || name.includes("pressdown")) return "isolation";
   if (id === "ex_cable_lateral_raise" || name.includes("lateral raise")) return "isolation";
   if (id === "ex_rdl" || name.includes("romanian deadlift")) return "secondary_compound";
@@ -222,15 +223,23 @@ function fallbackPatternsForMuscle(muscle: MuscleGroup): MovementPattern[] {
     case "quads":
       return ["squat", "single-leg"];
     case "hamstrings":
+      return ["hinge", "knee-flexion", "single-leg"];
     case "glutes":
-      return ["hinge", "single-leg"];
+      return ["hinge", "hip-extension", "single-leg"];
     case "biceps":
     case "triceps":
     case "side-delts":
     case "front-delts":
+      return ["isolation"];
     case "calves":
+      return ["ankle-extension"];
     case "abs":
     case "obliques":
+      return ["trunk-stability", "trunk-flexion"];
+    case "conditioning":
+      return ["conditioning", "locomotion"];
+    case "adductors":
+    case "abductors":
       return ["isolation"];
     default:
       return [];

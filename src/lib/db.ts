@@ -1,6 +1,6 @@
-import { builtInExercises, seedDatabase } from "../data/seedData";
+import { builtInExercises, seedDatabase, splitTemplates as seedSplitTemplates } from "../data/seedData";
 import { syncActiveBlockProgress } from "./blockProgression";
-import { createId, nowIso, todayIso } from "./ids";
+import { createId, nowIso } from "./ids";
 import { defaultCompoundSettings } from "./programmingLogic";
 import { calculateSetPerformanceScore, calculateWorkoutScore } from "./trainingMath";
 import type { ExerciseCategoryLabel, FatigueLevel, MuscleGroup, TrainingDatabase, TrainingGoal, UserProfile } from "../types/domain";
@@ -70,12 +70,8 @@ function makeDefaultLocalProfile(id = LOCAL_ONLY_USER_ID, email?: string): UserP
     trainingPreferences: ["local-first tracking", "simple setup", "sync when signed in"],
     injuryNotes: [],
     activeGymId: `${id}_gym_commercial`,
-    maxes: [
-      { id: createId("max"), liftName: "Squat", exerciseId: "ex_squat_comp", oneRepMax: 315, trainingMax: 285, unit: "lb", date: todayIso(), source: "manual" },
-      { id: createId("max"), liftName: "Bench", exerciseId: "ex_bench_comp", oneRepMax: 225, trainingMax: 205, unit: "lb", date: todayIso(), source: "manual" },
-      { id: createId("max"), liftName: "Deadlift", exerciseId: "ex_deadlift_comp", oneRepMax: 405, trainingMax: 365, unit: "lb", date: todayIso(), source: "manual" },
-    ],
-    bodyweightHistory: [{ id: createId("bw"), date: todayIso(), weight: 180, unit: "lb" }],
+    maxes: [],
+    bodyweightHistory: [],
     settings: {
       darkMode: true,
       conservativeAutoAdjustments: true,
@@ -347,6 +343,13 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
   next.programGaps ||= [];
   next.exercisePerformanceLogs ||= [];
   next.gymExerciseVariants ||= [];
+  const existingSplitIds = new Set(next.splitTemplates.map((split) => split.id));
+  seedSplitTemplates.forEach((split) => {
+    if (!existingSplitIds.has(split.id)) {
+      next.splitTemplates.push(structuredClone(split));
+      changed = true;
+    }
+  });
   next.gyms.forEach((gym) => {
     if (!gym.exerciseAdjustments) {
       gym.exerciseAdjustments = [];
@@ -433,6 +436,32 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
     // V3.1C: copy rich metadata from built-in definition when missing from stored exercise
     const builtIn = builtInExercises.find((b) => b.id === exercise.id);
     if (builtIn) {
+      if (!exercise.ownerUserId) {
+        const before = JSON.stringify(exercise);
+        exercise.name = builtIn.name;
+        exercise.description = builtIn.description;
+        exercise.muscleGroup = builtIn.muscleGroup;
+        exercise.primaryMuscles = structuredClone(builtIn.primaryMuscles);
+        exercise.secondaryMuscles = structuredClone(builtIn.secondaryMuscles);
+        exercise.equipment = structuredClone(builtIn.equipment);
+        exercise.movementPattern = builtIn.movementPattern;
+        exercise.movementPatterns = builtIn.movementPatterns ? structuredClone(builtIn.movementPatterns) : undefined;
+        exercise.tags = structuredClone(builtIn.tags);
+        exercise.tagLabels = builtIn.tagLabels ? structuredClone(builtIn.tagLabels) : undefined;
+        exercise.variants = structuredClone(builtIn.variants);
+        exercise.substitutionIds = structuredClone(builtIn.substitutionIds);
+        exercise.notes = builtIn.notes;
+        exercise.videoUrl = builtIn.videoUrl;
+        exercise.setupCues = structuredClone(builtIn.setupCues);
+        exercise.trackByBodyweight = builtIn.trackByBodyweight;
+        exercise.trackPerSide = builtIn.trackPerSide;
+        exercise.category = builtIn.category;
+        exercise.kind = structuredClone(builtIn.kind);
+        exercise.directVolumeMuscles = structuredClone(builtIn.directVolumeMuscles);
+        exercise.indirectVolumeMuscles = structuredClone(builtIn.indirectVolumeMuscles);
+        exercise.bestTrackedBy = structuredClone(builtIn.bestTrackedBy);
+        if (JSON.stringify(exercise) !== before) changed = true;
+      }
       if (!exercise.exerciseFamily && builtIn.exerciseFamily) { exercise.exerciseFamily = builtIn.exerciseFamily; changed = true; }
       if (!exercise.variationGroup && builtIn.variationGroup) { exercise.variationGroup = builtIn.variationGroup; changed = true; }
       if (!exercise.fatigueProfile && builtIn.fatigueProfile) { exercise.fatigueProfile = builtIn.fatigueProfile; changed = true; }
@@ -443,7 +472,15 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       }
       if (!exercise.specificity && builtIn.specificity) { exercise.specificity = builtIn.specificity; changed = true; }
       if (!exercise.prescriptionProfile && builtIn.prescriptionProfile) { exercise.prescriptionProfile = builtIn.prescriptionProfile; changed = true; }
+      if (!exercise.roleHints && builtIn.roleHints) { exercise.roleHints = builtIn.roleHints; changed = true; }
       if (!exercise.defaultRoleByGoal && builtIn.defaultRoleByGoal) { exercise.defaultRoleByGoal = builtIn.defaultRoleByGoal; changed = true; }
+      if (!exercise.defaultUnit && builtIn.defaultUnit) { exercise.defaultUnit = builtIn.defaultUnit; changed = true; }
+      if (!exercise.allowedUnits && builtIn.allowedUnits) { exercise.allowedUnits = builtIn.allowedUnits; changed = true; }
+      if (!exercise.defaultIncrement && builtIn.defaultIncrement !== undefined) { exercise.defaultIncrement = builtIn.defaultIncrement; changed = true; }
+      if (!exercise.increment && builtIn.increment !== undefined) { exercise.increment = builtIn.increment; changed = true; }
+      if (exercise.isTimeBased === undefined && builtIn.isTimeBased !== undefined) { exercise.isTimeBased = builtIn.isTimeBased; changed = true; }
+      if (exercise.isBodyweight === undefined && builtIn.isBodyweight !== undefined) { exercise.isBodyweight = builtIn.isBodyweight; changed = true; }
+      if (exercise.isUnilateral === undefined && builtIn.isUnilateral !== undefined) { exercise.isUnilateral = builtIn.isUnilateral; changed = true; }
     }
   });
   next.splitTemplates.forEach((split) => {
@@ -458,6 +495,20 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
     if (!split.updatedAt) {
       split.updatedAt = split.createdAt;
       changed = true;
+    }
+    if (!split.ownerUserId) {
+      const seedSplit = seedSplitTemplates.find((item) => item.id === split.id);
+      if (seedSplit) {
+        if (split.name !== seedSplit.name) { split.name = seedSplit.name; changed = true; }
+        if (split.description !== seedSplit.description) { split.description = seedSplit.description; changed = true; }
+        if (split.goal !== seedSplit.goal) { split.goal = seedSplit.goal; changed = true; }
+        if (split.daysPerWeek !== seedSplit.daysPerWeek) { split.daysPerWeek = seedSplit.daysPerWeek; changed = true; }
+        if (split.notes !== seedSplit.notes) { split.notes = seedSplit.notes; changed = true; }
+        if (JSON.stringify(split.days) !== JSON.stringify(seedSplit.days)) {
+          split.days = structuredClone(seedSplit.days);
+          changed = true;
+        }
+      }
     }
     split.days.forEach((day) => {
       if (!day.notes) {
