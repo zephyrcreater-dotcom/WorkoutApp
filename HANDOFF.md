@@ -4,9 +4,189 @@
 
 Iron Orbit Training is a local-first PWA for workout programming and tracking across powerlifting, hypertrophy/bodybuilding, powerbuilding, conditioning, and general health. It is meant to replace an Excel workout tracking system and eventually become an adaptive training coach.
 
-The app supports multiple local users with separate data. It works well on iPhone Safari, is installable as a PWA, and is architected for future cloud sync.
+The app uses a local-first training database with an explicit local-only mode and an optional Supabase account mode. It works well on iPhone Safari, is installable as a PWA, and is now wired for cloud snapshot sync.
 
 ---
+
+## Current Handoff for Codex — Supabase Persistence Phase 1: Auth + Cloud Snapshot Sync
+
+### Mode simplification pass: separate local-only and cloud instances
+
+**What changed**
+- The old fake/local user picker remains removed from the active UI.
+- App startup now stops at a mode gate when there is no Supabase session.
+- Users must explicitly choose:
+  - Sign in / sign up for Supabase account mode
+  - Continue Local Only
+- Signing in no longer auto-uploads or auto-merges this device's local-only data into the cloud account.
+- The automatic local-vs-cloud conflict screen was removed from normal startup and sign-in.
+- Local-only storage and cloud-account cache storage now live in separate slots.
+
+**Local-only mode**
+- When there is no Supabase session, the app shows the mode gate instead of entering the main app automatically.
+- Choosing `Continue Local Only` opens the app with local storage only.
+- A hidden local profile is ensured automatically in the stored database so the rest of the app can continue using the existing user-scoped data model without a visible login picker.
+- Local-only data remains device/browser-specific and no cloud calls are made.
+- Local-only data is stored separately from cloud-account cache data, so signing into Supabase does not treat it as the active account snapshot.
+
+**Supabase account mode**
+- When signed in, Supabase auth is the only cloud identity source.
+- `session.user.id` is the `app_snapshots.user_id` owner.
+- The app fetches the cloud snapshot before entering cloud mode and uses it as the source of truth.
+- If no cloud snapshot exists yet, the app starts a separate fresh cloud-account instance instead of offering a startup overwrite decision.
+- The local database is rebound to the Supabase account profile when safe, so the app’s internal user-scoped records no longer depend on the old fake login flow.
+- Existing old local/fake profile data is migrated onto the Supabase user ID only when it is clearly local-only/fake data; it is not blindly copied across different Supabase accounts.
+
+**Explicit import only**
+- Local-only data no longer appears in a startup conflict chooser.
+- In cloud mode, Settings now provides `Import Local Data Into Cloud`.
+- Available actions there:
+  - `Add / Merge`
+  - `Replace Cloud`
+  - `Cancel`
+- `Add / Merge` is conservative and ID-based. Same-ID items prefer the newer `updatedAt` when available; otherwise cloud wins. Local-only IDs are added, cloud-only IDs are kept.
+
+**Compatibility**
+- Older stored databases with multiple fake users do not crash.
+- The app selects the active/first stored local profile automatically for local-only mode.
+- New seeded databases now create one default local profile instead of the old visible fake two-user setup.
+- Legacy single-key local storage is migrated into the new local-only storage slot when needed.
+
+**Validation**
+- Lint: passing
+- Build: passing
+
+**Remaining manual verification**
+- Real browser/manual verification still needs to be done in a configured environment:
+  - signed out startup: mode gate appears and no fake picker appears
+  - `Continue Local Only` opens the app and local data persists after refresh
+  - signing in with existing cloud data loads the cloud account directly with no conflict popup
+  - private/incognito sign-in loads the same snapshot
+  - sign out keeps local data and returns to the mode gate
+  - explicit `Import Local Data Into Cloud` works only after the user chooses merge or replace
+
+### Repair pass: hydration loop + cross-device sync stability
+
+**Root cause found**
+- The first Phase 1 hook was hydrating from Supabase too broadly:
+  - startup manually hydrated
+  - `onAuthStateChange` could hydrate again
+  - non-data auth events like token refresh were not filtered
+- Cloud saving was also tied to a broad `db`-change effect, which made sync behavior feel coupled to render/state churn instead of actual user mutations.
+- Fresh/incognito windows loaded a newly seeded local DB with a very recent `updatedAt`, which could incorrectly beat an older real cloud snapshot and prevent cross-device restore.
+- Local load also always preferred the localStorage backup over IndexedDB instead of picking the newer local source.
+
+**What changed in the repair**
+- Cloud hydration now happens only at controlled times:
+  - initial app load with an existing session
+  - once after `SIGNED_IN`
+- `TOKEN_REFRESHED`, `USER_UPDATED`, and similar auth events do not rehydrate app data.
+- After hydration completes, local state owns the session. Cloud save success updates sync status only; it does not re-fetch/re-apply the snapshot.
+- Autosave is now scheduled from real local persistence writes with a 3-second debounce, not from a general `useEffect(() => ..., [db])`.
+- Added guard refs for:
+  - `isHydratingFromCloud`
+  - `hasHydratedFromCloud`
+  - `isSavingToCloud`
+  - `lastAppliedCloudSnapshotUpdatedAt`
+  - `lastSavedCloudSnapshotUpdatedAt`
+  - pending debounce timer
+  - last saved serialized snapshot
+  - hydrated user tracking
+- Incognito/private-window restore is improved by treating seed/default local state as lower priority than a valid cloud snapshot, even if the fresh local seed timestamp is newer.
+- Local DB bootstrap now chooses the newer of IndexedDB vs localStorage backup instead of always preferring the backup.
+
+**Validation**
+- Lint: passing
+- Build: passing
+
+**Remaining manual verification**
+- Real Supabase table verification still needs to be done in a configured environment:
+  - edit data
+  - wait for autosave or click `Sync Now`
+  - confirm `app_snapshots` row contents in Supabase
+  - sign in from a private/incognito window with the same account
+  - confirm cloud snapshot loads once and editing no longer reverts
+
+### What landed
+
+**Supabase client + env gating**
+- Added `src/lib/supabaseClient.ts` using `@supabase/supabase-js`.
+- Frontend uses `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` only.
+- If env vars are missing, the app stays fully usable in local mode and cloud sync shows a disabled status instead of crashing.
+
+**Snapshot sync model**
+- Added top-level `updatedAt?: string` to `TrainingDatabase`.
+- Local IndexedDB remains the working source of truth.
+- Added Supabase snapshot helpers in `src/lib/cloudSync.ts`.
+- Snapshot envelope shape is:
+  - `version`
+  - `updatedAt`
+  - `data` = full current `TrainingDatabase`
+- On sign-in/startup:
+  - local DB loads first
+  - Supabase session is checked
+  - `app_snapshots` is fetched if signed in
+  - cloud mode reads/writes a separate per-user cache on this device
+  - local-only data is not used unless the user explicitly imports it later
+- On local edits:
+  - local save still happens immediately
+  - cloud save is debounced at 3 seconds when signed in
+- Manual `Sync Now` is available in Settings for cloud mode only.
+
+**Auth**
+- Added email/password Supabase auth controls in Settings:
+  - sign up
+  - sign in
+  - sign out
+  - signed-in email display
+- If sign-up requires email confirmation, the UI tells the user to confirm before signing in.
+- Existing local PIN profile login remains untouched.
+
+**UI**
+- Header now shows a lightweight cloud sync status pill that links users to Settings.
+- Settings now includes a Cloud Sync panel with:
+  - auth controls
+  - sync status
+  - last synced time
+  - local snapshot time
+  - manual sync
+  - error messaging
+
+**Supabase SQL**
+- Added `supabase/migrations/001_app_snapshots.sql`.
+- Added `supabase/README.md` with SQL Editor setup steps for teams not using the Supabase CLI yet.
+
+### Rules preserved
+
+- Local-only mode still works exactly as before when not signed in.
+- Missing Supabase env vars do not break the app.
+- No service-role or secret key is used in the browser app.
+- This phase stores one JSONB snapshot row per Supabase auth user; full table normalization is still deferred.
+
+### Known limitations in this phase
+
+- Conflict handling is intentionally simple: latest snapshot wins.
+- Snapshot sync stores the full current training database document, including the current local multi-user document shape.
+- No advanced offline merge/conflict resolution yet.
+- Manual cross-device Supabase verification still needs to be done in a real configured environment.
+- Dev-server browser verification was blocked in this Codex session by sandbox port binding (`listen EPERM` on `127.0.0.1:5174`).
+
+### Lint/build
+
+- **Lint:** passing
+- **Build:** passing
+
+### Recommended next step
+
+- Manually test cross-device persistence in a real Supabase-configured environment:
+  - no-env local fallback
+  - sign up / sign in / sign out
+  - create/edit local data
+  - auto snapshot sync
+  - refresh persistence
+  - second-device load
+  - `Sync Now`
+- After persistence testing passes, resume V3 programming work.
 
 ## Current Handoff for Codex — V3 Phase 2: Goal/Block Programming Rules
 

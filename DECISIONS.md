@@ -16,6 +16,26 @@
 - No backend exists in the current MVP.
 - IndexedDB stores a single `TrainingDatabase` document through `src/lib/db.ts`.
 - `src/lib/db.ts` also maintains a localStorage mirror backup of the same document to reduce refresh/restart data-loss risk. IndexedDB remains the primary persistence pattern.
+- Supabase is the first cloud backend for persistence. Phase 1 uses Supabase Auth plus one JSONB snapshot row per Supabase auth user instead of a normalized training schema.
+- The frontend uses only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. No service-role key belongs in the browser app.
+- Supabase auth is now the only cloud identity source of truth. The old fake local user picker is removed from the active UI.
+- Signed-out startup now stops at a mode gate. Users explicitly choose local-only mode or account mode before entering the main app.
+- Local-only mode remains fully supported. Users can work without an account, but that data remains device-specific until they intentionally sign in.
+- Local-first remains the core persistence rule even with Supabase enabled: local IndexedDB loads first and remains the working copy; cloud snapshot sync is additive.
+- Local-only data and cloud-account cache data must live in separate storage lanes on the device.
+- `TrainingDatabase.updatedAt` is the local snapshot timestamp used for Phase 1 latest-wins snapshot selection.
+- Local data must never automatically overwrite an existing Supabase snapshot at sign-in time.
+- Normal startup/sign-in should not present a repeated local-vs-cloud conflict modal. Cloud mode should simply load the Supabase-backed snapshot, while local-only mode loads only the local-only instance.
+- Importing local-only data into a cloud account is an explicit settings action, not a login-time side effect.
+- Merge behavior for explicit import is intentionally conservative and top-level ID-based. Same-ID items prefer the newer `updatedAt` when available; otherwise cloud wins. Full offline merge/conflict resolution is still deferred.
+- Cloud snapshot hydration is allowed only during controlled lifecycle points: initial app load with a session and immediately after sign-in. After that, local state owns the session and cloud sync is push-only unless a future explicit "load from cloud" action is introduced.
+- Auth events that do not imply a meaningful app-data change (`TOKEN_REFRESHED`, `USER_UPDATED`, etc.) must not rehydrate the training database.
+- Cloud autosave should be scheduled from real local persistence mutations with debounce, not from a broad app-state/render observer.
+- Fresh seed/default local state should not beat a valid cloud snapshot during sign-in/cross-device restore just because the local seed timestamp is newer.
+- Existing old local/fake profile data is kept for compatibility, but hidden identity migration now maps the active local profile onto either:
+  - a single local-only profile
+  - the signed-in Supabase user ID
+- Full relational normalization of workouts, programs, and logs is explicitly deferred until the data model settles further.
 - Use `normalizeDatabase` in `src/lib/db.ts` to handle older local data after model changes.
 - Domain types live in `src/types/domain.ts`.
 - Seed data lives in `src/data/seedData.ts`.
@@ -128,6 +148,7 @@
 - Do not keep “Priority Lifts” as a plain text box.
 - Do not build exercise transfer prediction in V3.1.
 - Do not overhaul analytics or settings before the training-intelligence layer proves out.
+- Do not normalize the Supabase persistence schema yet; Phase 1 should stay on a JSONB snapshot while the local domain model is still moving quickly.
 - Do not use “compound lift settings” to govern every multi-joint exercise. Keep SBD controls separate from broader exercise filtering.
 - Do not treat each gym as a totally separate exercise universe.
 - Do not make weak spots only about “weak off chest” or “slow off floor” right now.

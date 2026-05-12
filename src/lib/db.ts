@@ -1,28 +1,232 @@
 import { builtInExercises, seedDatabase } from "../data/seedData";
 import { syncActiveBlockProgress } from "./blockProgression";
+import { createId, nowIso, todayIso } from "./ids";
 import { defaultCompoundSettings } from "./programmingLogic";
 import { calculateSetPerformanceScore, calculateWorkoutScore } from "./trainingMath";
-import type { ExerciseCategoryLabel, FatigueLevel, MuscleGroup, TrainingDatabase } from "../types/domain";
-import { createId } from "./ids";
+import type { ExerciseCategoryLabel, FatigueLevel, MuscleGroup, TrainingDatabase, TrainingGoal, UserProfile } from "../types/domain";
 
 const DB_NAME = "iron-orbit-training-db";
 const DB_VERSION = 1;
 const STORE = "documents";
-const KEY = "training-database";
-const LOCAL_BACKUP_KEY = "iron-orbit-training-database-backup";
+const LEGACY_KEY = "training-database";
+const LEGACY_LOCAL_BACKUP_KEY = "iron-orbit-training-database-backup";
+const LOCAL_ONLY_KEY = "iron-orbit-local-only";
+const LOCAL_ONLY_BACKUP_KEY = "iron-orbit-local-only-backup";
+const LOCAL_ONLY_USER_ID = "local_only_user";
 
-function loadLocalBackup(): TrainingDatabase | undefined {
+export interface AppIdentityBinding {
+  mode: "local" | "supabase";
+  supabaseUserId?: string;
+  email?: string;
+}
+
+export type DatabaseStorageScope =
+  | { mode: "local-only" }
+  | { mode: "cloud-cache"; supabaseUserId: string };
+
+function parseTimestamp(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function getStorageKey(scope: DatabaseStorageScope): string {
+  return scope.mode === "local-only"
+    ? LOCAL_ONLY_KEY
+    : `iron-orbit-cloud-cache-${scope.supabaseUserId}`;
+}
+
+function getBackupKey(scope: DatabaseStorageScope): string {
+  return scope.mode === "local-only"
+    ? LOCAL_ONLY_BACKUP_KEY
+    : `iron-orbit-cloud-cache-backup-${scope.supabaseUserId}`;
+}
+
+function defaultUserDisplayName(email?: string): string {
+  if (!email) return "Local Profile";
+  const prefix = email.split("@")[0]?.trim();
+  return prefix ? prefix.charAt(0).toUpperCase() + prefix.slice(1) : "Account";
+}
+
+function looksLikeSupabaseAccountProfile(user: UserProfile | undefined): boolean {
+  if (!user) return false;
+  return user.username.includes("@") || user.id.includes("-");
+}
+
+function makeDefaultLocalProfile(id = LOCAL_ONLY_USER_ID, email?: string): UserProfile {
+  const displayName = defaultUserDisplayName(email);
+  const goal: TrainingGoal = "powerbuilding";
+  return {
+    id,
+    username: email || "local-only",
+    displayName,
+    pinHash: "",
+    createdAt: nowIso(),
+    goal,
+    experience: "intermediate",
+    unit: "lb",
+    availableDaysPerWeek: 4,
+    preferredWorkoutDurationMin: 75,
+    trainingPreferences: ["local-first tracking", "simple setup", "sync when signed in"],
+    injuryNotes: [],
+    activeGymId: `${id}_gym_commercial`,
+    maxes: [
+      { id: createId("max"), liftName: "Squat", exerciseId: "ex_squat_comp", oneRepMax: 315, trainingMax: 285, unit: "lb", date: todayIso(), source: "manual" },
+      { id: createId("max"), liftName: "Bench", exerciseId: "ex_bench_comp", oneRepMax: 225, trainingMax: 205, unit: "lb", date: todayIso(), source: "manual" },
+      { id: createId("max"), liftName: "Deadlift", exerciseId: "ex_deadlift_comp", oneRepMax: 405, trainingMax: 365, unit: "lb", date: todayIso(), source: "manual" },
+    ],
+    bodyweightHistory: [{ id: createId("bw"), date: todayIso(), weight: 180, unit: "lb" }],
+    settings: {
+      darkMode: true,
+      conservativeAutoAdjustments: true,
+      showCoachingExplanations: true,
+      defaultRestSeconds: 120,
+      fatigueSensitivity: "medium",
+    },
+  };
+}
+
+function migrateUserReferences(database: TrainingDatabase, fromUserId: string, toUserId: string): void {
+  if (fromUserId === toUserId) return;
+  database.gyms.forEach((gym) => {
+    if (gym.userId === fromUserId) gym.userId = toUserId;
+    gym.exerciseAdjustments.forEach((adjustment) => {
+      if (adjustment.userId === fromUserId) adjustment.userId = toUserId;
+    });
+  });
+  database.exercises.forEach((exercise) => {
+    if (exercise.ownerUserId === fromUserId) exercise.ownerUserId = toUserId;
+  });
+  database.splitTemplates.forEach((split) => {
+    if (split.ownerUserId === fromUserId) split.ownerUserId = toUserId;
+    if (split.favoriteUserIds?.includes(fromUserId)) {
+      split.favoriteUserIds = Array.from(new Set(split.favoriteUserIds.map((id) => id === fromUserId ? toUserId : id)));
+    }
+  });
+  database.workoutTemplates.forEach((template) => {
+    if (template.userId === fromUserId) template.userId = toUserId;
+  });
+  database.programs.forEach((program) => {
+    if (program.userId === fromUserId) program.userId = toUserId;
+  });
+  database.sessions.forEach((session) => {
+    if (session.userId === fromUserId) session.userId = toUserId;
+  });
+  database.exercisePerformanceLogs?.forEach((log) => {
+    if (log.userId === fromUserId) log.userId = toUserId;
+  });
+  database.readiness.forEach((entry) => {
+    if (entry.userId === fromUserId) entry.userId = toUserId;
+  });
+  database.prs.forEach((entry) => {
+    if (entry.userId === fromUserId) entry.userId = toUserId;
+  });
+  database.weakPoints.forEach((entry) => {
+    if (entry.userId === fromUserId) entry.userId = toUserId;
+  });
+  database.recommendations.forEach((entry) => {
+    if (entry.userId === fromUserId) entry.userId = toUserId;
+  });
+}
+
+export function bindDatabaseToIdentity(data: TrainingDatabase, identity: AppIdentityBinding): TrainingDatabase {
+  const next = structuredClone(data) as TrainingDatabase;
+  let changed = false;
+
+  if (!next.users.length) {
+    next.users.push(makeDefaultLocalProfile(identity.mode === "supabase" ? identity.supabaseUserId || LOCAL_ONLY_USER_ID : LOCAL_ONLY_USER_ID, identity.email));
+    changed = true;
+  }
+
+  const activeUser = next.users.find((user) => user.id === next.currentUserId) || next.users[0];
+
+  if (identity.mode === "local") {
+    const localUser = activeUser || makeDefaultLocalProfile();
+    if (!next.users.some((user) => user.id === localUser.id)) {
+      next.users.unshift(localUser);
+      changed = true;
+    }
+    if (next.currentUserId !== localUser.id) {
+      next.currentUserId = localUser.id;
+      changed = true;
+    }
+    return changed ? next : data;
+  }
+
+  const supabaseUserId = identity.supabaseUserId;
+  if (!supabaseUserId) return changed ? next : data;
+
+  const existingSupabaseProfile = next.users.find((user) => user.id === supabaseUserId);
+  const preferredSourceUser = next.users.find((user) => user.id === next.currentUserId) || next.users[0];
+
+  if (!existingSupabaseProfile) {
+    const sourceUser = preferredSourceUser || makeDefaultLocalProfile();
+    const shouldMigrateSource =
+      !!sourceUser
+      && !looksLikeSupabaseAccountProfile(sourceUser)
+      && (
+        sourceUser.id === LOCAL_ONLY_USER_ID
+        || sourceUser.pinHash !== ""
+        || sourceUser.username === "local-only"
+      );
+    if (!next.users.some((user) => user.id === sourceUser.id)) {
+      next.users.unshift(sourceUser);
+    }
+    if (shouldMigrateSource) {
+      const previousId = sourceUser.id;
+      migrateUserReferences(next, previousId, supabaseUserId);
+      sourceUser.id = supabaseUserId;
+      sourceUser.username = identity.email || sourceUser.username || supabaseUserId;
+      sourceUser.pinHash = "";
+      sourceUser.displayName = sourceUser.displayName || defaultUserDisplayName(identity.email);
+      sourceUser.activeGymId = sourceUser.activeGymId?.replace(previousId, supabaseUserId) || `${supabaseUserId}_gym_commercial`;
+      changed = true;
+    } else {
+      next.users.unshift(makeDefaultLocalProfile(supabaseUserId, identity.email));
+      changed = true;
+    }
+  } else {
+    existingSupabaseProfile.username = identity.email || existingSupabaseProfile.username || supabaseUserId;
+    existingSupabaseProfile.pinHash = "";
+    if (!existingSupabaseProfile.displayName) {
+      existingSupabaseProfile.displayName = defaultUserDisplayName(identity.email);
+      changed = true;
+    }
+  }
+
+  const targetUser = next.users.find((user) => user.id === supabaseUserId) || makeDefaultLocalProfile(supabaseUserId, identity.email);
+  if (!next.users.some((user) => user.id === targetUser.id)) {
+    next.users.unshift(targetUser);
+    changed = true;
+  }
+  if (targetUser.username !== (identity.email || targetUser.username)) {
+    targetUser.username = identity.email || targetUser.username;
+    changed = true;
+  }
+  if (targetUser.pinHash !== "") {
+    targetUser.pinHash = "";
+    changed = true;
+  }
+  if (next.currentUserId !== supabaseUserId) {
+    next.currentUserId = supabaseUserId;
+    changed = true;
+  }
+
+  return changed ? next : data;
+}
+
+function loadLocalBackup(scope: DatabaseStorageScope): TrainingDatabase | undefined {
   try {
-    const raw = localStorage.getItem(LOCAL_BACKUP_KEY);
+    const raw = localStorage.getItem(getBackupKey(scope));
     return raw ? JSON.parse(raw) as TrainingDatabase : undefined;
   } catch {
     return undefined;
   }
 }
 
-function saveLocalBackup(data: TrainingDatabase): void {
+function saveLocalBackup(scope: DatabaseStorageScope, data: TrainingDatabase): void {
   try {
-    localStorage.setItem(LOCAL_BACKUP_KEY, JSON.stringify(data));
+    localStorage.setItem(getBackupKey(scope), JSON.stringify(data));
   } catch {
     // IndexedDB remains the source of truth if the synchronous backup is full or unavailable.
   }
@@ -55,22 +259,75 @@ async function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function loadDatabase(): Promise<TrainingDatabase> {
+export async function loadStoredDatabase(scope: DatabaseStorageScope): Promise<TrainingDatabase | undefined> {
   const db = await openDatabase();
   const transaction = db.transaction(STORE, "readonly");
   const store = transaction.objectStore(STORE);
-  const existing = await requestToPromise<TrainingDatabase | undefined>(store.get(KEY));
+  const existing = await requestToPromise<TrainingDatabase | undefined>(store.get(getStorageKey(scope)));
   db.close();
 
-  const backup = loadLocalBackup();
-  const source = backup || existing;
+  const backup = loadLocalBackup(scope);
+  const source = (() => {
+    if (backup && existing) {
+      return parseTimestamp(backup.updatedAt) >= parseTimestamp(existing.updatedAt) ? backup : existing;
+    }
+    return backup || existing;
+  })();
   if (source) {
     const normalized = normalizeDatabase(source);
-    if (normalized !== existing) await saveDatabase(normalized);
+    if (normalized !== existing) await saveDatabase(scope, normalized, { preserveUpdatedAt: true });
     return normalized;
   }
+  return undefined;
+}
+
+async function migrateLegacyLocalDataIfNeeded(): Promise<TrainingDatabase | undefined> {
+  const db = await openDatabase();
+  const transaction = db.transaction(STORE, "readonly");
+  const store = transaction.objectStore(STORE);
+  const existing = await requestToPromise<TrainingDatabase | undefined>(store.get(LEGACY_KEY));
+  db.close();
+
+  const backup = (() => {
+    try {
+      const raw = localStorage.getItem(LEGACY_LOCAL_BACKUP_KEY);
+      return raw ? JSON.parse(raw) as TrainingDatabase : undefined;
+    } catch {
+      return undefined;
+    }
+  })();
+
+  const source = (() => {
+    if (backup && existing) {
+      return parseTimestamp(backup.updatedAt) >= parseTimestamp(existing.updatedAt) ? backup : existing;
+    }
+    return backup || existing;
+  })();
+  if (!source) return undefined;
+
+  const normalized = normalizeDatabase(source);
+  await saveDatabase({ mode: "local-only" }, normalized, { preserveUpdatedAt: true });
+  return normalized;
+}
+
+export async function loadDatabase(
+  scope: DatabaseStorageScope,
+  options?: { seedIfMissing?: boolean }
+): Promise<TrainingDatabase> {
+  const stored = await loadStoredDatabase(scope);
+  if (stored) return stored;
+
+  if (scope.mode === "local-only") {
+    const legacy = await migrateLegacyLocalDataIfNeeded();
+    if (legacy) return legacy;
+  }
+
+  if (!options?.seedIfMissing) {
+    throw new Error(`No stored database found for ${scope.mode}.`);
+  }
+
   const seeded = await seedDatabase();
-  await saveDatabase(seeded);
+  await saveDatabase(scope, seeded, { preserveUpdatedAt: true });
   return seeded;
 }
 
@@ -361,25 +618,49 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
       if (before !== after) changed = true;
     });
   });
+  if (!next.updatedAt) {
+    next.updatedAt = nowIso();
+    changed = true;
+  }
   return changed ? next : data;
 }
 
-export async function saveDatabase(data: TrainingDatabase): Promise<void> {
-  saveLocalBackup(data);
+function prepareDatabaseForSave(
+  data: TrainingDatabase,
+  options?: { preserveUpdatedAt?: boolean }
+): TrainingDatabase {
+  const normalized = normalizeDatabase(structuredClone(data));
+  if (!options?.preserveUpdatedAt || !normalized.updatedAt) {
+    normalized.updatedAt = nowIso();
+  }
+  return normalized;
+}
+
+export async function saveDatabase(
+  scope: DatabaseStorageScope,
+  data: TrainingDatabase,
+  options?: { preserveUpdatedAt?: boolean }
+): Promise<TrainingDatabase> {
+  const next = prepareDatabaseForSave(data, options);
+  saveLocalBackup(scope, next);
   const db = await openDatabase();
   const transaction = db.transaction(STORE, "readwrite");
   const store = transaction.objectStore(STORE);
-  await requestToPromise(store.put(data, KEY));
+  await requestToPromise(store.put(next, getStorageKey(scope)));
   await transactionDone(transaction);
   db.close();
+  return next;
 }
 
-export async function replaceDatabase(data: TrainingDatabase): Promise<void> {
-  await saveDatabase({ ...data, version: 1 });
+export async function replaceDatabase(
+  scope: DatabaseStorageScope,
+  data: TrainingDatabase,
+  options?: { preserveUpdatedAt?: boolean }
+): Promise<TrainingDatabase> {
+  return saveDatabase(scope, { ...data, version: 1 }, options);
 }
 
-export async function resetDatabase(): Promise<TrainingDatabase> {
+export async function resetDatabase(scope: DatabaseStorageScope): Promise<TrainingDatabase> {
   const seeded = await seedDatabase();
-  await saveDatabase(seeded);
-  return seeded;
+  return saveDatabase(scope, seeded, { preserveUpdatedAt: true });
 }

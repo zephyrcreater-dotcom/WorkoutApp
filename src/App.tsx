@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
+import type { SnapshotSummary } from "./lib/cloudSync";
 import {
   advanceActiveBlockAfterWorkoutCompletion,
   getCurrentWorkoutForUser,
@@ -58,7 +59,6 @@ import {
   isSbdExercise,
   sessionFatigueScore
 } from "./lib/programmingLogic";
-import { verifyPin } from "./lib/security";
 import { recommendNextSetAdjustment as algNextSetAdjustment } from "./lib/algorithms";
 import {
   buildFatigueBudget,
@@ -273,8 +273,185 @@ const dayFocusOptions: DayFocus[] = ["strength", "hypertrophy", "technical", "re
 const exerciseUnitOptions: ExerciseUnit[] = ["lb", "kg", "bodyweight", "assisted", "distance", "time", "reps-only"];
 const exerciseCategoryOptions: ExerciseCategoryLabel[] = ["sbd", "main_compound", "secondary_compound", "machine_compound", "isolation", "bodyweight", "conditioning"];
 
+function formatDateTime(value?: string): string {
+  if (!value) return "Never";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function renderCloudStatusLabel(status: "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed"): string {
+  switch (status) {
+    case "disabled":
+      return "Cloud Off";
+    case "not-signed-in":
+      return "Local Only";
+    case "hydrating":
+      return "Hydrating";
+    case "syncing":
+      return "Syncing";
+    case "synced":
+      return "Synced";
+    case "failed":
+      return "Sync Failed";
+    default:
+      return "Cloud";
+  }
+}
+
+function SnapshotSummaryCard({
+  title,
+  tone = "neutral",
+  summary,
+}: {
+  title: string;
+  tone?: "neutral" | "cloud" | "local";
+  summary: SnapshotSummary;
+}) {
+  const toneClass = tone === "cloud"
+    ? "border-sky-500/30 bg-sky-500/10"
+    : tone === "local"
+      ? "border-volt/30 bg-volt/10"
+      : "border-white/10 bg-white/5";
+
+  return (
+    <div className={`rounded-2xl border p-4 ${toneClass}`}>
+      <p className="text-sm font-black text-white">{title}</p>
+      <p className="mt-1 text-xs text-iron-300">Last updated {formatDateTime(summary.updatedAt)}</p>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-iron-300">
+        <p>Exercises: {summary.exerciseCount}</p>
+        <p>Splits: {summary.splitCount}</p>
+        <p>Blocks: {summary.blockCount}</p>
+        <p>Sessions: {summary.workoutSessionCount}</p>
+        <p>Completed: {summary.completedSessionCount}</p>
+      </div>
+    </div>
+  );
+}
+
+function ModeGate({
+  cloud,
+}: {
+  cloud: {
+    configured: boolean;
+    status: "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed";
+    message: string;
+    lastError?: string;
+    continueLocalOnly: () => void;
+    signIn: (email: string, password: string) => Promise<unknown>;
+    signUp: (email: string, password: string) => Promise<{ needsEmailConfirmation: boolean }>;
+  };
+}) {
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState<string | undefined>();
+  const [authError, setAuthError] = useState<string | undefined>();
+  const [authLoading, setAuthLoading] = useState<"signup" | "signin" | undefined>();
+
+  async function handleSignUp() {
+    setAuthLoading("signup");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      const result = await cloud.signUp(authEmail, authPassword);
+      setAuthMessage(
+        result.needsEmailConfirmation
+          ? "Check your email to confirm your account before signing in."
+          : "Account created. Loading your account data..."
+      );
+      if (!result.needsEmailConfirmation) {
+        setAuthPassword("");
+      }
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-up failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSignIn(event: FormEvent) {
+    event.preventDefault();
+    setAuthLoading("signin");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      await cloud.signIn(authEmail, authPassword);
+      setAuthMessage("Signed in. Checking your cloud data...");
+      setAuthPassword("");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-in failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center p-6">
+      <div className="panel w-full max-w-4xl p-6 lg:p-8">
+        <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+          <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-volt text-iron-950">
+                <Dumbbell className="h-6 w-6" />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.18em] text-iron-400">Iron Orbit</p>
+                <h1 className="text-2xl font-black text-white">Choose how you want to train today</h1>
+              </div>
+            </div>
+            <div className="mt-5 rounded-2xl border border-volt/30 bg-volt/10 p-4">
+              <p className="text-sm font-black text-white">Continue Local Only</p>
+              <p className="mt-1 text-sm text-iron-200">Saved on this device only. Nothing is sent to the cloud until you intentionally sign in later.</p>
+              <button className="btn-primary mt-4 w-full sm:w-auto" onClick={cloud.continueLocalOnly}>
+                <ChevronRight className="h-4 w-4" />
+                Continue Local Only
+              </button>
+            </div>
+            <div className="mt-4 rounded-2xl border border-white/10 bg-iron-950/50 p-4 text-sm text-iron-300">
+              <p className="font-bold text-white">Account mode</p>
+              <p className="mt-1">Sign in to sync across devices. Local-only data stays separate unless you explicitly import it later.</p>
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+            <p className="text-sm font-black text-white">Sign In / Sign Up</p>
+            <p className="mt-1 text-sm text-iron-300">Sync across devices with your Supabase account.</p>
+            <form className="mt-5 space-y-3" onSubmit={handleSignIn}>
+              <TextField label="Email" type="email" value={authEmail} onChange={setAuthEmail} />
+              <TextField label="Password" type="password" value={authPassword} onChange={setAuthPassword} />
+              <div className="rounded-2xl border border-white/10 bg-iron-950/50 p-3 text-xs text-iron-400">
+                <p>{cloud.message}</p>
+                {cloud.lastError && <p className="mt-2 text-orange-100">{cloud.lastError}</p>}
+              </div>
+              {authMessage && <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100">{authMessage}</p>}
+              {authError && <p className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-xs text-orange-100">{authError}</p>}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button className="btn-primary w-full" type="submit" disabled={!cloud.configured || authLoading !== undefined || !authEmail || !authPassword}>
+                  <UserRound className="h-4 w-4" />
+                  {authLoading === "signin" ? "Signing In..." : "Sign In"}
+                </button>
+                <button className="btn-secondary w-full" type="button" disabled={!cloud.configured || authLoading !== undefined || !authEmail || !authPassword} onClick={() => void handleSignUp()}>
+                  <Plus className="h-4 w-4" />
+                  {authLoading === "signup" ? "Creating..." : "Sign Up"}
+                </button>
+              </div>
+              <p className="text-xs text-iron-500">If email confirmation is enabled in Supabase, confirm your email before trying to sign in.</p>
+              {!cloud.configured && <p className="text-xs text-orange-100">Cloud sync is currently unavailable in this environment. Local-only mode still works.</p>}
+            </form>
+          </section>
+        </div>
+      </div>
+    </main>
+  );
+}
+
 function App() {
-  const { db, currentUser, loading, error, updateDb, importDb, reseed } = useTrainingDb();
+  const { db, currentUser, loading, error, authMode, updateDb, importDb, reseed, cloud } = useTrainingDb();
   const [screen, setScreen] = useState<Screen>("today");
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [planWeekRequest, setPlanWeekRequest] = useState<number | undefined>();
@@ -293,20 +470,60 @@ function App() {
     );
   }
 
-  if (error || !db) {
+  if (error) {
     return (
       <main className="flex min-h-screen items-center justify-center p-6">
         <div className="panel max-w-sm p-6">
           <ShieldAlert className="mb-4 h-10 w-10 text-ember" />
           <h1 className="text-xl font-black">Could not load the app</h1>
-          <p className="mt-2 text-sm text-iron-300">{error || "Unknown local database error."}</p>
+          <p className="mt-2 text-sm text-iron-300">{error}</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (authMode === "unknown" && cloud.session && (cloud.status === "hydrating" || cloud.status === "syncing")) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="panel max-w-sm p-6 text-center">
+          <RefreshCcw className="mx-auto mb-4 h-10 w-10 text-sky-200" />
+          <h1 className="text-xl font-black">Checking your cloud data</h1>
+          <p className="mt-2 text-sm text-iron-300">{cloud.message}</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (authMode === "unknown") {
+    return <ModeGate cloud={cloud} />;
+  }
+
+  if (!db) {
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="panel max-w-sm p-6 text-center">
+          <Gauge className="mx-auto mb-4 h-10 w-10 text-volt" />
+          <h1 className="text-xl font-black">Preparing your workspace</h1>
+          <p className="mt-2 text-sm text-iron-300">
+            {authMode === "cloud"
+              ? "Opening your cloud account data on this device."
+              : "Opening your local-only training data."}
+          </p>
         </div>
       </main>
     );
   }
 
   if (!currentUser) {
-    return <LoginScreen db={db} updateDb={updateDb} />;
+    return (
+      <main className="flex min-h-screen items-center justify-center p-6">
+        <div className="panel max-w-sm p-6">
+          <ShieldAlert className="mb-4 h-10 w-10 text-ember" />
+          <h1 className="text-xl font-black">Could not open a profile</h1>
+          <p className="mt-2 text-sm text-iron-300">The local profile did not initialize correctly.</p>
+        </div>
+      </main>
+    );
   }
 
   const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && session.status === "in-progress");
@@ -322,28 +539,33 @@ function App() {
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-black">Iron Orbit</p>
-              <p className="truncate text-xs text-iron-400">{currentUser.displayName} - {currentUser.goal}</p>
+              <p className="truncate text-xs text-iron-400">
+                {authMode === "cloud" && cloud.userEmail ? `${currentUser.displayName} - ${cloud.userEmail}` : "Local only - data stays on this device"}
+              </p>
             </div>
           </button>
           <div className="flex items-center gap-2">
+            <button
+              className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
+                cloud.status === "synced"
+                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                  : cloud.status === "syncing" || cloud.status === "hydrating"
+                    ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+                    : cloud.status === "failed"
+                      ? "border-ember/30 bg-ember/10 text-orange-100"
+                      : "border-white/10 bg-white/5 text-iron-300"
+              }`}
+              onClick={() => setScreen("settings")}
+              title={cloud.message}
+            >
+              {renderCloudStatusLabel(cloud.status)}
+            </button>
             {activeSession && (
               <button className="btn-primary hidden sm:inline-flex" onClick={() => setScreen("logger")}>
                 <Timer className="h-4 w-4" />
                 Live
               </button>
             )}
-            <button
-              className="btn-ghost"
-              onClick={() =>
-                updateDb((draft) => {
-                  draft.currentUserId = undefined;
-                  return draft;
-                })
-              }
-              title="Switch user"
-            >
-              <LogOut className="h-5 w-5" />
-            </button>
           </div>
         </div>
       </header>
@@ -373,7 +595,7 @@ function App() {
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} />}
-          {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} />}
+          {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
       </main>
 
@@ -394,71 +616,6 @@ function App() {
         </div>
       </nav>
     </div>
-  );
-}
-
-function LoginScreen({
-  db,
-  updateDb
-}: {
-  db: TrainingDatabase;
-  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
-}) {
-  const [username, setUsername] = useState(db.users[0]?.username || "");
-  const [pin, setPin] = useState("");
-  const [error, setError] = useState("");
-
-  async function login(event: FormEvent) {
-    event.preventDefault();
-    const user = db.users.find((candidate) => candidate.username.toLowerCase() === username.toLowerCase());
-    if (!user || !(await verifyPin(pin, user.pinHash))) {
-      setError("Username or PIN did not match.");
-      return;
-    }
-    await updateDb((draft) => {
-      draft.currentUserId = user.id;
-      return draft;
-    });
-  }
-
-  return (
-    <main className="safe-top flex min-h-screen items-center justify-center px-4 py-8">
-      <div className="w-full max-w-md">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-volt text-iron-950">
-            <Dumbbell className="h-6 w-6" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-black">Iron Orbit</h1>
-            <p className="text-sm text-iron-300">Local-first training command center.</p>
-          </div>
-        </div>
-        <form className="panel space-y-4 p-5" onSubmit={login}>
-          <div>
-            <label className="label">User</label>
-            <select className="field mt-2" value={username} onChange={(event) => setUsername(event.target.value)}>
-              {db.users.map((user) => (
-                <option key={user.id} value={user.username}>
-                  {user.displayName} ({user.username})
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">PIN</label>
-            <input className="field mt-2 text-2xl tracking-[0.4em]" inputMode="numeric" type="password" value={pin} onChange={(event) => setPin(event.target.value)} placeholder="0000" />
-          </div>
-          {error && <p className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-sm text-orange-100">{error}</p>}
-          <button className="btn-primary w-full" type="submit">
-            <UserRound className="h-4 w-4" />
-            Enter
-          </button>
-          <div className="rounded-lg border border-white/10 bg-iron-950/70 p-3 text-xs text-iron-300">
-            Seed users: <span className="font-bold text-white">nathan / 2468</span> and <span className="font-bold text-white">ava / 1357</span>. Local PINs separate profiles, but this is not high-security encryption.
-          </div>
-        </form>
-      </div>
-    </main>
   );
 }
 
@@ -5179,20 +5336,46 @@ function SettingsScreen({
   user,
   updateDb,
   importDb,
-  reseed
+  reseed,
+  cloud,
+  authMode,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   importDb: (db: TrainingDatabase) => Promise<void>;
   reseed: () => Promise<void>;
+  authMode: "unknown" | "local" | "cloud";
+  cloud: {
+    configured: boolean;
+    session: { user: { email?: string } } | null;
+    status: "disabled" | "not-signed-in" | "hydrating" | "syncing" | "synced" | "failed";
+    message: string;
+    lastSyncedAt?: string;
+    lastError?: string;
+    userEmail?: string;
+    localOnlySummary?: SnapshotSummary;
+    hasMeaningfulLocalOnlyData: boolean;
+    importLocalIntoCloud: (action: "merge" | "replace") => Promise<boolean>;
+    syncNow: () => Promise<boolean>;
+    signIn: (email: string, password: string) => Promise<unknown>;
+    signOut: () => Promise<void>;
+    signUp: (email: string, password: string) => Promise<{ needsEmailConfirmation: boolean }>;
+  };
 }) {
-  function exportJson() {
-    const blob = new Blob([JSON.stringify(db, null, 2)], { type: "application/json" });
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState<string | undefined>();
+  const [authError, setAuthError] = useState<string | undefined>();
+  const [authLoading, setAuthLoading] = useState<"signup" | "signin" | "sync" | "signout" | "import-merge" | "import-replace" | undefined>();
+  const [showImportLocalActions, setShowImportLocalActions] = useState(false);
+
+  function exportJson(name: string, data: TrainingDatabase) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `iron-orbit-backup-${todayIso()}.json`;
+    link.download = name;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -5205,6 +5388,92 @@ function SettingsScreen({
       void importDb(parsed);
     };
     reader.readAsText(file);
+  }
+
+  async function handleSignUp() {
+    setAuthLoading("signup");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      const result = await cloud.signUp(authEmail, authPassword);
+      setAuthMessage(
+        result.needsEmailConfirmation
+          ? "Check your email to confirm your account before signing in."
+          : "Account created and connected."
+      );
+      if (!result.needsEmailConfirmation) {
+        setAuthPassword("");
+      }
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-up failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSignIn(event: FormEvent) {
+    event.preventDefault();
+    setAuthLoading("signin");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      await cloud.signIn(authEmail, authPassword);
+      setAuthMessage("Signed in. Cloud sync is active for this device.");
+      setAuthPassword("");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-in failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSignOut() {
+    setAuthLoading("signout");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      await cloud.signOut();
+      setAuthMessage("Signed out. Local mode is still active.");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Sign-out failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleSyncNow() {
+    setAuthLoading("sync");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      const ok = await cloud.syncNow();
+      setAuthMessage(ok ? "Sync complete." : "Cloud sync is unavailable until you sign in.");
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Manual sync failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
+  }
+
+  async function handleImportLocalIntoCloud(action: "merge" | "replace") {
+    setAuthLoading(action === "merge" ? "import-merge" : "import-replace");
+    setAuthError(undefined);
+    setAuthMessage(undefined);
+    try {
+      const ok = await cloud.importLocalIntoCloud(action);
+      setAuthMessage(
+        ok
+          ? action === "merge"
+            ? "Local-only data was added into the cloud account."
+            : "Cloud account was replaced with the local-only data."
+          : "No local-only data was imported."
+      );
+      if (ok) setShowImportLocalActions(false);
+    } catch (err) {
+      setAuthError(err instanceof Error ? err.message : "Import into cloud failed.");
+    } finally {
+      setAuthLoading(undefined);
+    }
   }
 
   return (
@@ -5225,16 +5494,115 @@ function SettingsScreen({
             })} />
           </div>
         </Panel>
+        <Panel title="Cloud Sync" icon={RefreshCcw}>
+          <div className="space-y-3">
+            <div className="rounded-lg border border-white/10 bg-iron-950/50 p-3 text-sm">
+              <p className="font-bold text-white">{renderCloudStatusLabel(cloud.status)}</p>
+              <p className="mt-1 text-iron-300">{cloud.message}</p>
+              <p className="mt-2 text-xs text-iron-500">Local-only mode stays on this device. Cloud mode uses your Supabase account as the source of truth and only imports local-only data when you ask for it.</p>
+              <div className="mt-3 space-y-1 text-xs text-iron-400">
+                <p>Mode: {authMode === "cloud" ? "Supabase account mode" : "Local-only mode"}</p>
+                <p>Supabase account: {cloud.userEmail || "Not signed in"}</p>
+                <p>Last synced: {formatDateTime(cloud.lastSyncedAt)}</p>
+                <p>Current instance updated: {formatDateTime(db.updatedAt)}</p>
+              </div>
+              {cloud.lastError && <p className="mt-3 rounded-lg border border-ember/30 bg-ember/10 p-2 text-xs text-orange-100">{cloud.lastError}</p>}
+            </div>
+
+            {authMode !== "cloud" ? (
+              <form className="space-y-3" onSubmit={handleSignIn}>
+                <TextField label="Email" type="email" value={authEmail} onChange={setAuthEmail} />
+                <TextField label="Password" type="password" value={authPassword} onChange={setAuthPassword} />
+                {authMessage && <p className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-xs text-emerald-100">{authMessage}</p>}
+                {authError && <p className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-xs text-orange-100">{authError}</p>}
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button className="btn-primary w-full" type="submit" disabled={authLoading !== undefined || !authEmail || !authPassword}>
+                    <UserRound className="h-4 w-4" />
+                    {authLoading === "signin" ? "Signing In..." : "Sign In"}
+                  </button>
+                  <button className="btn-secondary w-full" type="button" disabled={authLoading !== undefined || !authEmail || !authPassword} onClick={() => void handleSignUp()}>
+                    <Plus className="h-4 w-4" />
+                    {authLoading === "signup" ? "Creating..." : "Sign Up"}
+                  </button>
+                </div>
+                <p className="text-xs text-iron-500">If email confirmation is enabled in Supabase, confirm your email before trying to sign in. Local-only data stays on this device until you explicitly import it.</p>
+              </form>
+            ) : (
+              <div className="space-y-3">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <button className="btn-primary w-full" onClick={() => void handleSyncNow()} disabled={authLoading !== undefined || cloud.status === "disabled"}>
+                    <RefreshCcw className="h-4 w-4" />
+                    {authLoading === "sync" ? "Syncing..." : "Sync Now"}
+                  </button>
+                  <button className="btn-secondary w-full" onClick={() => void handleSignOut()} disabled={authLoading !== undefined}>
+                    <LogOut className="h-4 w-4" />
+                    {authLoading === "signout" ? "Signing Out..." : "Sign Out"}
+                  </button>
+                </div>
+
+                <div className="rounded-lg border border-white/10 bg-iron-950/50 p-3 text-sm">
+                  <p className="font-bold text-white">Import local-only data into this cloud account</p>
+                  <p className="mt-1 text-iron-300">This is the only path that moves local-only data into your Supabase account. It never runs automatically.</p>
+                  {cloud.localOnlySummary ? (
+                    <div className="mt-3">
+                      <SnapshotSummaryCard title="Local-only data on this device" tone="local" summary={cloud.localOnlySummary} />
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-xs text-iron-500">No local-only summary is available on this device yet.</p>
+                  )}
+                  {cloud.hasMeaningfulLocalOnlyData ? (
+                    <div className="mt-3 space-y-2">
+                      {!showImportLocalActions ? (
+                        <button className="btn-secondary w-full" onClick={() => setShowImportLocalActions(true)} disabled={authLoading !== undefined}>
+                          <Copy className="h-4 w-4" />
+                          Import Local Data Into Cloud
+                        </button>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-xs text-orange-100">Warning: this changes the cloud account. Merge is safer. Replace fully overwrites the cloud snapshot with the local-only data from this device.</p>
+                          <div className="grid gap-2 sm:grid-cols-3">
+                            <button className="btn-primary w-full" onClick={() => void handleImportLocalIntoCloud("merge")} disabled={authLoading !== undefined}>
+                              <Copy className="h-4 w-4" />
+                              {authLoading === "import-merge" ? "Merging..." : "Add / Merge"}
+                            </button>
+                            <button className="btn-secondary w-full border-ember/40 text-orange-100" onClick={() => void handleImportLocalIntoCloud("replace")} disabled={authLoading !== undefined}>
+                              <Save className="h-4 w-4" />
+                              {authLoading === "import-replace" ? "Replacing..." : "Replace Cloud"}
+                            </button>
+                            <button className="btn-secondary w-full" onClick={() => setShowImportLocalActions(false)} disabled={authLoading !== undefined}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-xs text-iron-500">There is no meaningful local-only data on this device to import right now.</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </Panel>
         <Panel title="Backup" icon={FileDown}>
           <div className="space-y-3">
             <div className="rounded-lg border border-white/10 bg-iron-950/50 p-3">
-              <p className="text-xs font-bold text-iron-300">Data is stored locally in this browser only.</p>
-              <p className="mt-1 text-xs text-iron-500">To move data between devices (phone ↔ computer), export a backup here and import it on the other device. Cloud sync is not yet available.</p>
+              <p className="text-xs font-bold text-iron-300">The app stays local-first even when cloud sync is enabled.</p>
+              <p className="mt-1 text-xs text-iron-500">Local-only and cloud-account data are now separate instances. Export/import remains the manual bridge between them.</p>
             </div>
-            <button className="btn-primary w-full" onClick={exportJson}><FileDown className="h-4 w-4" /> Export Backup</button>
+            <button
+              className="btn-primary w-full"
+              onClick={() => exportJson(
+                authMode === "cloud" ? `iron-orbit-cloud-backup-${todayIso()}.json` : `iron-orbit-local-backup-${todayIso()}.json`,
+                db
+              )}
+            >
+              <FileDown className="h-4 w-4" />
+              {authMode === "cloud" ? "Export Cloud Backup" : "Export Local Backup"}
+            </button>
             <label className="btn-secondary w-full cursor-pointer">
               <FileUp className="h-4 w-4" />
-              Import Backup
+              {authMode === "cloud" ? "Import Backup Into Current Cloud Cache" : "Import Backup Into Local Mode"}
               <input className="hidden" type="file" accept="application/json" onChange={(event) => importJson(event.target.files?.[0])} />
             </label>
             <button className="btn-secondary w-full border-ember/40 text-orange-100" onClick={() => {
@@ -5733,11 +6101,25 @@ function EmptyState({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function TextField({ label, value, placeholder, onChange, disabled = false }: { label: string; value: string; placeholder?: string; onChange: (value: string) => void; disabled?: boolean }) {
+function TextField({
+  label,
+  value,
+  placeholder,
+  onChange,
+  disabled = false,
+  type = "text",
+}: {
+  label: string;
+  value: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  type?: "text" | "email" | "password";
+}) {
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="field mt-2 disabled:opacity-60" placeholder={placeholder} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+      <input className="field mt-2 disabled:opacity-60" type={type} placeholder={placeholder} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
