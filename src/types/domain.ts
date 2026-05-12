@@ -342,6 +342,12 @@ export interface Exercise {
   canBeGymSpecific?: boolean;
   isGymSpecificEnabled?: boolean;
   createdByUser?: boolean;
+  source?: "default" | "custom";
+  copiedFromId?: string;
+  userModified?: boolean;
+  isArchived?: boolean;
+  hasVariations?: boolean;
+  variationType?: string;
   createdAt?: string;
   updatedAt?: string;
   // Algorithm classification fields (V2 Iteration 1)
@@ -385,6 +391,9 @@ export interface SplitTemplate {
   daysPerWeek: number;
   days: SplitDay[];
   notes: string;
+  source?: "default" | "custom";
+  copiedFromId?: string;
+  userModified?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }

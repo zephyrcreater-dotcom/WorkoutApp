@@ -8,7 +8,67 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
-## Current Handoff for Codex — Split Template Library Cleanup
+## Current Handoff — Library UX Follow-Up (Session 4)
+
+### What changed
+
+**Cloud sync wording**
+- Added `editSaveContext(authMode, cloudStatus)` helper near `renderCloudStatusLabel`.
+- Replaces hardcoded "saved locally" in both the exercise editor default banner and the split builder default banner.
+- In cloud mode: shows "Syncing to cloud…", "Saved to cloud.", or "Sync failed — changes are queued locally." based on `cloud.status`.
+- In local mode or unknown: shows "Changes are saved locally."
+- `LibraryScreen` and `SplitLibraryManager` now accept `authMode` + `cloudStatus` props; call site passes `authMode={authMode}` and `cloudStatus={cloud.status}`.
+
+**Searchable parent exercise selector**
+- Replaced giant `<select>` dropdown in the variation parent picker with:
+  - Text input that filters exercises by name as you type.
+  - Dropdown results list (max-height scrollable) showing matching non-variation, non-archived exercises.
+  - Once selected, shows a volt-colored pill with the parent name and a Clear (×) button.
+  - `parentSearch` state in `LibraryScreen` — set to parent name when using "Add Variation" from card.
+- No self-parent option; circular variation prevented by only showing non-variation exercises.
+
+**"Add Variation" from parent cards**
+- `startAddVariation(parent: Exercise)` function added — prefills draft with parent's muscle/equipment/category metadata, sets `isVariation: true`, `parentExerciseId` to parent.
+- `GitBranch` icon button added to all non-variation exercise cards.
+- Variation child cards in the collapsible section also support Edit/Duplicate/Delete.
+
+**Variation grouping**
+- By default, exercises with `isVariation: true` are hidden from the flat exercise list (unless `query` is set or `showVariations` toggle is on).
+- Parent cards show a collapsible "N variations" section below them (visible only when no search query and `showVariations` is off).
+  - Toggle (ChevronDown) expands/collapses via `expandedVariantParentIds` Set state.
+  - A `+` button in the section header launches `startAddVariation` for that parent.
+- "Show variations" toggle button in the exercise list header — when on, variations appear inline in the flat list with `showVariations` state.
+- Variation cards in the flat list show "Variation of [Parent Name]" with a `GitBranch` icon.
+
+**Delete guard for exercises with children**
+- `deleteExercise` now checks for child variations before hard-deleting a custom exercise.
+- If children exist: shows an alert listing the count and asks user to delete/reassign them first.
+
+**New imports**
+- `GitBranch`, `ChevronDown`, `X` added to lucide-react imports.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Cloud mode — edit a default exercise → banner shows "Syncing to cloud…" / "Saved to cloud." (not "saved locally")
+2. Local mode — edit a default exercise → banner shows "Changes are saved locally."
+3. Cloud mode — edit a default split → same cloud-aware wording
+4. Parent exercise picker — type partial name, see filtered list, click to select, pill shows parent name
+5. Clear button on parent pill resets search
+6. Exercise card "Add Variation" (GitBranch) button → draft prefilled from parent, variation toggle ON, parent pre-selected
+7. Variation grouping — default view hides variations, shows "N variations" under parent
+8. Expand → child variation cards appear with Edit/Duplicate/Delete
+9. "Show variations" toggle → variations appear inline in flat list with "Variation of [Name]" label
+10. Search query → variations appear inline regardless of `showVariations` toggle
+11. Delete custom exercise with children → alert shown, deletion blocked
+12. Delete custom exercise without children → confirm dialog, then deleted
+13. Lint + build pass
+
+---
+
+## Prior Handoff for Codex — Split Template Library Cleanup
 
 ### What changed
 
@@ -341,7 +401,56 @@ Curated the built-in split template library from 9 templates to 12. All template
   - `Sync Now`
 - After persistence testing passes, resume V3 programming work.
 
-## Current Handoff for Codex — V3 Phase 2: Goal/Block Programming Rules
+## Current Handoff for Codex — Library UX Fix: Editable Defaults, Custom Section, Variation Builder
+
+### What landed
+
+**Goal:** Fix the product model so Default = editable (not read-only), add Default/Custom tabs, give each exercise proper Edit/Delete/Reset/Duplicate actions, and add variation controls to the exercise editor.
+
+**Domain changes (`src/types/domain.ts`):**
+- Added `userModified?: boolean`, `hasVariations?: boolean`, `variationType?: string`, `isArchived?: boolean` to `Exercise`.
+- Added `userModified?: boolean` to `SplitTemplate`.
+- (From prior session) `source?: "default" | "custom"` and `copiedFromId?: string` on both.
+
+**Migration (`src/lib/db.ts`):**
+- `normalizeDatabase` now skips core-field refresh for exercises where `userModified === true` (preserves user edits to defaults).
+- Same for splits: refresh skipped if `userModified === true`.
+- `hasVariations` backfilled: any exercise that has at least one other exercise pointing to it via `parentExerciseId` gets `hasVariations = true`.
+- Deprecated default splits (no `ownerUserId`, not in seed) are still removed on load.
+
+**Seed data (`src/data/seedData.ts`):** (from prior session, unchanged)
+- Five variation exercises tagged: `ex_close_grip_bench`, `ex_front_squat`, `ex_highbar_squat`, `ex_rdl`, `ex_chin_up`.
+- Five new standalone variation exercises: `ex_paused_squat`, `ex_box_squat`, `ex_paused_bench`, `ex_deficit_deadlift`, `ex_rack_pull`.
+
+**App.tsx:**
+- Imports: replaced `Lock` with `EyeOff` (archive) and `RotateCcw` (reset). Added `builtInExercises` and `seedSplitTemplates` imports from seedData for reset logic.
+- Exercise editor: `saveEditExercise()` now works for ALL exercises (default and custom). Editing a default marks `userModified = true`. Variation fields added to draft (`isVariation`, `parentExerciseId`, `variationType`) and populated in `startEditExercise()`.
+- Exercise editor panel: collapsible "This is a variation" section with parent exercise dropdown + variation type text field. Advanced options (fatigue rating, movement patterns, allowed units, checkboxes, tags) moved into the collapsible Advanced section.
+- Exercise card metadata: shows `(edited)` badge for `userModified` defaults, `variation` and `has variations` labels.
+- Exercise card actions: Edit (all), Duplicate (all), Reset/RotateCcw for `userModified` defaults with a seed match, Delete/Trash for custom, EyeOff/Hide for default non-archived.
+- `deleteExercise()`: hard-delete for custom (confirm), soft-archive (`isArchived=true`) for default (confirm).
+- `resetExerciseToDefault()`: restores full seed values, clears `userModified` and `isArchived`.
+- Exercise library source filter: replaced dropdown with All / Default / Custom / Hidden tabs.
+- `duplicateExercise()`: creates custom copy with `source: "custom"`, `copiedFromId`, opens edit form.
+- SplitLibraryManager: `updateSplit()` removed `ownerUserId` guard — all splits are editable. Marks `userModified = true` for defaults.
+- SplitLibraryManager: `resetSplitToDefault()` restores seed days/name/goal/notes, clears `userModified`.
+- SplitLibraryManager: `deleteSplit()` still custom-only.
+- Split Builder: unified edit form for all splits (no read-only conditional). Default splits show Reset button when `userModified`. Custom splits show Delete button.
+- Split list: All / Default / Custom tabs.
+- `createSplit()`: sets `source: "custom"`.
+
+### Lint/build
+- **Lint:** passing
+- **Build:** passing
+
+### Known TODOs
+- Grouped variation picker in the exercise selector (e.g., expand Competition Squat to show Paused/Box/High-Bar) is not yet implemented. Fields exist; grouped display is future work.
+- Movement pattern filter was removed from exercise library to reduce clutter. Can be re-added to Advanced Filters if needed.
+- No global "Reset all defaults" button yet. Per-item reset exists.
+
+---
+
+## Prior Handoff — V3 Phase 2: Goal/Block Programming Rules
 
 ### What landed in V3 Phase 2
 

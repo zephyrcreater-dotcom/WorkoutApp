@@ -2,6 +2,12 @@
 
 ## Known Bugs
 
+## Library UX Fix
+
+- Movement pattern filter was removed from the Exercise Library filter row to reduce clutter. Re-add as an Advanced Filters section if needed.
+- Grouped variation picker in the exercise selector (e.g., expand Competition Squat to show Paused/Box/High-Bar sub-options) is not yet implemented. The fields (`parentExerciseId`, `hasVariations`) are in place; grouped display in the picker is future work.
+- No global "Reset all defaults" action yet. Per-item reset exists for each modified default exercise or split.
+
 ## Workout Expansion Cleanup
 
 - Browser/manual verification is still needed for the rebuilt default split templates and fresh-start weight behavior. Lint/build passed, but this Codex session did not run a live browser flow.

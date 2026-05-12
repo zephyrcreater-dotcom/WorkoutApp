@@ -166,6 +166,31 @@
 - Bodybuilding dashboard should focus on planned weekly volume, frequency, distribution, target flags, and suggested adjustments.
 - Program gaps should show issue, why it matters, severity, suggested fix, and action buttons where possible.
 
+## Library Protection + Default/Custom Separation Decisions
+
+- `source?: "default" | "custom"` is a first-class field on both `Exercise` and `SplitTemplate`, backfilled from `ownerUserId` during `normalizeDatabase`.
+- `copiedFromId?: string` on both records which default item a custom copy originated from.
+- `userModified?: boolean` on both — set `true` when a user edits a default item. `normalizeDatabase` skips core-field refresh for exercises/splits where `userModified = true`, preserving user edits through seed updates.
+- `hasVariations?: boolean` on `Exercise` — backfilled by `normalizeDatabase` by scanning which exercises reference this ID as `parentExerciseId`.
+- `variationType?: string` on `Exercise` — user-editable label for the variation style (e.g., "Paused", "Box").
+- `isArchived?: boolean` on `Exercise` — soft-delete for default exercises (hard-delete is used for custom).
+
+**Default = editable, not read-only.**
+- Default exercises and splits are fully editable. Editing a default item marks `userModified = true`.
+- Defaults can be reset to seed values via `resetExerciseToDefault()` / `resetSplitToDefault()`.
+- Defaults can be duplicated into custom copies via `duplicateExercise()` / `duplicateSplit()`.
+- Archiving (hiding) a default exercise sets `isArchived = true`; it reappears after reset.
+
+**Custom = editable + deletable.**
+- Custom exercises can be hard-deleted with confirmation.
+- Custom splits can be deleted with confirmation.
+
+- Exercise library: All / Default / Custom / Hidden tabs replace the old source dropdown.
+- Split library: All / Default / Custom tabs in the left panel.
+- `normalizeDatabase` removes deprecated default splits (stored, no `ownerUserId`, not in seed) but skips `userModified` splits during field refresh.
+- Variation metadata: existing exercises `ex_close_grip_bench`, `ex_front_squat`, `ex_highbar_squat`, `ex_rdl`, `ex_chin_up` have `isVariation: true` and `parentExerciseId` set. Five new standalone exercises added: `ex_paused_squat`, `ex_box_squat`, `ex_paused_bench`, `ex_deficit_deadlift`, `ex_rack_pull`.
+- Exercise editor variation section: "This is a variation of another exercise" toggle shows parent exercise dropdown + variation type field when enabled.
+
 ## Rejected Or Avoided Decisions
 
 - Do not keep “Priority Lifts” as a plain text box.
