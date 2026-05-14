@@ -111,6 +111,9 @@ function migrateUserReferences(database: TrainingDatabase, fromUserId: string, t
   database.exercisePerformanceLogs?.forEach((log) => {
     if (log.userId === fromUserId) log.userId = toUserId;
   });
+  database.exerciseBaselines?.forEach((baseline) => {
+    if (baseline.userId === fromUserId) baseline.userId = toUserId;
+  });
   database.readiness.forEach((entry) => {
     if (entry.userId === fromUserId) entry.userId = toUserId;
   });
@@ -342,7 +345,10 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
 
   next.programGaps ||= [];
   next.exercisePerformanceLogs ||= [];
+  next.exerciseBaselines ||= [];
   next.gymExerciseVariants ||= [];
+  const exerciseMap = new Map(next.exercises.map((exercise) => [exercise.id, exercise]));
+  const userMap = new Map(next.users.map((user) => [user.id, user]));
   const existingSplitIds = new Set(next.splitTemplates.map((split) => split.id));
   seedSplitTemplates.forEach((split) => {
     if (!existingSplitIds.has(split.id)) {
@@ -364,6 +370,18 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
         adjustment.lastCalculatedFactor = adjustment.factor;
         changed = true;
       }
+    });
+  });
+  next.sessions.forEach((session) => {
+    const sessionUser = userMap.get(session.userId);
+    session.loggedExercises.forEach((logged) => {
+      const exercise = exerciseMap.get(logged.exerciseId);
+      logged.sets.forEach((set) => {
+        if (!set.unit) {
+          set.unit = exercise?.defaultUnit || sessionUser?.unit || "lb";
+          changed = true;
+        }
+      });
     });
   });
   next.exercises.forEach((exercise) => {

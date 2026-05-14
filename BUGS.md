@@ -2,6 +2,36 @@
 
 ## Known Bugs
 
+## Data Management UX Simplification + Unified Import/Export (Session 8)
+
+- The primary `Export Training Data` action currently produces an Excel-compatible multi-sheet `.xls` XML workbook, not a zipped `.xlsx` file. It opens in spreadsheet apps, but true `.xlsx` export would require a library or a custom ZIP writer.
+- Unified pasted-text import supports one detected workout section and one detected exercise section. If a pasted document contains several repeated tables of the same type, later repeated sections are ignored in this pass.
+- Workbook import still supports `.xlsx` and `.xlsm` only. Older binary `.xls` uploads are not supported.
+
+## Importer Analytics + Baseline Fill Fix (Session 7)
+
+- Baseline import deduping now checks imported-history fingerprints across prior imported baseline sessions, but it is still intentionally simple. If a user edits notes/source/date between imports, near-duplicate imported history can still slip through.
+- Imported baseline rows become one representative analytics set rather than N cloned sets when legacy `Set` means “3 sets of 10” style volume. This preserves trend usefulness without inflating analytics, but it is not a full historical recreation of every original set.
+- Current-block analytics mode still only reflects block-linked workout sessions. Imported baseline sessions are visible in overall exercise analytics, not in the current-block trend view.
+- Exercise family analytics uses parent/child variation relationships only. Broader “same family” grouping via `exerciseFamily` beyond explicit parent-child chains is not implemented yet.
+
+## Exercise Baseline Importer (Session 6)
+
+- Legacy workbook support currently targets `.xlsx` and `.xlsm` files that contain a real `Exercises` worksheet inside the modern ZIP/XML workbook format. Old binary `.xls` files are not supported in this pass.
+- Workbook parsing assumes a straightforward single-sheet tab layout with exercise data in columns `A:F`. If the workbook uses merged cells, custom header offsets, or a renamed sheet, the importer will fail safely instead of guessing.
+- Exercise import review defaults to conservative actions, but there is not yet a dedicated import-history ledger showing every baseline merge decision after the fact.
+- Matching is stronger for the named aliases in the current legacy sheet, but ambiguous rows can still require manual mapping or a custom/variation create decision.
+- Mapped existing exercises do not currently merge imported exercise metadata back into built-in exercise definitions. This pass only creates new exercises or updates user-specific baselines/history.
+
+## Import/Export Phase (Session 5)
+
+- CSV import deduplication uses a simple fingerprint (date + exerciseId + set_number + weight + reps + rpe). If sets lack set_number, duplicates from re-imports of the same day will not be caught reliably.
+- Import only creates `WorkoutSession` records with `offProgram: true`. Imported sessions do not link to programs, blocks, or workout templates. Analytics derived from program structure (planned vs actual) will not reflect imported history.
+- `exerciseMatcher.ts` alias table is hand-written. New exercises added to the library that have common abbreviations may not match without updating the alias table.
+- Low/medium confidence exercise matches (word overlap) are good enough to flag for review but are not guaranteed to be correct — always check before confirming an import with unreviewed matches.
+- The export-exercises CSV writes `ownerUserId`-filtered exercises only (user's own exercises). Built-in exercises archived by the user are excluded.
+- Full backup export in DataManagementPanel uses the existing SettingsScreen `exportJson` for JSON backup; the DataManagementPanel export buttons only cover CSV. For full JSON backup, use the Backup panel above DataManagementPanel in Settings.
+
 ## Library UX Fix
 
 - Movement pattern filter was removed from the Exercise Library filter row to reduce clutter. Re-add as an Advanced Filters section if needed.
@@ -285,3 +315,8 @@
 
 - No unit tests for `programGenerator`, `programAnalysis`, `trainingMath`, or `db` normalization.
 - Recommended: Add tests in V2 Iteration 3 or later as a build-safety measure.
+
+## Known Limitations
+
+- Analytics family view now converts child/variation entries into the selected exercise unit, but non-load units (`bodyweight`, `time`, `distance`) still fall back to the broader app display behavior rather than a dedicated mixed-metric chart.
+- Completed-workout summaries outside the exercise progress modal still use some older direct-number rendering paths and may need the same formatter cleanup later.

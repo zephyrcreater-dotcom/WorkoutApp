@@ -8,6 +8,266 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
+## Current Handoff — Data Management UX Simplification + Unified Import/Export (Session 8)
+
+### What changed
+
+**Data Management is simpler**
+- The Settings → Data Management panel now centers on three primary sections:
+  - `Import Training Data`
+  - `Export Training Data`
+  - `Backup`
+- Technical CSV actions and copy helpers still exist, but they now live under collapsed sections:
+  - `AI Formatting Help`
+  - `Advanced CSV Options`
+
+**Unified import flow**
+- Added a new unified `Import Training Data` modal in `src/App.tsx`.
+- It accepts:
+  - workout history CSV
+  - exercise/baseline CSV
+  - pasted CSV/table text
+  - `.xlsx` / `.xlsm` workbooks with `Exercises` and/or `Workout History` sheets
+- The new parser in `src/lib/importers/trainingDataImport.ts` auto-detects:
+  - exercise baseline imports
+  - workout history imports
+  - mixed workbook imports containing both sections
+- Review is now grouped at the top level with:
+  - Exercise Matches / Baselines
+  - Workout History
+  - Conflicts / Needs Review
+  - Rows skipped or invalid
+
+**Unified export flow**
+- Added one primary export action: `Export Training Data`.
+- This downloads one Excel-compatible workbook file (`.xls`) containing:
+  - `Exercises`
+  - `Workout History`
+- The workbook export is generated in `src/lib/importers/exporters.ts` without a new dependency, using a multi-sheet Excel-compatible XML workbook format.
+- Advanced CSV exports remain available under `Advanced CSV Options`.
+
+**AI prompt cleanup**
+- Added one primary prompt in `src/lib/importers/importPrompts.ts`:
+  - `TRAINING_DATA_AI_PROMPT`
+- The main prompt now covers both:
+  - Exercises
+  - Workout History
+- Old separate prompts are no longer front-and-center in Data Management.
+- Header copy is simplified to:
+  - `Copy Headers`
+  - optional advanced per-section header copy buttons
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Open Settings → Data Management and confirm the panel now emphasizes Import Training Data, Export Training Data, and Backup.
+2. Confirm `Advanced CSV Options` is collapsed by default.
+3. Confirm `AI Formatting Help` is collapsed by default.
+4. Use `Copy AI Formatting Prompt` and verify clipboard output includes both Exercises and Workout History sections.
+5. Import an exercise baseline CSV through the new unified import modal.
+6. Import a workout history CSV through the new unified import modal.
+7. Import an `.xlsx` / `.xlsm` workbook with an `Exercises` tab and verify it routes into the exercise review.
+8. Import a workbook with `Exercises` and `Workout History` tabs and verify both sections appear in one review flow.
+9. Export Training Data and confirm the downloaded workbook contains `Exercises` and `Workout History` sheets.
+10. Confirm the older advanced CSV buttons still work.
+
+## Current Handoff — Importer Analytics + Baseline Fill Fix (Session 7)
+
+### What changed
+
+**Imported baselines now create analytics-visible history**
+- Exercise baseline imports no longer stop at `exerciseBaselines`.
+- `src/lib/importers/exerciseLibraryImport.ts` now creates real completed off-program sessions with:
+  - `name: "Imported Exercise Baselines"`
+  - `source: "exercise_baseline_import"`
+  - one representative logged set per imported exercise row
+- The importer also writes a matching `exercisePerformanceLog` entry for compatibility with existing recommendation/history helpers.
+- Deduping now checks imported baseline history keys so re-importing the same row does not create obvious duplicate analytics entries.
+
+**Baseline fill behavior**
+- Blank, missing, null, or zero baseline fields now count as safe auto-fill targets.
+- If a matched exercise has no meaningful existing baseline, imported baseline values are filled automatically.
+- If a matched exercise already has meaningful data, the review default is now `Add historical data` instead of silently replacing anything.
+- `Keep existing baseline` still leaves the baseline untouched; `Replace baseline` and `Keep newer baseline` require explicit choice.
+
+**Exercise analytics**
+- `ExerciseProgressPanel` now reads both:
+  - completed session history
+  - `exercisePerformanceLogs`
+- Analytics shows:
+  - most recent set
+  - most recent weight / reps / RPE
+  - e1RM (imported if present, calculated from the set if not)
+  - source label
+  - recent history list
+- If only one data point exists, the panel now shows the point/card plus:
+  - `One data point available. Add more sessions to show a trend.`
+- If no e1RM trend exists but history does, the panel shows recent history instead of looking blank.
+
+**Variation / family analytics**
+- Variation exercises can now be opened directly in analytics from the library variation cards.
+- Child exercise analytics shows its own exact history by default and also shows parent context (`Variation of ...`) when applicable.
+- Parent or child analytics can optionally enable `Include variations` to view the full exercise family.
+
+**Export updates**
+- Workout history CSV export now includes:
+  - imported baseline/history rows
+  - `source`
+  - `e1rm`
+- Exercise CSV headers/prompt schema now include:
+  - `source`
+  - `category`
+  - `baselineSource`
+  - `baselineUpdatedAt`
+
+### Important implementation note
+- Legacy `Set` values from the imported exercise sheet are treated as “number of sets represented by this baseline,” not expanded into repeated identical logged sets.
+- The importer creates one representative analytics set and preserves the multi-set context in notes / performance-log metadata. This avoids artificially inflating session volume.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Import an exercise baseline CSV and confirm `Imported Exercise Baselines` history becomes visible in analytics.
+2. Import a row into an exercise with zero/blank baseline and confirm the baseline auto-fills.
+3. Import a row into an exercise with existing meaningful baseline and confirm the default action is history-only rather than replace.
+4. Open analytics for a variation and confirm its exact history appears.
+5. Open analytics for a parent and confirm `Include variations` brings child history into the family view.
+6. Confirm most recent set shows weight, reps, RPE, e1RM, date, and source.
+7. Confirm one imported data point does not leave the chart area blank.
+8. Re-import the same baseline CSV and confirm duplicate history is skipped where possible.
+
+## Current Handoff — Exercise Baseline Importer + Import Merge Review (Session 6)
+
+### What changed
+
+**Exercise baseline data model**
+- Added `ExerciseBaseline` to `src/types/domain.ts` and `exerciseBaselines?: ExerciseBaseline[]` on `TrainingDatabase`.
+- Baselines are explicitly user-specific and separate from the global exercise library, so imported personal numbers do not reintroduce built-in seed weights.
+- `normalizeDatabase` now initializes `exerciseBaselines` and migrates baseline ownership during user-ID remaps.
+
+**Exercise import/export**
+- Added `src/lib/importers/exerciseLibraryImport.ts`.
+- Supported import sources:
+  - Iron Orbit exercise CSV
+  - legacy `Exercise, Weight, Set, Rep, RPE, e1RM` CSV
+  - legacy workbook `Exercises` tab from `.xlsx` / `.xlsm`
+  - pasted CSV in either supported CSV schema
+- Legacy workbook parsing rules:
+  - rows with text in `Exercise` and blanks in `Weight:Set:Rep:RPE:e1RM` are treated as category headers when they match known categories
+  - category context is preserved until the next category header
+  - blank rows are ignored
+  - text-only non-category rows are imported as exercises with no baseline
+- Exercise CSV export now includes baseline fields:
+  - `baselineWeight, baselineSets, baselineReps, baselineRpe, baselineE1RM, baselineSource, baselineUpdatedAt, notes`
+
+**Import merge review**
+- Added a dedicated exercise/baseline review flow in Settings → Data Management.
+- Review detects:
+  - matched existing exercises
+  - new custom exercises
+  - suggested variations
+  - safe baseline adds
+  - baseline conflicts
+- Merge behavior:
+  - no imported performance data → map/create exercise only, no baseline overwrite
+  - imported performance + no existing baseline → safe baseline add
+  - imported performance + existing baseline → default to keep existing baseline, never silently overwrite
+  - user can instead replace baseline, keep newer baseline, add historical data, create custom exercise, create variation, map to another exercise, or skip
+- Historical import fallback uses `exercisePerformanceLogs` instead of silently replacing a baseline.
+
+**Matching and variation support**
+- Expanded alias matching in `exerciseMatcher.ts` for legacy spreadsheet names including:
+  - `Comp Bench Press`
+  - `Incline DB Press`
+  - `Low Bar Squat`
+  - `Low Bar Squat (Paused)`
+  - `Low Bar Squat (Tempo)`
+  - `Paused Deadlifts`
+  - `BELTLESS Sumo Deadlift`
+  - `Barbell RDL`
+  - `DB Shoulder Press`
+  - `Cable AB Crunch`
+- Matcher now carries variation-parent suggestions for likely imported variations.
+
+**Settings / Data Management**
+- Added:
+  - `Import Exercises / Baselines`
+  - `Export Full Backup JSON`
+  - `Copy Workout History AI Prompt`
+  - `Copy Exercise Import AI Prompt`
+- The exercise import modal also includes:
+  - exercise-import AI prompt
+  - legacy sheet extraction prompt
+  - copyable exercise CSV headers
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Import an Iron Orbit exercises CSV and confirm baseline fields review correctly.
+2. Import a legacy workbook with an `Exercises` tab and confirm category rows are skipped as headers.
+3. Confirm `Comp Bench Press` maps to `Competition Bench Press`.
+4. Confirm `Incline DB Press` maps to `Incline Dumbbell Press`.
+5. Confirm `Low Bar Squat (Paused)` suggests a variation instead of silently mapping poorly.
+6. Import a row with baseline data into an exercise with no existing baseline and confirm it defaults to a safe add.
+7. Import baseline data into an exercise that already has a baseline and confirm the default action keeps the existing baseline.
+8. Choose `Replace baseline` and confirm the baseline updates only after explicit review.
+9. Choose `Add historical data` and confirm the baseline stays intact while a history log entry is added.
+10. Export Exercises CSV and confirm baseline columns are present.
+11. Fresh install behavior remains unchanged: no seeded fake starter weights.
+
+## Current Handoff — Import/Export + UI Cleanup (Session 5)
+
+### What changed
+
+**Import/Export foundation (`src/lib/importers/`)**
+- `importerTypes.ts` — Updated to the 15-column CSV schema: `date, workout_name, exercise_name, set_number, weight, unit, reps, rpe, rir, difficulty, notes, set_type, duration_seconds, distance, source`. Kept legacy `ImportRow`/`ImportResult` types for backward compat.
+- `exerciseMatcher.ts` — New. `matchImportedExerciseName(importedName, exercises)` returns `ExerciseMatchResult` with `confidence: high|medium|low`, `suggestedAction`, `needsReview`, and `reason`. Uses exact normalized match, alias table (comp squat → Competition Squat, bench → Competition/Barbell Bench Press, etc.), partial/substring match, and word-overlap scoring. High-confidence matches auto-link; medium/low go to review.
+- `csvWorkoutImport.ts` — New. `parseCSVText()` parses raw CSV text into `CSVImportRow[]` with warnings/errors. `buildImportReviewSummary()` groups rows by workout+exercise and runs exercise matching. `applyImportGroups()` writes confirmed groups into `db.sessions` as off-program completed sessions, deduplicates by `date+exerciseId+set_number+weight+reps+rpe`, tags source as `csv_import`.
+- `exporters.ts` — New. `exportExercisesCSV()`, `exportWorkoutHistoryCSV()`, `exportFullBackupJSON()`, and browser download helpers (`downloadExercisesCSV`, `downloadWorkoutHistoryCSV`, `downloadFullBackupJSON`).
+- `importPrompts.ts` — New. `AI_CSV_PROMPT` and `CSV_COLUMN_HEADERS` constants for the copy-prompt UI.
+
+**App.tsx — new components**
+- `Modal` — Generic full-screen overlay with sticky header and close button. Used as the mobile import flow container.
+- `ImportWorkoutCSVFlow` — Three-step CSV import: (1) file upload or paste + Copy AI Prompt button, (2) review summary with exercise match resolution, (3) done/result. Uses `ImportGroupRow` for per-exercise match review with inline exercise picker for overrides.
+- `DataManagementPanel` — New Panel in SettingsScreen. Export Exercises CSV, Export Workout History CSV, and Import Workout History CSV (opens `ImportWorkoutCSVFlow` in a Modal).
+
+**App.tsx — ProgressScreen cleanup**
+- ProgressScreen now accepts `updateDb` prop (passed from call site at line 622).
+- Removed inline `programGaps.map(...)` — replaced with `<ProgramGapPanel>` which already has "Show N secondary warnings" collapse/expand and group-by-category rendering.
+
+**App.tsx — LibraryScreen mobile editor modal**
+- Exercise editor panel is wrapped in a mobile overlay div: `fixed inset-0 z-50 overflow-y-auto bg-iron-950 xl:static xl:inset-auto xl:z-auto xl:overflow-visible xl:bg-transparent`.
+- On mobile (< xl), clicking Edit shows the editor as a full-screen overlay with a sticky header + close button.
+- On xl+, the div is `static` so the editor renders normally in the right grid column.
+
+### Validation
+- Lint: passing
+- Build: passing (tsc -b + vite build)
+
+### Manual verification checklist
+1. Settings → Data Management panel visible
+2. "Export Exercises CSV" downloads a valid CSV
+3. "Export Workout History CSV" downloads a valid CSV
+4. "Import Workout History CSV" opens the import modal
+5. Copy AI Prompt button copies the prompt text
+6. Paste a sample CSV → Parse & Review shows summary
+7. Exercise with "bench" maps to correct exercise (high confidence)
+8. Unknown exercise enters review flow, picker works
+9. Confirm import → sessions appear in Progress/Analytics
+10. Duplicate import attempt → duplicates skipped
+11. Analytics / ProgressScreen: Program Gaps show top issues first, secondary warnings collapsed
+12. On mobile (< 1280px viewport): clicking Edit on an exercise opens full-screen overlay
+13. Close/cancel in exercise editor overlay returns to list
+14. Lint + build pass
+
+---
+
 ## Current Handoff — Library UX Follow-Up (Session 4)
 
 ### What changed
@@ -1673,3 +1933,12 @@ If `@humanfs/core` breaks lint after a fresh install:
 ```bash
 npm install @humanfs/core@0.19.1 --no-save
 ```
+
+## Latest Session Notes
+
+- Analytics unit normalization fixed for exercise progress views.
+- `LoggedSet` now stores `unit`, and import paths preserve the original `lb`/`kg` unit on imported history rows.
+- Exercise analytics now choose display units by exercise first (`exercise.defaultUnit` when weight-based), then user unit fallback.
+- Most recent set, best e1RM, recent history, and chart points are converted into the selected display unit before rendering.
+- Workout history export now preserves per-set unit when available instead of always falling back to the exercise default.
+- `normalizeDatabase()` backfills missing historical set units from the exercise default or user unit for older local data.

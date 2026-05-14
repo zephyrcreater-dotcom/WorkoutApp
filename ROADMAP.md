@@ -1,5 +1,77 @@
 # ROADMAP.md
 
+## Data Management UX Simplification + Unified Import/Export — Completed (Session 8)
+
+### Delivered
+- Replaced the crowded Data Management button wall with:
+  - `Import Training Data`
+  - `Export Training Data`
+  - `Backup`
+- Added one unified import flow that auto-detects:
+  - exercise baseline CSV
+  - workout history CSV
+  - `.xlsx` / `.xlsm` workbooks with `Exercises` and/or `Workout History` sheets
+- Added one unified export action that downloads an Excel-compatible workbook with `Exercises` and `Workout History` sheets.
+- Consolidated prompt helpers into one main AI formatting prompt and tucked advanced CSV actions behind collapsed sections.
+
+### Next steps
+- If a true `.xlsx` file becomes important, add a lightweight workbook dependency or a ZIP-based writer.
+- Consider supporting multi-table pasted imports with repeated sections of the same type.
+- Decide whether split/block tabs should also join the unified export workbook later.
+
+## Importer Analytics + Baseline Fill Fix — Completed (Session 7)
+
+### Delivered
+- Imported exercise baseline rows now create analytics-visible history instead of only updating `exerciseBaselines`.
+- Blank/zero baseline values now auto-fill safely from imported data.
+- Meaningful existing baselines default to history-only conflict handling instead of silent overwrite.
+- Exercise analytics now shows imported/logged recent history, most recent set details, and one-point non-blank behavior.
+- Variation exercises can be viewed directly in analytics, and parent/child family analytics supports an `Include variations` view.
+- Workout history CSV export now includes `source` and `e1rm`, including imported baseline/history rows.
+
+### Next steps
+- Add an import-history audit view so users can inspect prior exercise baseline merges and dedupe decisions.
+- Consider expanding family analytics beyond explicit parent-child variations into broader `exerciseFamily` group rollups when that becomes useful.
+- Decide whether imported baseline representative sets should later support a richer “set count” display in analytics without overstating actual logged volume.
+
+## Exercise Baseline Importer + Merge Review — Completed (Session 6)
+
+### Delivered
+- Added exercise/baseline import support for:
+  - Iron Orbit exercise CSV
+  - legacy `Exercise, Weight, Set, Rep, RPE, e1RM` CSV
+  - legacy workbook `Exercises` tab in `.xlsx` / `.xlsm`
+  - pasted CSV in either supported schema
+- Added a separate per-user `exerciseBaselines` layer so imported personal performance stays distinct from the default exercise library.
+- Added conservative baseline merge review with no silent overwrite policy.
+- Added variation suggestions and expanded exercise aliases for legacy spreadsheet names.
+- Updated exercise CSV export to include baseline fields.
+- Expanded Data Management actions with exercise import and prompt-copy helpers.
+
+### Next steps
+- Add an import history log so users can review prior exercise/baseline merges later.
+- Add optional metadata merge controls for matched existing custom exercises when imported CSV contains richer library details.
+- Support legacy binary `.xls` workbooks if that format still matters for the source spreadsheet.
+- Reuse imported baselines in future weight-estimator logic without reintroducing seeded fake starter weights.
+
+## Import/Export + UI Cleanup Phase — Completed (Session 5)
+
+### Delivered
+- CSV workout history import with exercise matching, review flow, and duplicate detection.
+- Exercise CSV export and workout history CSV export.
+- AI prompt template (copy-to-clipboard) for converting training logs into the expected CSV format.
+- `DataManagementPanel` in Settings (Export Exercises CSV, Export Workout History CSV, Import Workout History CSV).
+- `exerciseMatcher.ts` — normalized alias matching for common abbreviations (comp squat, bench, paused bench, lat pulldown, cable tris, db incline, etc.).
+- ProgressScreen now uses `ProgramGapPanel` with built-in collapse: shows top critical issues, expands secondary via button.
+- LibraryScreen exercise editor: on mobile (< xl), clicking Edit opens a full-screen overlay instead of scrolling past the exercise list.
+
+### Next steps
+- Add program/block export (JSON) for sharing a block structure between devices.
+- Deepen exercise matcher: add edit-distance similarity for near-matches.
+- Add import history log so the user can see what was imported and when.
+- Add per-session delete for imported sessions in case of bad import.
+- Wire imported session data into Analytics progression charts.
+
 ## Supabase Persistence Phase 1 — Completed
 
 ## Split Template Library Cleanup — Completed
@@ -450,3 +522,8 @@ interface ExerciseFamily {
 - Program gap analysis, bodybuilding dashboard.
 - JSON import/export.
 - `normalizeDatabase` for backward compatibility.
+
+## Near-Term Follow-Up
+
+- Add lightweight tests for unit conversion helpers and analytics history normalization.
+- Sweep remaining workout-summary/read-only screens so all load displays use the shared exercise-unit formatter.

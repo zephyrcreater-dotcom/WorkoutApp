@@ -1,5 +1,51 @@
 # DECISIONS.md
 
+## Data Management UX Simplification + Unified Import/Export Decisions (Session 8)
+
+- Data Management should speak in user goals, not file formats. The primary actions are now `Import Training Data`, `Export Training Data`, and `Backup`.
+- Separate CSV tools remain available, but they are intentionally hidden under `Advanced CSV Options` so they do not dominate the default experience.
+- A single AI formatting prompt now covers both exercises and workout history. Legacy Exercises-tab support is still preserved, but it is no longer presented as a primary top-level concept.
+- Unified import should auto-detect workout-history CSV, exercise/baseline CSV, and supported workbook sheets instead of forcing the user to choose an importer first.
+- Unified export should prefer one spreadsheet file over several technical exports. In this pass the app uses an Excel-compatible multi-sheet `.xls` workbook format because no workbook library is currently installed.
+
+## Importer Analytics + Baseline Fill Decisions (Session 7)
+
+- Imported exercise baseline rows now become real analytics-visible history, not just stored baseline metadata. The importer writes a completed off-program session with `source: "exercise_baseline_import"` plus a matching `exercisePerformanceLog` entry.
+- For legacy baseline rows where `Set` means “number of sets represented,” the app stores one representative history set instead of cloning identical sets. This keeps trend analytics accurate enough without inflating fake session volume.
+- Blank or zero baseline values are treated as missing. Imported performance can safely auto-fill those values.
+- Meaningful non-zero existing baseline data is never silently replaced. Conflict defaults now bias toward `Add historical data` rather than overwrite.
+- Exercise analytics remains exact-exercise by default. Variation-family aggregation is opt-in via `Include variations`.
+- Parent/child analytics grouping is based on explicit variation relationships (`parentExerciseId`), not broader heuristic exercise-family matching.
+- A single imported data point should still produce a useful analytics view. The UI now favors a recent-performance card and a one-point message instead of looking empty.
+
+## Exercise Baseline Importer Decisions (Session 6)
+
+- Imported exercise baselines are stored separately from `Exercise` records in a user-scoped `exerciseBaselines` collection on `TrainingDatabase`. This keeps the global exercise library clean and prevents imported personal numbers from behaving like built-in defaults.
+- Seed/default exercises must still ship with blank/zero starting weights. Imported baseline data is explicitly personal history, not a seeded recommendation.
+- Exercise import supports three source modes only in this pass:
+  - Iron Orbit exercise CSV
+  - legacy `Exercise, Weight, Set, Rep, RPE, e1RM` CSV
+  - legacy workbook `Exercises` tab in `.xlsx` / `.xlsm`
+- Legacy category headers are preserved only as import context. They can help review and matching, but they should not override stronger exercise metadata from a confident match.
+- No silent overwrite policy:
+  - imported baseline + no existing baseline → safe add
+  - imported baseline + existing baseline → keep existing by default and require explicit user choice to replace
+- “Add historical data” is implemented through `exercisePerformanceLogs`, not through synthetic seeded sessions or fake planned weights.
+- Matched existing exercises are not automatically rewritten from imported metadata in this pass. The importer is focused on safe linking, custom creation, variation creation, and personal baseline merge behavior.
+- Variation detection is suggestion-based, not automatic. Likely variations can default to a `create_variation` recommendation, but the user still confirms through review.
+- Data Management remains the home for exercise import/export tools. The Library stays focused on browsing and editing exercises rather than acting as the main import workflow hub.
+
+## Import/Export Decisions (Session 5)
+
+- CSV import creates off-program `WorkoutSession` records only. It does not attempt to retroactively link imported sets to existing program blocks, templates, or planned exercises. This keeps import simple and non-destructive.
+- Import deduplication uses a fingerprint of `date + exerciseId + set_number + weight + reps + rpe`. Missing set_number fields weaken duplicate detection for same-day re-imports but do not block imports.
+- Exercise matching uses normalized aliases (hand-written table) + substring matching + word-overlap scoring. Auto-links on "high" confidence; flags medium/low for user review. This prevents silent duplicate exercises without requiring exact name matching.
+- Imported sessions are tagged `offProgram: true` and carry a `notes: "Imported from CSV"` field. This distinguishes them from programmed sessions in future analytics filtering.
+- The AI prompt template (in `importPrompts.ts`) is a copyable constant, not a live API call. The user copies it, pastes their log into any AI assistant, and pastes the resulting CSV back into the app.
+- The mobile exercise editor overlay uses CSS-only Tailwind breakpoints (`xl:static`) rather than a JS resize listener. This avoids hydration issues and extra state.
+- `DataManagementPanel` is added to Settings, not Library. Library already has enough controls; Settings is the natural home for data tools.
+- Program Gaps in ProgressScreen now re-uses `ProgramGapPanel` (which already had group-by-category + show/hide secondary logic). No duplicate rendering code.
+
 ## Product Decisions
 
 - The app is named Iron Orbit Training.
@@ -203,3 +249,9 @@
 - Do not randomly generate workouts without considering programming principles.
 - Do not start cloud sync or ML before the local-first programming flow is clear.
 - Do not perform large unrelated rewrites in future sessions.
+
+## Latest Decisions
+
+- Store per-set units on `LoggedSet` so imported and logged history can be converted accurately at read time instead of assuming the user unit.
+- Treat the exercise progress modal as exercise-unit driven: display `lb`/`kg` from the selected exercise (or parent in family view) and convert imported/logged records into that unit before comparing best e1RM or plotting history.
+- Preserve original imported/logged set units in workout history export rather than silently rewriting them to the exercise default.

@@ -2,6 +2,7 @@ import { createId, nowIso } from "./ids";
 import type {
   DashboardMetric,
   Exercise,
+  ExerciseUnit,
   GymExerciseAdjustment,
   LoggedExercise,
   LoggedSet,
@@ -12,6 +13,7 @@ import type {
   SetPerformanceStatus,
   TrainingBlock,
   TrainingDatabase,
+  UnitPreference,
   UserProfile,
   WorkoutSession
 } from "../types/domain";
@@ -57,6 +59,50 @@ export function roundToIncrement(weight: number, increment = 5): number {
   return Math.max(0, Math.round(weight / increment) * increment);
 }
 
+export function isWeightUnit(unit?: ExerciseUnit | UnitPreference | null): unit is UnitPreference {
+  return unit === "lb" || unit === "kg";
+}
+
+export function toKg(value?: number | null, unit?: ExerciseUnit | UnitPreference | null): number | undefined {
+  if (value === undefined || value === null || Number.isNaN(value)) return undefined;
+  if (!isWeightUnit(unit) || unit === "kg") return value;
+  return value * 0.45359237;
+}
+
+export function toLb(value?: number | null, unit?: ExerciseUnit | UnitPreference | null): number | undefined {
+  if (value === undefined || value === null || Number.isNaN(value)) return undefined;
+  if (!isWeightUnit(unit) || unit === "lb") return value;
+  return value * 2.2046226218;
+}
+
+export function convertWeight(
+  value?: number | null,
+  fromUnit?: ExerciseUnit | UnitPreference | null,
+  toUnit?: ExerciseUnit | UnitPreference | null
+): number | undefined {
+  if (value === undefined || value === null || Number.isNaN(value)) return undefined;
+  if (!isWeightUnit(fromUnit) || !isWeightUnit(toUnit) || fromUnit === toUnit) return value;
+  return toUnit === "kg" ? toKg(value, fromUnit) : toLb(value, fromUnit);
+}
+
+export function getExerciseDisplayUnit(
+  exercise?: Pick<Exercise, "defaultUnit"> | null,
+  user?: Pick<UserProfile, "unit"> | null,
+  fallbackUnit?: ExerciseUnit | UnitPreference | null,
+): UnitPreference {
+  if (isWeightUnit(exercise?.defaultUnit)) return exercise.defaultUnit;
+  if (user?.unit) return user.unit;
+  if (isWeightUnit(fallbackUnit)) return fallbackUnit;
+  return "lb";
+}
+
+export function formatWeight(value?: number | null, unit?: ExerciseUnit | UnitPreference | null): string {
+  if (value === undefined || value === null || Number.isNaN(value)) return "-";
+  const digits = unit === "kg" ? 1 : 0;
+  const rounded = digits === 0 ? Math.round(value) : Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(digits).replace(/\.0$/, "");
+}
+
 export function estimateOneRepMax(weight: number, reps: number, rpe = 10): number {
   if (weight <= 0 || reps <= 0) return 0;
   const percentage = lookupRpePercent(reps, rpe);
@@ -64,7 +110,8 @@ export function estimateOneRepMax(weight: number, reps: number, rpe = 10): numbe
   return Math.round(weight * (1 + reps / 30));
 }
 
-export function calculateE1RMFromSet(set: Pick<LoggedSet, "actualWeight" | "actualReps" | "actualRpe" | "kind" | "skipped">): number {
+export function calculateE1RMFromSet(set: Pick<LoggedSet, "actualWeight" | "actualReps" | "actualRpe" | "kind" | "skipped" | "e1rm">): number {
+  if (typeof set.e1rm === "number" && set.e1rm > 0) return set.e1rm;
   if (set.skipped || set.kind === "warmup" || set.actualWeight <= 0 || set.actualReps <= 0) return 0;
   return estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10);
 }
