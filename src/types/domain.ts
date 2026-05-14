@@ -590,6 +590,7 @@ export interface WorkoutSession {
   readiness?: ReadinessCheckIn;
   loggedExercises: LoggedExercise[];
   notes?: string;
+  source?: string;
   recommendations: Recommendation[];
   offProgram?: boolean;
 }
@@ -612,7 +613,30 @@ export interface ExercisePerformanceLog {
   unit: ExerciseUnit;
   rpe?: number;
   rir?: number;
+  source?: string;
   notes?: string;
+}
+
+export interface ExerciseBaseline {
+  id: ID;
+  exerciseId: ID;
+  userId: ID;
+  baselineWeight?: number;
+  baselineSets?: number;
+  baselineReps?: number;
+  baselineRpe?: number;
+  baselineE1RM?: number;
+  lastWeight?: number;
+  lastSets?: number;
+  lastReps?: number;
+  lastRpe?: number;
+  lastE1RM?: number;
+  unit?: UnitPreference;
+  source?: string;
+  category?: string;
+  notes?: string;
+  importedAt?: string;
+  updatedAt: string;
 }
 
 export interface LoggedExercise {
@@ -635,6 +659,7 @@ export interface LoggedSet {
   setNumber?: number;
   plannedWeight?: number;
   actualWeight: number;
+  unit?: ExerciseUnit;
   plannedReps?: number;
   actualReps: number;
   targetRpe?: number;
@@ -650,6 +675,7 @@ export interface LoggedSet {
   added?: boolean;
   performanceScore?: number;
   performanceStatus?: SetPerformanceStatus;
+  e1rm?: number;
   completedAt: string;
   notes?: string;
 }
@@ -765,6 +791,7 @@ export interface TrainingDatabase {
   programs: Program[];
   sessions: WorkoutSession[];
   exercisePerformanceLogs?: ExercisePerformanceLog[];
+  exerciseBaselines?: ExerciseBaseline[];
   gymExerciseVariants?: GymExerciseVariant[];
   readiness: ReadinessCheckIn[];
   prs: PR[];

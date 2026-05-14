@@ -83,11 +83,16 @@ import {
 import {
   calculateMuscleVolume,
   calculateReadinessScore,
+  calculateE1RMFromSet,
   calculateSessionExerciseE1RM,
   calculateSetPerformanceScore,
   calculateWorkoutScore,
+  convertWeight,
   detectWeakPointTags,
   estimateOneRepMax,
+  formatWeight,
+  getExerciseDisplayUnit,
+  isWeightUnit,
   learnGymExerciseAdjustment,
   powerliftingMetrics,
   readinessAdjustment,
@@ -101,12 +106,39 @@ import {
   isTrainingWeekComplete,
   generateWeekReview
 } from "./lib/trainingMath";
+import { parseCSVText, buildImportReviewSummary, applyImportGroups, applyMatchOverride } from "./lib/importers/csvWorkoutImport";
+import { downloadExercisesCSV, downloadFullBackupJSON, downloadTrainingDataWorkbook, downloadWorkoutHistoryCSV } from "./lib/importers/exporters";
+import {
+  buildExerciseImportReviewSummary,
+  parseExerciseImportCSVText,
+  parseExerciseImportFile,
+  applyExerciseImportReview,
+} from "./lib/importers/exerciseLibraryImport";
+import {
+  AI_CSV_PROMPT,
+  CSV_COLUMN_HEADERS,
+  EXERCISE_IMPORT_AI_PROMPT,
+  EXERCISE_IMPORT_COLUMN_HEADERS,
+  LEGACY_EXERCISE_SHEET_AI_PROMPT,
+  TRAINING_DATA_AI_PROMPT,
+  TRAINING_DATA_HEADER_SECTIONS,
+} from "./lib/importers/importPrompts";
+import { parseTrainingDataFile, parseTrainingDataText } from "./lib/importers/trainingDataImport";
+import type {
+  ExerciseImportAction,
+  ExerciseImportReviewItem,
+  ExerciseImportReviewSummary,
+  ImportReviewSummary,
+  ImportRowGroup,
+  UnifiedTrainingDataParseResult,
+} from "./lib/importers/importerTypes";
 import type {
   BlockType,
   CompoundSettings,
   DayFocus,
   EquipmentCategory,
   Exercise,
+  ExerciseBaseline,
   ExerciseCategoryLabel,
   ExerciseRole,
   ExerciseUnit,
@@ -615,7 +647,7 @@ function App() {
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
           {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} />}
-          {screen === "progress" && <ProgressScreen db={db} user={currentUser} />}
+          {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
       </main>
@@ -1350,6 +1382,7 @@ function LiveLogger({
         plannedWeight: currentPlannedSet?.plannedWeight ?? selectedActualSet?.plannedWeight,
         plannedReps: currentPlannedSet?.targetReps ?? selectedActualSet?.plannedReps,
         actualWeight,
+        unit: selectedActualSet?.unit || liveExercise.defaultUnit || user.unit,
         actualReps,
         targetRpe: currentPlannedSet?.targetRpe ?? selectedActualSet?.targetRpe,
         actualRpe: setDraft.actualRpe ? Math.min(10, Math.max(0, Number(setDraft.actualRpe))) || undefined : undefined,
@@ -1407,6 +1440,7 @@ function LiveLogger({
       plannedWeight: currentPlannedSet?.plannedWeight,
       plannedReps: currentPlannedSet?.targetReps,
       actualWeight,
+      unit: liveExercise.defaultUnit || user.unit,
       actualReps,
       targetRpe: currentPlannedSet?.targetRpe,
       actualRpe: setDraft.actualRpe ? Math.min(10, Math.max(0, Number(setDraft.actualRpe))) || undefined : undefined,
@@ -1488,6 +1522,7 @@ function LiveLogger({
       plannedWeight: currentPlannedSet?.plannedWeight,
       plannedReps: currentPlannedSet?.targetReps,
       actualWeight: 0,
+      unit: liveExercise.defaultUnit || user.unit,
       actualReps: 0,
       targetRpe: currentPlannedSet?.targetRpe,
       setRating: 1 as SetRating,
@@ -1584,6 +1619,7 @@ function LiveLogger({
             plannedSetId: ps.id,
             plannedReps: ps.targetReps,
             actualWeight: 0,
+            unit: liveExercise.defaultUnit || user.unit,
             actualReps: 0,
             targetRpe: ps.targetRpe,
             setRating: 1 as SetRating,
@@ -3972,6 +4008,7 @@ function LibraryScreen({
                                         {child.variationType && <p className="text-[0.68rem] text-iron-500">{child.variationType}</p>}
                                       </div>
                                       <div className="flex shrink-0 gap-1">
+                                        <button className="btn-ghost" onClick={() => setProgressExerciseId(child.id)} title="Progress chart"><BarChart3 className="h-3.5 w-3.5" /></button>
                                         <button className="btn-ghost" onClick={() => startEditExercise(child)} title="Edit"><Pencil className="h-3.5 w-3.5" /></button>
                                         <button className="btn-ghost" onClick={() => duplicateExercise(child)} title="Duplicate"><Copy className="h-3.5 w-3.5" /></button>
                                         {child.ownerUserId ? (
@@ -3994,6 +4031,15 @@ function LibraryScreen({
                 </div>
               </div>
             </div>
+            <div className={editingExerciseId ? "fixed inset-0 z-50 overflow-y-auto bg-iron-950 xl:static xl:inset-auto xl:z-auto xl:overflow-visible xl:bg-transparent" : ""}>
+              {editingExerciseId && (
+                <div className="xl:hidden sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-iron-950 px-4 py-3 mb-2">
+                  <p className="font-black text-sm">Edit Exercise</p>
+                  <button className="btn-ghost" onClick={() => { setEditingExerciseId(undefined); setDraft(emptyDraft); }} aria-label="Close editor">
+                    <X className="h-5 w-5" />
+                  </button>
+                </div>
+              )}
             <Panel title={editingExerciseId ? "Edit Exercise" : "Add Exercise"} icon={editingExerciseId ? Pencil : Plus}>
               <div className="space-y-3">
                 {editingExerciseId && (() => {
@@ -4132,12 +4178,138 @@ function LibraryScreen({
                 )}
               </div>
             </Panel>
+            </div>
           </section>
           {progressExercise && <ExerciseProgressPanel db={db} user={user} exercise={progressExercise} onClose={() => setProgressExerciseId(undefined)} />}
         </>
       )}
     </div>
   );
+}
+
+function collectVariationFamilyIds(exercises: Exercise[], rootExerciseId: string): string[] {
+  const seen = new Set<string>();
+  const queue = [rootExerciseId];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current || seen.has(current)) continue;
+    seen.add(current);
+    exercises
+      .filter((exercise) => exercise.parentExerciseId === current)
+      .forEach((exercise) => {
+        if (!seen.has(exercise.id)) queue.push(exercise.id);
+      });
+  }
+  return Array.from(seen);
+}
+
+type ExerciseHistoryEntry = {
+  id: string;
+  exerciseId: string;
+  exerciseName: string;
+  date: string;
+  label: string;
+  weight?: number;
+  unit?: ExerciseUnit;
+  reps?: number;
+  rpe?: number;
+  e1rm?: number;
+  source: string;
+  sourceLabel: string;
+  setNumber?: number;
+};
+
+function getLoggedSetUnit(set: Pick<LoggedSet, "unit">, exercise?: Exercise, user?: UserProfile): ExerciseUnit {
+  return set.unit || exercise?.defaultUnit || user?.unit || "lb";
+}
+
+function getEntryDisplayValues(entry: ExerciseHistoryEntry, displayUnit: "lb" | "kg") {
+  return {
+    weight: convertWeight(entry.weight, entry.unit, displayUnit),
+    e1rm: convertWeight(entry.e1rm, entry.unit, displayUnit),
+  };
+}
+
+function collectExerciseHistoryEntries(params: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  exerciseIds: string[];
+}): ExerciseHistoryEntry[] {
+  const { db, user, exerciseIds } = params;
+  const idSet = new Set(exerciseIds);
+  const entries: ExerciseHistoryEntry[] = [];
+
+  db.sessions
+    .filter((session) => session.userId === user.id && session.status === "completed")
+    .forEach((session) => {
+      session.loggedExercises
+        .filter((logged) => idSet.has(logged.exerciseId))
+        .forEach((logged) => {
+          const exercise = db.exercises.find((item) => item.id === logged.exerciseId);
+          logged.sets
+            .filter((set) => isCompletedValidSet(set))
+            .forEach((set) => {
+              const setUnit = getLoggedSetUnit(set, exercise, user);
+              entries.push({
+                id: `session:${session.id}:${logged.id}:${set.id}`,
+                exerciseId: logged.exerciseId,
+                exerciseName: exercise?.name || logged.exerciseId,
+                date: set.completedAt || session.completedAt || session.startedAt,
+                label: new Date(set.completedAt || session.completedAt || session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+                weight: set.actualWeight,
+                unit: setUnit,
+                reps: set.actualReps,
+                rpe: set.actualRpe,
+                e1rm: calculateE1RMFromSet(set) || undefined,
+                source: session.source || "logged_workout",
+                sourceLabel: session.source === "exercise_baseline_import"
+                  ? "Imported baseline"
+                  : session.source === "csv_import"
+                  ? "Imported workout"
+                  : "Logged workout",
+                setNumber: set.setNumber,
+              });
+            });
+        });
+    });
+
+  (db.exercisePerformanceLogs || [])
+    .filter((log) => log.userId === user.id && idSet.has(log.exerciseId))
+    .forEach((log) => {
+      const exercise = db.exercises.find((item) => item.id === log.exerciseId);
+      entries.push({
+        id: `log:${log.id}`,
+        exerciseId: log.exerciseId,
+        exerciseName: exercise?.name || log.exerciseId,
+        date: `${log.date}T12:00:00.000Z`,
+        label: new Date(`${log.date}T12:00:00.000Z`).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        weight: log.weight,
+        unit: isWeightUnit(log.unit) ? log.unit : exercise?.defaultUnit || user.unit,
+        reps: log.reps,
+        rpe: log.rpe,
+        e1rm: log.e1rm,
+        source: log.source || "exercise_performance_log",
+        sourceLabel: log.source === "exercise_baseline_import" ? "Imported baseline" : "Exercise log",
+      });
+    });
+
+  const deduped = new Map<string, ExerciseHistoryEntry>();
+  entries.forEach((entry) => {
+    const key = [
+      entry.source,
+      entry.exerciseId,
+      entry.date.slice(0, 10),
+      entry.setNumber ?? 1,
+      entry.weight ?? "",
+      entry.unit ?? "",
+      entry.reps ?? "",
+      entry.rpe ?? "",
+      entry.e1rm ?? "",
+    ].join("|");
+    if (!deduped.has(key)) deduped.set(key, entry);
+  });
+
+  return Array.from(deduped.values()).sort((a, b) => b.date.localeCompare(a.date));
 }
 
 function ExerciseProgressPanel({
@@ -4152,53 +4324,74 @@ function ExerciseProgressPanel({
   onClose: () => void;
 }) {
   const [graphMode, setGraphMode] = useState<"overall" | "current-block">("overall");
+  const [includeVariations, setIncludeVariations] = useState(false);
 
   const completedSessions = db.sessions.filter((s) => s.userId === user.id && s.status === "completed");
-  const loggedSetCount = completedSessions
-    .flatMap((s) => s.loggedExercises.filter((l) => l.exerciseId === exercise.id))
-    .flatMap((l) => l.sets.filter(isCompletedValidSet))
-    .length;
-  const structuredLogs = (db.exercisePerformanceLogs || []).filter((log) => log.userId === user.id && log.exerciseId === exercise.id);
+  const parentExercise = exercise.parentExerciseId
+    ? db.exercises.find((item) => item.id === exercise.parentExerciseId)
+    : undefined;
+  const exactExerciseIds = [exercise.id];
+  const familyExerciseIds = includeVariations
+    ? collectVariationFamilyIds(db.exercises, exercise.isVariation && parentExercise ? parentExercise.id : exercise.id)
+    : exactExerciseIds;
+  const historyEntries = useMemo(
+    () => collectExerciseHistoryEntries({ db, user, exerciseIds: familyExerciseIds }),
+    [db, user, familyExerciseIds]
+  );
+  const displayUnit = getExerciseDisplayUnit(
+    includeVariations && exercise.isVariation && parentExercise ? parentExercise : exercise,
+    user
+  );
+  const loggedSetCount = historyEntries.length;
+  const structuredLogs = (db.exercisePerformanceLogs || []).filter((log) => log.userId === user.id && familyExerciseIds.includes(log.exerciseId));
+  const latestEntry = historyEntries[0];
+  const bestE1rm = Math.max(
+    0,
+    ...historyEntries.map((entry) => convertWeight(entry.e1rm, entry.unit, displayUnit) || 0),
+    ...structuredLogs.map((log) => convertWeight(log.e1rm, log.unit, displayUnit) || 0),
+  );
+  const latestEntryValues = latestEntry ? getEntryDisplayValues(latestEntry, displayUnit) : undefined;
 
-  const overallPoints = completedSessions
-    .map((session) => {
-      const log = session.loggedExercises.find((item) => item.exerciseId === exercise.id);
-      if (!log) return undefined;
-      const value = calculateSessionExerciseE1RM(log);
-      if (!value) return undefined;
-      return {
-        label: new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-        value,
-        date: session.startedAt
-      };
-    })
-    .filter((p): p is { label: string; value: number; date: string } => Boolean(p))
+  const overallPoints = historyEntries
+    .filter((entry) => entry.e1rm && entry.e1rm > 0)
+    .map((entry) => ({
+      label: entry.label,
+      value: convertWeight(entry.e1rm, entry.unit, displayUnit) as number,
+      date: entry.date
+    }))
+    .filter((entry) => entry.value > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
 
   const activeBlock = db.programs.find((p) => p.userId === user.id && p.status === "active")?.blocks[0];
   const currentBlockPoints = activeBlock
     ? completedSessions
         .filter((s) => s.blockId === activeBlock.id)
-        .map((session) => {
-          const log = session.loggedExercises.find((item) => item.exerciseId === exercise.id);
-          if (!log) return undefined;
-          const value = calculateSessionExerciseE1RM(log);
-          if (!value) return undefined;
+        .flatMap((session) => {
           const workoutDay = activeBlock.weeks.flatMap((w) => w.workouts).find((d) => d.id === session.workoutDayId);
           const weekNum = session.weekNumber ?? workoutDay?.weekNumber;
           const dayNum = workoutDay?.dayIndex;
           const label = weekNum && dayNum ? `W${weekNum}D${dayNum}` : weekNum ? `W${weekNum}` : new Date(session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-          return { label, value, date: session.startedAt };
+          return session.loggedExercises
+            .filter((logged) => familyExerciseIds.includes(logged.exerciseId))
+            .map((logged) => {
+              const exerciseForLog = db.exercises.find((item) => item.id === logged.exerciseId);
+              const loggedUnit = logged.sets.find((set) => isWeightUnit(set.unit))?.unit
+                || exerciseForLog?.defaultUnit
+                || user.unit;
+              const value = convertWeight(calculateSessionExerciseE1RM(logged), loggedUnit, displayUnit);
+              if (!value) return undefined;
+              return { label, value, date: session.startedAt };
+            });
         })
         .filter((p): p is { label: string; value: number; date: string } => Boolean(p))
         .sort((a, b) => a.date.localeCompare(b.date))
     : [];
 
   const activePoints = graphMode === "current-block" ? currentBlockPoints : overallPoints;
-  const hasHistory = overallPoints.length > 0 || loggedSetCount > 0 || structuredLogs.length > 0;
-  const bestE1rm = Math.max(0, ...overallPoints.map((p) => p.value), ...structuredLogs.map((log) => log.e1rm || 0));
+  const hasHistory = historyEntries.length > 0 || structuredLogs.length > 0;
   const isStrengthLift = exercise.category === "barbell" || exercise.kind?.includes("competition-lift") || exercise.kind?.includes("variation");
   const chartTitle = isStrengthLift ? "e1RM trend" : "Estimated progress";
+  const hasVariationFamily = collectVariationFamilyIds(db.exercises, exercise.isVariation && parentExercise ? parentExercise.id : exercise.id).length > 1;
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
@@ -4208,15 +4401,33 @@ function ExerciseProgressPanel({
             <p className="label">Exercise Progress</p>
             <h2 className="text-2xl font-black">{exercise.name}</h2>
             <p className="mt-1 text-sm text-iron-300">{exercise.category} · {exercise.movementPattern}</p>
+            {parentExercise && <p className="mt-1 text-xs text-iron-400">Variation of {parentExercise.name}</p>}
           </div>
           <button className="btn-ghost" onClick={onClose}>Close</button>
         </div>
         {hasHistory ? (
           <>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
-              <Metric label="Logged sets" value={loggedSetCount + structuredLogs.length} />
-              <Metric label="Best e1RM" value={bestE1rm || "-"} unit={bestE1rm ? user.unit : undefined} />
+              <Metric label="History entries" value={loggedSetCount} />
+              <Metric label="Best e1RM" value={bestE1rm ? formatWeight(bestE1rm, displayUnit) : "-"} unit={bestE1rm ? displayUnit : undefined} />
             </div>
+            {latestEntry && (
+              <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] p-3">
+                <p className="label">Most recent</p>
+                <p className="mt-1 text-lg font-black text-white">
+                  {latestEntryValues?.weight ? `${formatWeight(latestEntryValues.weight, displayUnit)} ${displayUnit}` : "-"}
+                  {latestEntry.reps ? ` × ${latestEntry.reps}` : ""}
+                  {latestEntry.rpe ? ` @ RPE ${latestEntry.rpe}` : ""}
+                </p>
+                <p className="mt-1 text-sm text-volt">
+                  {latestEntryValues?.e1rm ? `e1RM ${formatWeight(latestEntryValues.e1rm, displayUnit)} ${displayUnit}` : "No e1RM available"}
+                </p>
+                <p className="mt-1 text-xs text-iron-400">
+                  {latestEntry.sourceLabel} — {new Date(latestEntry.date).toLocaleDateString()}
+                  {latestEntry.exerciseId !== exercise.id ? ` · ${latestEntry.exerciseName}` : ""}
+                </p>
+              </div>
+            )}
             <div className="mt-4 flex gap-2">
               <button className={`rounded-lg px-3 py-1.5 text-xs font-bold ${graphMode === "overall" ? "bg-volt text-iron-950" : "bg-white/10 text-iron-300"}`} onClick={() => setGraphMode("overall")}>Overall</button>
               <button
@@ -4227,6 +4438,14 @@ function ExerciseProgressPanel({
               >
                 Current Block
               </button>
+              {hasVariationFamily && (
+                <button
+                  className={`rounded-lg px-3 py-1.5 text-xs font-bold ${includeVariations ? "bg-steel text-white" : "bg-white/10 text-iron-300"}`}
+                  onClick={() => setIncludeVariations((value) => !value)}
+                >
+                  {includeVariations ? "Family view on" : "Include variations"}
+                </button>
+              )}
             </div>
             {graphMode === "current-block" && !activeBlock && (
               <p className="mt-2 text-xs text-iron-400">No active block — activate a program to use Current Block mode.</p>
@@ -4234,11 +4453,42 @@ function ExerciseProgressPanel({
             {graphMode === "current-block" && activeBlock && currentBlockPoints.length === 0 && (
               <p className="mt-2 text-xs text-iron-400">No sessions logged for this exercise in the current block yet.</p>
             )}
-            {activePoints.length > 0 ? <ExerciseE1rmChart points={activePoints} unit={user.unit} title={chartTitle} /> : null}
+            {activePoints.length > 0 ? <ExerciseE1rmChart points={activePoints} unit={displayUnit} title={chartTitle} /> : null}
+            {activePoints.length === 1 && (
+              <p className="mt-2 text-xs text-iron-400">One data point available. Add more sessions to show a trend.</p>
+            )}
+            {activePoints.length === 0 && (
+              <p className="mt-2 text-xs text-iron-400">No e1RM trend data yet for this view, but recent history is available below.</p>
+            )}
+            <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] p-3">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <p className="font-black">Recent history</p>
+                <p className="text-xs text-iron-400">{includeVariations ? "Family view" : "Exact exercise"}</p>
+              </div>
+              <div className="space-y-2">
+                {historyEntries.slice(0, 8).map((entry) => {
+                  const displayValues = getEntryDisplayValues(entry, displayUnit);
+                  return (
+                  <div key={entry.id} className="rounded-lg bg-iron-950/55 p-2.5">
+                    <p className="text-sm font-bold text-white">
+                      {displayValues.weight ? `${formatWeight(displayValues.weight, displayUnit)} ${displayUnit}` : "-"}
+                      {entry.reps ? ` × ${entry.reps}` : ""}
+                      {entry.rpe ? ` @ RPE ${entry.rpe}` : ""}
+                    </p>
+                    <p className="text-xs text-volt">{displayValues.e1rm ? `e1RM ${formatWeight(displayValues.e1rm, displayUnit)} ${displayUnit}` : "No e1RM available"}</p>
+                    <p className="mt-1 text-[0.72rem] text-iron-400">
+                      {entry.sourceLabel} — {new Date(entry.date).toLocaleDateString()}
+                      {entry.exerciseId !== exercise.id ? ` · ${entry.exerciseName}` : ""}
+                    </p>
+                  </div>
+                  );
+                })}
+              </div>
+            </div>
           </>
         ) : (
           <div className="mt-4">
-            <EmptyState title="No logged data yet" detail="Once you complete workouts with this exercise, your progress chart will appear here." />
+            <EmptyState title="No logged or imported data yet" detail="Import baseline history or complete workouts with this exercise to populate analytics." />
           </div>
         )}
       </section>
@@ -4246,7 +4496,7 @@ function ExerciseProgressPanel({
   );
 }
 
-function ExerciseE1rmChart({ points, unit, title = "e1RM trend" }: { points: { label: string; value: number }[]; unit: string; title?: string }) {
+function ExerciseE1rmChart({ points, unit, title = "e1RM trend" }: { points: { label: string; value: number }[]; unit: "lb" | "kg"; title?: string }) {
   const width = 560;
   const height = 220;
   const padding = 34;
@@ -4274,7 +4524,7 @@ function ExerciseE1rmChart({ points, unit, title = "e1RM trend" }: { points: { l
           <g key={`${point.label}-${point.x}`}>
             <circle cx={point.x} cy={point.y} r="5" fill="#a3ff12" />
             <text x={point.x} y={height - 8} textAnchor="middle" fontSize="12" fill="#94a3b8">{point.label}</text>
-            <text x={point.x} y={point.y - 10} textAnchor="middle" fontSize="12" fill="#f8fafc">{point.value}</text>
+            <text x={point.x} y={point.y - 10} textAnchor="middle" fontSize="12" fill="#f8fafc">{formatWeight(point.value, unit)}</text>
           </g>
         ))}
       </svg>
@@ -5335,7 +5585,7 @@ function CompletedWorkoutReview({
           weight: Math.max(...validSets.map((set) => set.actualWeight)),
           e1rm: calculateSessionExerciseE1RM(logged) || undefined,
           averageSetRating: Number((validSets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / validSets.length).toFixed(1)),
-          unit: exercise?.defaultUnit || user.unit,
+          unit: validSets.find((set) => isWeightUnit(set.unit))?.unit || exercise?.defaultUnit || user.unit,
           rpe: safeAverageRpe(validSets) || undefined,
           notes: logged.notes
         });
@@ -5510,7 +5760,7 @@ function WeekReviewPanel({
   );
 }
 
-function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile }) {
+function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: UserProfile; updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void> }) {
   const metrics = powerliftingMetrics(db, user);
   const weekly = summarizeWeek(db, user);
   const topSets = recentTopSets(db.sessions, user.id);
@@ -5519,7 +5769,6 @@ function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile 
   const weeklyHardSets = recentSessions.flatMap((s) => s.loggedExercises).flatMap((log) => log.sets.filter((set) => !set.skipped && set.kind !== "warmup"));
   const weeklyAvgRpe = safeAverageRpe(weeklyHardSets);
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
-  const programGaps = analyzeProgramGaps(activeProgram, db);
 
   return (
     <div className="space-y-5">
@@ -5554,11 +5803,7 @@ function ProgressScreen({ db, user }: { db: TrainingDatabase; user: UserProfile 
           <Metric label="Sets logged" value={weeklyHardSets.length} />
           <Metric label="Avg RPE" value={weeklyAvgRpe ? weeklyAvgRpe.toFixed(1) : "-"} />
         </Panel>
-        <Panel title="Program Gaps" icon={ShieldAlert}>
-          <div className="space-y-2">
-            {programGaps.length ? programGaps.map((gap) => <ProgramGapCard key={gap.id} gap={gap} db={db} />) : <EmptyState title="No major program gaps" detail="The active program covers the main balance checks." />}
-          </div>
-        </Panel>
+        <ProgramGapPanel db={db} user={user} program={activeProgram} updateDb={updateDb} />
       </section>
     </div>
   );
@@ -5954,6 +6199,9 @@ function SettingsScreen({
           </div>
         </Panel>
       </section>
+      <section className="grid gap-4">
+        <DataManagementPanel db={db} user={user} updateDb={updateDb} importDb={importDb} />
+      </section>
       <GymScreen db={db} user={user} updateDb={updateDb} embedded />
     </div>
   );
@@ -6117,7 +6365,7 @@ function finishWorkoutInDraft(draft: TrainingDatabase, user: UserProfile, target
       weight: Math.max(...validSets.map((set) => set.actualWeight)),
       e1rm: calculateSessionExerciseE1RM(logged) || undefined,
       averageSetRating,
-      unit: exercise?.defaultUnit || user.unit,
+      unit: validSets.find((set) => isWeightUnit(set.unit))?.unit || exercise?.defaultUnit || user.unit,
       rpe: safeAverageRpe(validSets) || undefined,
       notes: logged.notes
     });
@@ -6652,6 +6900,1212 @@ function cloneProgramAsActive(program: Program): Program {
   }));
   cloned.blocks.forEach((block) => syncActiveBlockProgress(block, []));
   return cloned;
+}
+
+// ---------------------------------------------------------------------------
+// Modal — full-screen overlay for mobile editors
+// ---------------------------------------------------------------------------
+
+function Modal({
+  open,
+  onClose,
+  title,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title: string;
+  children: ReactNode;
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-iron-950 overflow-y-auto">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-white/10 bg-iron-950 px-4 py-3">
+        <p className="font-black text-white">{title}</p>
+        <button className="btn-ghost" onClick={onClose} aria-label="Close"><X className="h-5 w-5" /></button>
+      </div>
+      <div className="flex-1 p-4">{children}</div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ImportTrainingDataFlow — unified training-data import
+// ---------------------------------------------------------------------------
+
+function ImportTrainingDataFlow({
+  db,
+  user,
+  updateDb,
+  onClose,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [step, setStep] = useState<"input" | "review" | "done">("input");
+  const [inputText, setInputText] = useState("");
+  const [parsed, setParsed] = useState<UnifiedTrainingDataParseResult | null>(null);
+  const [workoutReview, setWorkoutReview] = useState<ImportReviewSummary | null>(null);
+  const [exerciseReview, setExerciseReview] = useState<ExerciseImportReviewSummary | null>(null);
+  const [exerciseItems, setExerciseItems] = useState<ExerciseImportReviewItem[]>([]);
+  const [workoutOverrides, setWorkoutOverrides] = useState<Map<string, string>>(new Map());
+  const [copied, setCopied] = useState<"prompt" | "headers" | null>(null);
+  const [result, setResult] = useState<{
+    workout?: { sessionsAdded: number; setsAdded: number; duplicatesSkipped: number };
+    exercise?: {
+      baselinesUpdated: number;
+      exercisesCreated: number;
+      variationsCreated: number;
+      mappedToExisting: number;
+      historicalLogsAdded: number;
+      skipped: number;
+    };
+  } | null>(null);
+
+  function prepareReview(nextParsed: UnifiedTrainingDataParseResult) {
+    setParsed(nextParsed);
+    const nextWorkoutReview = nextParsed.workoutData ? buildImportReviewSummary(nextParsed.workoutData, db.exercises) : null;
+    const nextExerciseReview = nextParsed.exerciseData ? buildExerciseImportReviewSummary(nextParsed.exerciseData, db, user) : null;
+    setWorkoutReview(nextWorkoutReview);
+    setExerciseReview(nextExerciseReview);
+    setWorkoutOverrides(new Map());
+    setExerciseItems(nextExerciseReview?.items || []);
+    setStep("review");
+  }
+
+  function handleCopy(kind: "prompt" | "headers") {
+    void navigator.clipboard.writeText(kind === "prompt" ? TRAINING_DATA_AI_PROMPT : TRAINING_DATA_HEADER_SECTIONS);
+    setCopied(kind);
+    setTimeout(() => setCopied(null), 2000);
+  }
+
+  async function handleFileUpload(file?: File) {
+    if (!file) return;
+    prepareReview(await parseTrainingDataFile(file));
+  }
+
+  function handleParseText() {
+    prepareReview(parseTrainingDataText(inputText, "pasted-training-data"));
+  }
+
+  function handleWorkoutOverride(exerciseName: string, exerciseId: string) {
+    setWorkoutOverrides((prev) => new Map(prev).set(exerciseName, exerciseId));
+    setWorkoutReview((prev) =>
+      prev
+        ? {
+            ...prev,
+            groups: applyMatchOverride(prev.groups, exerciseName, {
+              matchedExerciseId: exerciseId,
+              matchedExerciseName: db.exercises.find((e) => e.id === exerciseId)?.name,
+              confidence: "high",
+              needsReview: false,
+              suggestedAction: "use_existing",
+            }),
+          }
+        : prev
+    );
+  }
+
+  function updateExerciseItem(rowId: string, updater: (item: ExerciseImportReviewItem) => ExerciseImportReviewItem) {
+    setExerciseItems((current) => current.map((item) => item.row.rowId === rowId ? updater(item) : item));
+  }
+
+  function handleExerciseActionChange(rowId: string, action: ExerciseImportAction) {
+    updateExerciseItem(rowId, (item) => ({ ...item, action, needsReview: false }));
+  }
+
+  function handleExerciseMap(rowId: string, exerciseId: string) {
+    const exercise = db.exercises.find((candidate) => candidate.id === exerciseId);
+    if (!exercise) return;
+    const existingBaseline = baselineFromDb(db, user.id, exerciseId);
+    updateExerciseItem(rowId, (item) => {
+      const hasImportedPerformance = !!(item.row.baselinePerformance || item.row.lastPerformance);
+      return {
+        ...item,
+        matchedExerciseId: exercise.id,
+        matchedExerciseName: exercise.name,
+        existingBaseline: existingBaseline
+          ? {
+              weight: existingBaseline.baselineWeight,
+              sets: existingBaseline.baselineSets,
+              reps: existingBaseline.baselineReps,
+              rpe: existingBaseline.baselineRpe,
+              e1rm: existingBaseline.baselineE1RM,
+              updatedAt: existingBaseline.updatedAt,
+              source: existingBaseline.source,
+              notes: existingBaseline.notes,
+            }
+          : undefined,
+        action: hasImportedPerformance
+          ? hasMeaningfulBaselineData(existingBaseline)
+            ? "add_historical_data"
+            : "update_baseline"
+          : "map_to_existing",
+        baselineConflict: hasImportedPerformance
+          ? hasMeaningfulBaselineData(existingBaseline) ? "conflict" : "safe_add"
+          : "none",
+        willCreateHistory: hasImportedPerformance,
+        willAutoFillBaseline: hasImportedPerformance && !hasMeaningfulBaselineData(existingBaseline),
+        metadataOnly: !hasImportedPerformance,
+        needsReview: false,
+      };
+    });
+  }
+
+  async function handleConfirmImport() {
+    await updateDb((draft) => {
+      const nextResult: NonNullable<typeof result> = {};
+      if (exerciseItems.length > 0) {
+        nextResult.exercise = applyExerciseImportReview(draft, user, exerciseItems);
+      }
+      if (workoutReview) {
+        const confirmedGroups = workoutReview.groups.filter(
+          (group) => !group.matchResult.needsReview || workoutOverrides.has(group.exerciseName)
+        );
+        nextResult.workout = applyImportGroups(draft, user, confirmedGroups, workoutOverrides);
+      }
+      setResult(nextResult);
+      return draft;
+    });
+    setStep("done");
+  }
+
+  const unresolvedWorkout = workoutReview?.groups.filter((group) => group.matchResult.needsReview && !workoutOverrides.has(group.exerciseName)) || [];
+  const exerciseNeedsReview = exerciseItems.filter((item) => item.needsReview);
+  const exerciseConflicts = exerciseItems.filter((item) => item.baselineConflict === "conflict");
+  const skippedRows = (exerciseReview?.skippedOrInvalidRows || 0) + (workoutReview?.rowsWithErrors || 0);
+  const summary = {
+    exerciseRows: exerciseReview?.totalExerciseRows || 0,
+    workoutRows: workoutReview?.totalRows || 0,
+    newExercises: exerciseItems.filter((item) => item.action === "create_custom_exercise").length,
+    matchedExercises: (exerciseReview?.matchedExistingExercises || 0) + (workoutReview?.exercisesMatched || 0),
+    needsReview: unresolvedWorkout.length + exerciseNeedsReview.length,
+    conflicts: exerciseConflicts.length,
+  };
+
+  if (step === "done" && result) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-1 text-sm">
+          <p className="font-black text-emerald-300">Training data import complete</p>
+          {result.exercise && (
+            <>
+              <p>{result.exercise.exercisesCreated} custom exercise{result.exercise.exercisesCreated !== 1 ? "s" : ""} created</p>
+              <p>{result.exercise.baselinesUpdated} baseline{result.exercise.baselinesUpdated !== 1 ? "s" : ""} updated</p>
+              {result.exercise.historicalLogsAdded > 0 && <p>{result.exercise.historicalLogsAdded} history entr{result.exercise.historicalLogsAdded === 1 ? "y" : "ies"} added</p>}
+            </>
+          )}
+          {result.workout && (
+            <>
+              <p>{result.workout.sessionsAdded} workout session{result.workout.sessionsAdded !== 1 ? "s" : ""} added</p>
+              <p>{result.workout.setsAdded} set{result.workout.setsAdded !== 1 ? "s" : ""} logged</p>
+              {result.workout.duplicatesSkipped > 0 && <p>{result.workout.duplicatesSkipped} duplicate{result.workout.duplicatesSkipped !== 1 ? "s" : ""} skipped</p>}
+            </>
+          )}
+        </div>
+        <button className="btn-primary w-full" onClick={onClose}>Done</button>
+      </div>
+    );
+  }
+
+  if (step === "review") {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-white/10 bg-white/[0.04] p-4 text-sm space-y-1">
+          <p className="font-black">Review training data import</p>
+          <p className="text-iron-300">Exercise baselines: {summary.exerciseRows} row{summary.exerciseRows !== 1 ? "s" : ""} · Workout history: {summary.workoutRows} set{summary.workoutRows !== 1 ? "s" : ""}</p>
+          <p className="text-iron-400">New exercises: {summary.newExercises} · Matched exercises: {summary.matchedExercises} · Needs review: {summary.needsReview} · Conflicts: {summary.conflicts}</p>
+          {parsed?.detectedSections.length ? <p className="text-xs text-iron-500">Detected: {parsed.detectedSections.join(" + ").replaceAll("_", " ")}</p> : null}
+        </div>
+
+        {(parsed?.errors.length || parsed?.warnings.length) ? (
+          <details className="rounded-lg border border-white/10 bg-white/[0.03] p-3" open={!!parsed?.errors.length}>
+            <summary className="cursor-pointer text-sm font-black">Rows skipped or invalid</summary>
+            <div className="mt-3 space-y-2 text-xs">
+              {parsed?.errors.map((error, index) => <p key={`err-${index}`} className="text-orange-200">{error}</p>)}
+              {parsed?.warnings.map((warning, index) => <p key={`warn-${index}`} className="text-yellow-100">{warning}</p>)}
+              {!parsed?.errors.length && !parsed?.warnings.length && <p className="text-iron-400">No skipped rows or parse warnings.</p>}
+            </div>
+          </details>
+        ) : null}
+
+        {summary.needsReview > 0 || summary.conflicts > 0 ? (
+          <details className="rounded-lg border border-white/10 bg-white/[0.03] p-3" open>
+            <summary className="cursor-pointer text-sm font-black">Conflicts / Needs Review</summary>
+            <div className="mt-3 space-y-2 text-xs text-iron-300">
+              {exerciseConflicts.map((item) => <p key={`conflict-${item.row.rowId}`}>{item.row.name}: existing baseline found — choose how to merge.</p>)}
+              {exerciseNeedsReview.filter((item) => item.baselineConflict !== "conflict").map((item) => <p key={`needs-${item.row.rowId}`}>{item.row.name}: confirm match or action.</p>)}
+              {unresolvedWorkout.map((group) => <p key={`workout-${group.date}-${group.exerciseName}`}>{group.exerciseName}: workout history row needs an exercise match.</p>)}
+            </div>
+          </details>
+        ) : null}
+
+        {exerciseItems.length > 0 ? (
+          <details className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <summary className="cursor-pointer text-sm font-black">Exercise Matches / Baselines</summary>
+            <div className="mt-3 space-y-3">
+              {exerciseItems.map((item) => (
+                <ExerciseImportReviewRow
+                  key={item.row.rowId}
+                  item={item}
+                  db={db}
+                  user={user}
+                  onChangeAction={handleExerciseActionChange}
+                  onMapExercise={handleExerciseMap}
+                />
+              ))}
+            </div>
+          </details>
+        ) : null}
+
+        {workoutReview ? (
+          <details className="rounded-lg border border-white/10 bg-white/[0.03] p-3">
+            <summary className="cursor-pointer text-sm font-black">Workout History</summary>
+            <div className="mt-3 space-y-2">
+              {workoutReview.groups.map((group) => (
+                <ImportGroupRow
+                  key={`${group.date}-${group.exerciseName}`}
+                  group={group}
+                  db={db}
+                  overrideId={workoutOverrides.get(group.exerciseName)}
+                  onOverride={handleWorkoutOverride}
+                />
+              ))}
+            </div>
+          </details>
+        ) : null}
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            className="btn-primary w-full"
+            onClick={() => void handleConfirmImport()}
+            disabled={summary.needsReview > 0}
+          >
+            <FileUp className="h-4 w-4" />
+            Import Training Data
+          </button>
+          <button className="btn-secondary w-full" onClick={() => setStep("input")}>Back</button>
+        </div>
+        {summary.needsReview > 0 && (
+          <p className="text-xs text-iron-500">Resolve the remaining conflicts or exercise matches above to continue.</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-white/10 bg-iron-950/60 p-4 space-y-3">
+        <p className="font-black text-sm">AI formatting help</p>
+        <p className="text-xs text-iron-400">Ask AI to clean up your old spreadsheet or notes into one import-ready format. Legacy Excel sheets with an Exercises tab are still supported too.</p>
+        <button className="btn-secondary w-full" onClick={() => handleCopy("prompt")}>
+          <Copy className="h-4 w-4" />
+          {copied === "prompt" ? "Copied!" : "Copy AI Formatting Prompt"}
+        </button>
+        <button className="btn-secondary w-full text-xs" onClick={() => handleCopy("headers")}>
+          <Copy className="h-4 w-4" />
+          {copied === "headers" ? "Copied!" : "Copy Headers"}
+        </button>
+        <details className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-xs text-iron-300">
+          <summary className="cursor-pointer font-bold">Show expected columns</summary>
+          <pre className="mt-3 whitespace-pre-wrap font-mono text-[0.7rem] text-iron-400">{TRAINING_DATA_HEADER_SECTIONS}</pre>
+        </details>
+      </div>
+
+      <div>
+        <p className="label mb-2">Upload training data</p>
+        <label className="btn-secondary w-full cursor-pointer">
+          <FileUp className="h-4 w-4" />
+          Choose CSV or Excel file
+          <input className="hidden" type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => { void handleFileUpload(event.target.files?.[0]); }} />
+        </label>
+        <p className="mt-2 text-xs text-iron-500">Supported: workout history CSV, exercise/baseline CSV, or Excel workbooks with Exercises and/or Workout History tabs.</p>
+      </div>
+
+      <div>
+        <p className="label mb-2">Or paste CSV / table text</p>
+        <textarea
+          className="field min-h-32 font-mono text-xs"
+          placeholder={`SECTION 1: Exercises\nname,primaryMuscles,...\n\nSECTION 2: Workout History\ndate,workout_name,exercise_name,...`}
+          value={inputText}
+          onChange={(event) => setInputText(event.target.value)}
+        />
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button className="btn-primary w-full" onClick={handleParseText} disabled={!inputText.trim()}>
+          <FileUp className="h-4 w-4" />
+          Parse &amp; Review
+        </button>
+        <button className="btn-secondary w-full" onClick={onClose}>Cancel</button>
+      </div>
+      {skippedRows > 0 && <p className="text-xs text-iron-500">{skippedRows} row{skippedRows !== 1 ? "s" : ""} were skipped in the last review.</p>}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ImportWorkoutCSVFlow — CSV import modal content
+// ---------------------------------------------------------------------------
+
+function ImportWorkoutCSVFlow({
+  db,
+  user,
+  updateDb,
+  onClose,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [step, setStep] = useState<"input" | "review" | "done">("input");
+  const [csvText, setCsvText] = useState("");
+  const [review, setReview] = useState<ImportReviewSummary | null>(null);
+  const [overrides, setOverrides] = useState<Map<string, string>>(new Map());
+  const [result, setResult] = useState<{ sessionsAdded: number; setsAdded: number; duplicatesSkipped: number } | null>(null);
+  const [copied, setCopied] = useState<"prompt" | "headers" | null>(null);
+
+  function handleCopy(what: "prompt" | "headers") {
+    void navigator.clipboard.writeText(what === "prompt" ? AI_CSV_PROMPT : CSV_COLUMN_HEADERS);
+    setCopied(what);
+    setTimeout(() => setCopied(null), 2000);
+  }
+
+  function handleFileUpload(file?: File) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setCsvText(String(reader.result));
+    reader.readAsText(file);
+  }
+
+  function handleParse() {
+    const parsed = parseCSVText(csvText, "pasted-csv");
+    const summary = buildImportReviewSummary(parsed, db.exercises);
+    setReview(summary);
+    setOverrides(new Map());
+    setStep("review");
+  }
+
+  function handleOverride(exerciseName: string, exerciseId: string) {
+    setOverrides((prev) => new Map(prev).set(exerciseName, exerciseId));
+    setReview((prev) =>
+      prev
+        ? {
+            ...prev,
+            groups: applyMatchOverride(prev.groups, exerciseName, {
+              matchedExerciseId: exerciseId,
+              matchedExerciseName: db.exercises.find((e) => e.id === exerciseId)?.name,
+              confidence: "high",
+              needsReview: false,
+              suggestedAction: "use_existing",
+            }),
+          }
+        : prev
+    );
+  }
+
+  async function handleConfirmImport() {
+    if (!review) return;
+    const confirmed = review.groups.filter(
+      (g) => !g.matchResult.needsReview || overrides.has(g.exerciseName)
+    );
+    await updateDb((draft) => {
+      const res = applyImportGroups(draft, user, confirmed, overrides);
+      setResult(res);
+      return draft;
+    });
+    setStep("done");
+  }
+
+  if (step === "done" && result) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <p className="font-black text-emerald-300">Import complete</p>
+          <div className="mt-2 space-y-1 text-sm text-iron-200">
+            <p>{result.sessionsAdded} session{result.sessionsAdded !== 1 ? "s" : ""} added</p>
+            <p>{result.setsAdded} set{result.setsAdded !== 1 ? "s" : ""} logged</p>
+            {result.duplicatesSkipped > 0 && <p>{result.duplicatesSkipped} duplicate{result.duplicatesSkipped !== 1 ? "s" : ""} skipped</p>}
+          </div>
+        </div>
+        <button className="btn-primary w-full" onClick={onClose}>Done</button>
+      </div>
+    );
+  }
+
+  if (step === "review" && review) {
+    const unresolved = review.groups.filter((g) => g.matchResult.needsReview && !overrides.has(g.exerciseName));
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-white/10 bg-white/[0.04] p-4 text-sm space-y-1">
+          <p className="font-black">Review import</p>
+          <p className="text-iron-300">{review.totalRows} rows · {review.workoutsDetected} workout{review.workoutsDetected !== 1 ? "s" : ""} · {review.exercisesMatched} exercise{review.exercisesMatched !== 1 ? "s" : ""} matched</p>
+          {unresolved.length > 0 && <p className="text-orange-200">{unresolved.length} exercise{unresolved.length !== 1 ? "s" : ""} need review before import</p>}
+        </div>
+
+        {review.errors.length > 0 && (
+          <div className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-xs text-orange-100 space-y-1">
+            {review.errors.map((e, i) => <p key={i}>{e}</p>)}
+          </div>
+        )}
+        {review.warnings.length > 0 && (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-100 space-y-1">
+            {review.warnings.map((w, i) => <p key={i}>{w}</p>)}
+          </div>
+        )}
+
+        {review.groups.length > 0 && (
+          <div className="space-y-2">
+            <p className="label">Exercise matches</p>
+            {review.groups.map((group) => (
+              <ImportGroupRow
+                key={`${group.date}-${group.exerciseName}`}
+                group={group}
+                db={db}
+                overrideId={overrides.get(group.exerciseName)}
+                onOverride={handleOverride}
+              />
+            ))}
+          </div>
+        )}
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button
+            className="btn-primary w-full"
+            onClick={() => void handleConfirmImport()}
+            disabled={unresolved.length > 0}
+          >
+            <FileUp className="h-4 w-4" />
+            Import {review.totalRows - review.rowsWithErrors} rows
+          </button>
+          <button className="btn-secondary w-full" onClick={() => setStep("input")}>Back</button>
+        </div>
+        {unresolved.length > 0 && (
+          <p className="text-xs text-iron-500">Resolve {unresolved.length} unmatched exercise{unresolved.length !== 1 ? "s" : ""} above to continue.</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-white/10 bg-iron-950/60 p-4 space-y-3">
+        <p className="font-black text-sm">Ask AI to format your training log</p>
+        <p className="text-xs text-iron-400">Copy this prompt, paste your old workout log, then paste the resulting CSV below.</p>
+        <button className="btn-secondary w-full" onClick={() => handleCopy("prompt")}>
+          <Copy className="h-4 w-4" />
+          {copied === "prompt" ? "Copied!" : "Copy AI Prompt"}
+        </button>
+        <button className="btn-secondary w-full text-xs" onClick={() => handleCopy("headers")}>
+          <Copy className="h-4 w-4" />
+          {copied === "headers" ? "Copied!" : "Copy CSV Column Headers"}
+        </button>
+      </div>
+
+      <div>
+        <p className="label mb-2">Upload CSV file</p>
+        <label className="btn-secondary w-full cursor-pointer">
+          <FileUp className="h-4 w-4" />
+          Choose CSV file
+          <input className="hidden" type="file" accept=".csv,text/csv" onChange={(e) => handleFileUpload(e.target.files?.[0])} />
+        </label>
+      </div>
+
+      <div>
+        <p className="label mb-2">Or paste CSV text</p>
+        <textarea
+          className="field min-h-32 font-mono text-xs"
+          placeholder={`date,workout_name,exercise_name,...\n2024-01-15,Push Day,Bench Press,1,225,lb,5,8,...`}
+          value={csvText}
+          onChange={(e) => setCsvText(e.target.value)}
+        />
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button className="btn-primary w-full" onClick={handleParse} disabled={!csvText.trim()}>
+          <FileUp className="h-4 w-4" />
+          Parse &amp; Review
+        </button>
+        <button className="btn-secondary w-full" onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+function ImportGroupRow({
+  group,
+  db,
+  overrideId,
+  onOverride,
+}: {
+  group: ImportRowGroup;
+  db: TrainingDatabase;
+  overrideId?: string;
+  onOverride: (exerciseName: string, exerciseId: string) => void;
+}) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [search, setSearch] = useState("");
+  const mr = group.matchResult;
+  const resolvedId = overrideId ?? mr.matchedExerciseId;
+  const resolvedName = resolvedId
+    ? (db.exercises.find((e) => e.id === resolvedId)?.name ?? resolvedId)
+    : undefined;
+
+  const confidenceColor =
+    mr.confidence === "high" && !mr.needsReview
+      ? "text-emerald-400"
+      : mr.confidence === "medium"
+      ? "text-yellow-300"
+      : "text-orange-300";
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.035] p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-sm font-bold">{group.exerciseName}</p>
+          <p className="text-xs text-iron-400">{group.rows.length} set{group.rows.length !== 1 ? "s" : ""} · {group.date}</p>
+        </div>
+        <span className={`text-xs font-bold ${confidenceColor}`}>{mr.confidence}</span>
+      </div>
+      {resolvedName ? (
+        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1.5">
+          <span className="flex-1 text-xs font-bold text-emerald-300">→ {resolvedName}</span>
+          <button className="text-emerald-500/60 hover:text-emerald-400 transition" onClick={() => { setShowPicker(true); setSearch(""); }}>
+            <Pencil className="h-3 w-3" />
+          </button>
+        </div>
+      ) : (
+        <div className="rounded-lg border border-orange-500/30 bg-orange-500/10 px-2 py-1.5">
+          <p className="text-xs text-orange-200">No match — select an exercise to import these sets.</p>
+          <button className="mt-1 text-xs font-bold text-orange-300 underline" onClick={() => { setShowPicker(true); setSearch(""); }}>
+            Pick exercise
+          </button>
+        </div>
+      )}
+      {showPicker && (
+        <div className="space-y-1">
+          <input
+            className="field text-sm"
+            placeholder="Search exercises..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            autoFocus
+          />
+          <div className="max-h-36 overflow-y-auto rounded-lg border border-white/10 bg-iron-900">
+            {db.exercises
+              .filter((e) => !e.isArchived && e.name.toLowerCase().includes(search.toLowerCase()))
+              .slice(0, 20)
+              .map((e) => (
+                <button
+                  key={e.id}
+                  className="w-full px-3 py-1.5 text-left text-xs hover:bg-white/10 transition"
+                  onClick={() => { onOverride(group.exerciseName, e.id); setShowPicker(false); }}
+                >
+                  {e.name}
+                </button>
+              ))}
+          </div>
+          <button className="text-xs text-iron-500 underline" onClick={() => setShowPicker(false)}>Cancel</button>
+        </div>
+      )}
+      <p className="text-xs text-iron-500">{mr.reason}</p>
+    </div>
+  );
+}
+
+function formatImportedPerformance(perf?: {
+  weight?: number;
+  sets?: number;
+  reps?: number;
+  rpe?: number;
+  e1rm?: number;
+}) {
+  if (!perf) return "None";
+  const parts = [
+    perf.weight !== undefined ? `wt ${perf.weight}` : undefined,
+    perf.sets !== undefined ? `sets ${perf.sets}` : undefined,
+    perf.reps !== undefined ? `reps ${perf.reps}` : undefined,
+    perf.rpe !== undefined ? `RPE ${perf.rpe}` : undefined,
+    perf.e1rm !== undefined ? `e1RM ${perf.e1rm}` : undefined,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : "None";
+}
+
+function baselineFromDb(
+  db: TrainingDatabase,
+  userId: string,
+  exerciseId?: string
+): ExerciseBaseline | undefined {
+  if (!exerciseId) return undefined;
+  return (db.exerciseBaselines || []).find((item) => item.userId === userId && item.exerciseId === exerciseId);
+}
+
+function hasMeaningfulBaselineData(baseline?: ExerciseBaseline) {
+  if (!baseline) return false;
+  return [
+    baseline.baselineWeight,
+    baseline.baselineSets,
+    baseline.baselineReps,
+    baseline.baselineRpe,
+    baseline.baselineE1RM,
+    baseline.lastWeight,
+    baseline.lastSets,
+    baseline.lastReps,
+    baseline.lastRpe,
+    baseline.lastE1RM,
+  ].some((value) => typeof value === "number" && value > 0);
+}
+
+function actionLabel(action: ExerciseImportAction) {
+  switch (action) {
+    case "update_baseline": return "Update baseline";
+    case "keep_existing_baseline": return "Keep existing baseline";
+    case "replace_baseline": return "Replace baseline";
+    case "keep_newer_baseline": return "Keep newer baseline";
+    case "add_historical_data": return "Add historical data";
+    case "create_custom_exercise": return "Create custom exercise";
+    case "create_variation": return "Create variation";
+    case "map_to_existing": return "Map to existing";
+    case "skip": return "Skip";
+    default: return action;
+  }
+}
+
+function exerciseActionOptions(item: ExerciseImportReviewItem) {
+  const options: ExerciseImportAction[] = [];
+  if (item.matchedExerciseId) {
+    options.push("map_to_existing");
+    if (item.row.baselinePerformance || item.row.lastPerformance) {
+      options.push("update_baseline", "keep_existing_baseline", "replace_baseline", "keep_newer_baseline", "add_historical_data");
+    }
+  }
+  if (item.suggestedParentExerciseId) options.push("create_variation");
+  options.push("create_custom_exercise", "skip");
+  return Array.from(new Set(options));
+}
+
+function ExerciseImportReviewRow({
+  item,
+  db,
+  user,
+  onChangeAction,
+  onMapExercise,
+}: {
+  item: ExerciseImportReviewItem;
+  db: TrainingDatabase;
+  user: UserProfile;
+  onChangeAction: (rowId: string, action: ExerciseImportAction) => void;
+  onMapExercise: (rowId: string, exerciseId: string) => void;
+}) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [search, setSearch] = useState("");
+  const matchedName = item.matchedExerciseName || (item.matchedExerciseId ? db.exercises.find((exercise) => exercise.id === item.matchedExerciseId)?.name : undefined);
+  const baselineText = formatImportedPerformance(item.row.baselinePerformance || item.row.lastPerformance);
+  const existingText = formatImportedPerformance(item.existingBaseline);
+
+  return (
+    <div className="rounded-lg border border-white/10 bg-white/[0.04] p-3 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-sm font-black">{item.row.name}</p>
+          <p className="text-xs text-iron-400">
+            {item.row.category ? `${item.row.category} · ` : ""}
+            {item.matchResult.confidence} confidence
+          </p>
+        </div>
+        {item.needsReview && (
+          <span className="rounded-full border border-orange-500/30 bg-orange-500/10 px-2 py-0.5 text-[0.65rem] font-bold uppercase tracking-[0.14em] text-orange-200">
+            Review
+          </span>
+        )}
+      </div>
+
+      <div className="grid gap-2 text-xs text-iron-300 sm:grid-cols-2">
+        <div className="rounded-lg border border-white/10 bg-iron-950/60 p-2">
+          <p className="label mb-1">Imported</p>
+          <p>{baselineText}</p>
+        </div>
+        <div className="rounded-lg border border-white/10 bg-iron-950/60 p-2">
+          <p className="label mb-1">Existing baseline</p>
+          <p>{existingText}</p>
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-white/10 bg-iron-950/50 p-2 text-xs">
+        <p className="font-bold text-iron-200">
+          Match: {matchedName ? matchedName : "New custom exercise"}
+          {item.suggestedParentExerciseName ? ` · variation of ${item.suggestedParentExerciseName}` : ""}
+        </p>
+        <p className="mt-1 text-iron-400">{item.reason}</p>
+        <p className="mt-1 text-iron-500">
+          {item.willCreateHistory ? "Creates analytics history" : item.metadataOnly ? "Metadata only" : "No history change"}
+          {item.willAutoFillBaseline ? " · auto-fills blank/zero baseline" : ""}
+        </p>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <select
+          className="field text-sm"
+          value={item.action}
+          onChange={(event) => onChangeAction(item.row.rowId, event.target.value as ExerciseImportAction)}
+        >
+          {exerciseActionOptions(item).map((action) => (
+            <option key={action} value={action}>{actionLabel(action)}</option>
+          ))}
+        </select>
+        <button
+          className="btn-secondary"
+          onClick={() => {
+            setShowPicker((value) => !value);
+            setSearch("");
+          }}
+        >
+          <Pencil className="h-4 w-4" />
+          Map Exercise
+        </button>
+      </div>
+
+      {showPicker && (
+        <div className="space-y-2">
+          <input
+            className="field text-sm"
+            placeholder="Search exercises..."
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            autoFocus
+          />
+          <div className="max-h-40 overflow-y-auto rounded-lg border border-white/10 bg-iron-950/60">
+            {db.exercises
+              .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
+              .filter((exercise) => exercise.name.toLowerCase().includes(search.toLowerCase()))
+              .slice(0, 20)
+              .map((exercise) => (
+                <button
+                  key={exercise.id}
+                  className="w-full px-3 py-2 text-left text-xs hover:bg-white/10 transition"
+                  onClick={() => {
+                    onMapExercise(item.row.rowId, exercise.id);
+                    setShowPicker(false);
+                  }}
+                >
+                  {exercise.name}
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ImportExercisesFlow({
+  db,
+  user,
+  updateDb,
+  onClose,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [step, setStep] = useState<"input" | "review" | "done">("input");
+  const [csvText, setCsvText] = useState("");
+  const [review, setReview] = useState<ExerciseImportReviewSummary | null>(null);
+  const [items, setItems] = useState<ExerciseImportReviewItem[]>([]);
+  const [copied, setCopied] = useState<"exercise_prompt" | "legacy_prompt" | "headers" | null>(null);
+  const [result, setResult] = useState<{
+    baselinesUpdated: number;
+    exercisesCreated: number;
+    variationsCreated: number;
+    mappedToExisting: number;
+    historicalLogsAdded: number;
+    skipped: number;
+  } | null>(null);
+
+  function handleCopy(kind: "exercise_prompt" | "legacy_prompt" | "headers") {
+    const value = kind === "exercise_prompt"
+      ? EXERCISE_IMPORT_AI_PROMPT
+      : kind === "legacy_prompt"
+      ? LEGACY_EXERCISE_SHEET_AI_PROMPT
+      : EXERCISE_IMPORT_COLUMN_HEADERS;
+    void navigator.clipboard.writeText(value);
+    setCopied(kind);
+    setTimeout(() => setCopied(null), 2000);
+  }
+
+  async function handleFileUpload(file?: File) {
+    if (!file) return;
+    const parsed = await parseExerciseImportFile(file);
+    const nextReview = buildExerciseImportReviewSummary(parsed, db, user);
+    setReview(nextReview);
+    setItems(nextReview.items);
+    setStep("review");
+  }
+
+  function handleParsePastedText() {
+    const parsed = parseExerciseImportCSVText(csvText, "pasted-exercise-csv");
+    const nextReview = buildExerciseImportReviewSummary(parsed, db, user);
+    setReview(nextReview);
+    setItems(nextReview.items);
+    setStep("review");
+  }
+
+  function updateItem(rowId: string, updater: (item: ExerciseImportReviewItem) => ExerciseImportReviewItem) {
+    setItems((current) => current.map((item) => item.row.rowId === rowId ? updater(item) : item));
+  }
+
+  function handleActionChange(rowId: string, action: ExerciseImportAction) {
+    updateItem(rowId, (item) => ({ ...item, action, needsReview: false }));
+  }
+
+  function handleMapExercise(rowId: string, exerciseId: string) {
+    const exercise = db.exercises.find((candidate) => candidate.id === exerciseId);
+    if (!exercise) return;
+    const existingBaseline = baselineFromDb(db, user.id, exerciseId);
+    updateItem(rowId, (item) => {
+      const hasImportedPerformance = !!(item.row.baselinePerformance || item.row.lastPerformance);
+      return {
+        ...item,
+        matchedExerciseId: exercise.id,
+        matchedExerciseName: exercise.name,
+        existingBaseline: existingBaseline
+          ? {
+              weight: existingBaseline.baselineWeight,
+              sets: existingBaseline.baselineSets,
+              reps: existingBaseline.baselineReps,
+              rpe: existingBaseline.baselineRpe,
+              e1rm: existingBaseline.baselineE1RM,
+              updatedAt: existingBaseline.updatedAt,
+              source: existingBaseline.source,
+              notes: existingBaseline.notes,
+            }
+          : undefined,
+        action: hasImportedPerformance
+          ? hasMeaningfulBaselineData(existingBaseline)
+            ? "add_historical_data"
+            : "update_baseline"
+          : "map_to_existing",
+        baselineConflict: hasImportedPerformance
+          ? hasMeaningfulBaselineData(existingBaseline) ? "conflict" : "safe_add"
+          : "none",
+        willCreateHistory: hasImportedPerformance,
+        willAutoFillBaseline: hasImportedPerformance && !hasMeaningfulBaselineData(existingBaseline),
+        metadataOnly: !hasImportedPerformance,
+        needsReview: false,
+      };
+    });
+  }
+
+  async function handleConfirmImport() {
+    await updateDb((draft) => {
+      const applied = applyExerciseImportReview(draft, user, items);
+      setResult(applied);
+      return draft;
+    });
+    setStep("done");
+  }
+
+  const liveSummary = useMemo(() => ({
+    total: items.length,
+    matched: items.filter((item) => item.matchedExerciseId).length,
+    custom: items.filter((item) => item.action === "create_custom_exercise").length,
+    variations: items.filter((item) => item.action === "create_variation").length,
+    baselineUpdates: items.filter((item) => item.action === "update_baseline" || item.action === "replace_baseline").length,
+    historyRows: items.filter((item) => item.willCreateHistory && item.action !== "skip" && item.action !== "keep_existing_baseline").length,
+    autoFillRows: items.filter((item) => item.willAutoFillBaseline).length,
+    metadataOnlyRows: items.filter((item) => item.metadataOnly).length,
+    conflicts: items.filter((item) => item.baselineConflict === "conflict").length,
+    review: items.filter((item) => item.needsReview).length,
+  }), [items]);
+
+  if (step === "done" && result) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 space-y-1 text-sm">
+          <p className="font-black text-emerald-300">Exercise import complete</p>
+          <p>{result.exercisesCreated} custom exercise{result.exercisesCreated !== 1 ? "s" : ""} created</p>
+          <p>{result.variationsCreated} variation{result.variationsCreated !== 1 ? "s" : ""} created</p>
+          <p>{result.baselinesUpdated} baseline{result.baselinesUpdated !== 1 ? "s" : ""} updated</p>
+          {result.historicalLogsAdded > 0 && <p>{result.historicalLogsAdded} historical entr{result.historicalLogsAdded === 1 ? "y" : "ies"} added</p>}
+        </div>
+        <button className="btn-primary w-full" onClick={onClose}>Done</button>
+      </div>
+    );
+  }
+
+  if (step === "review" && review) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-lg border border-white/10 bg-white/[0.04] p-4 text-sm space-y-1">
+          <p className="font-black">Review exercise import</p>
+          <p className="text-iron-300">
+            {liveSummary.total} exercise row{liveSummary.total !== 1 ? "s" : ""} · {liveSummary.matched} matched · {liveSummary.custom} new · {liveSummary.variations} variations
+          </p>
+          <p className="text-iron-400">
+            {liveSummary.baselineUpdates} baseline updates · {liveSummary.historyRows} history record{liveSummary.historyRows !== 1 ? "s" : ""} · {liveSummary.autoFillRows} auto-fill row{liveSummary.autoFillRows !== 1 ? "s" : ""}
+          </p>
+          <p className="text-iron-400">
+            {liveSummary.conflicts} baseline conflict{liveSummary.conflicts !== 1 ? "s" : ""} · {liveSummary.metadataOnlyRows} metadata-only row{liveSummary.metadataOnlyRows !== 1 ? "s" : ""}
+          </p>
+          {review.format && <p className="text-xs text-iron-500">Detected format: {review.format}</p>}
+        </div>
+
+        {review.errors.length > 0 && (
+          <div className="rounded-lg border border-ember/30 bg-ember/10 p-3 text-xs text-orange-100 space-y-1">
+            {review.errors.map((error, index) => <p key={index}>{error}</p>)}
+          </div>
+        )}
+        {review.warnings.length > 0 && (
+          <div className="rounded-lg border border-yellow-500/30 bg-yellow-500/10 p-3 text-xs text-yellow-100 space-y-1">
+            {review.warnings.map((warning, index) => <p key={index}>{warning}</p>)}
+          </div>
+        )}
+
+        <div className="space-y-3">
+          {items.map((item) => (
+            <ExerciseImportReviewRow
+              key={item.row.rowId}
+              item={item}
+              db={db}
+              user={user}
+              onChangeAction={handleActionChange}
+              onMapExercise={handleMapExercise}
+            />
+          ))}
+        </div>
+
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button className="btn-primary w-full" onClick={() => void handleConfirmImport()}>
+            <FileUp className="h-4 w-4" />
+            Import Exercises / Baselines
+          </button>
+          <button className="btn-secondary w-full" onClick={() => setStep("input")}>Back</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-white/10 bg-iron-950/60 p-4 space-y-3">
+        <p className="font-black text-sm">Exercise import prompts</p>
+        <p className="text-xs text-iron-400">Use these when you want AI to convert a spreadsheet or notes into a clean exercise import CSV.</p>
+        <button className="btn-secondary w-full" onClick={() => handleCopy("exercise_prompt")}>
+          <Copy className="h-4 w-4" />
+          {copied === "exercise_prompt" ? "Copied!" : "Copy Exercise Import AI Prompt"}
+        </button>
+        <button className="btn-secondary w-full" onClick={() => handleCopy("legacy_prompt")}>
+          <Copy className="h-4 w-4" />
+          {copied === "legacy_prompt" ? "Copied!" : "Copy Legacy Sheet AI Prompt"}
+        </button>
+        <button className="btn-secondary w-full text-xs" onClick={() => handleCopy("headers")}>
+          <Copy className="h-4 w-4" />
+          {copied === "headers" ? "Copied!" : "Copy Exercise CSV Headers"}
+        </button>
+      </div>
+
+      <div>
+        <p className="label mb-2">Upload file</p>
+        <label className="btn-secondary w-full cursor-pointer">
+          <FileUp className="h-4 w-4" />
+          Choose CSV or workbook
+          <input className="hidden" type="file" accept=".csv,.xlsx,.xlsm" onChange={(event) => { void handleFileUpload(event.target.files?.[0]); }} />
+        </label>
+      </div>
+
+      <div>
+        <p className="label mb-2">Or paste exercise CSV</p>
+        <textarea
+          className="field min-h-32 font-mono text-xs"
+          placeholder={`name,primaryMuscles,secondaryMuscles,...\nCompetition Bench Press,chest;triceps,front-delts,barbell,lb,5,...`}
+          value={csvText}
+          onChange={(event) => setCsvText(event.target.value)}
+        />
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button className="btn-primary w-full" onClick={handleParsePastedText} disabled={!csvText.trim()}>
+          <FileUp className="h-4 w-4" />
+          Parse &amp; Review
+        </button>
+        <button className="btn-secondary w-full" onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DataManagementPanel — export/import section in Settings
+// ---------------------------------------------------------------------------
+
+function DataManagementPanel({
+  db,
+  user,
+  updateDb,
+  importDb,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  importDb: (data: TrainingDatabase) => Promise<void>;
+}) {
+  const [showUnifiedImportFlow, setShowUnifiedImportFlow] = useState(false);
+  const [showWorkoutImportFlow, setShowWorkoutImportFlow] = useState(false);
+  const [showExerciseImportFlow, setShowExerciseImportFlow] = useState(false);
+
+  const userExercises = db.exercises.filter(
+    (e) => !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id)
+  );
+  const userBaselines = (db.exerciseBaselines || []).filter((baseline) => baseline.userId === user.id);
+  const [copiedPrompt, setCopiedPrompt] = useState<"training" | "headers" | "exercise_headers" | "workout_headers" | null>(null);
+
+  function copyPrompt(kind: "training" | "headers" | "exercise_headers" | "workout_headers") {
+    const text = kind === "training"
+      ? TRAINING_DATA_AI_PROMPT
+      : kind === "headers"
+      ? TRAINING_DATA_HEADER_SECTIONS
+      : kind === "exercise_headers"
+      ? EXERCISE_IMPORT_COLUMN_HEADERS
+      : CSV_COLUMN_HEADERS;
+    void navigator.clipboard.writeText(text);
+    setCopiedPrompt(kind);
+    setTimeout(() => setCopiedPrompt(null), 2000);
+  }
+
+  function importBackup(file?: File) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = JSON.parse(String(reader.result)) as TrainingDatabase;
+      void importDb(parsed);
+    };
+    reader.readAsText(file);
+  }
+
+  return (
+    <>
+      <Panel title="Data Management" icon={FileDown}>
+        <div className="space-y-4">
+          <div className="rounded-lg border border-white/10 bg-iron-950/50 p-3 text-xs text-iron-400">
+            Keep this simple: import one file, export one useful spreadsheet, and use backup only for full app restore.
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 space-y-3">
+            <p className="font-black text-sm text-white">Import</p>
+            <p className="text-xs text-iron-400">Upload a CSV or Excel file with exercises, baselines, workout history, or a legacy program sheet.</p>
+            <button className="btn-primary w-full" onClick={() => setShowUnifiedImportFlow(true)}>
+              <FileUp className="h-4 w-4" />
+              Import Training Data
+            </button>
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 space-y-3">
+            <p className="font-black text-sm text-white">Export</p>
+            <p className="text-xs text-iron-400">Download one Excel-compatible workbook with your exercise library and workout history.</p>
+            <button
+              className="btn-primary w-full"
+              onClick={() => downloadTrainingDataWorkbook(db, user)}
+            >
+              <FileDown className="h-4 w-4" />
+              Export Training Data
+            </button>
+          </div>
+
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 space-y-3">
+            <p className="font-black text-sm text-white">Backup</p>
+            <p className="text-xs text-iron-400">Use this for full app backup and restore, not spreadsheet editing.</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <button
+                className="btn-secondary w-full"
+                onClick={() => downloadFullBackupJSON(db, user.username || "local")}
+              >
+                <FileDown className="h-4 w-4" />
+                Export Full Backup JSON
+              </button>
+              <label className="btn-secondary w-full cursor-pointer">
+                <FileUp className="h-4 w-4" />
+                Restore Full Backup JSON
+                <input className="hidden" type="file" accept="application/json" onChange={(event) => importBackup(event.target.files?.[0])} />
+              </label>
+            </div>
+          </div>
+
+          <details className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+            <summary className="cursor-pointer text-sm font-black text-white">AI Formatting Help</summary>
+            <div className="mt-3 space-y-2">
+              <p className="text-xs text-iron-400">Use one prompt for both exercises and workout history. Legacy Exercises-tab spreadsheets still work too.</p>
+              <button className="btn-secondary w-full" onClick={() => copyPrompt("training")}>
+                <Copy className="h-4 w-4" />
+                {copiedPrompt === "training" ? "Copied!" : "Copy AI Formatting Prompt"}
+              </button>
+              <button className="btn-secondary w-full text-xs" onClick={() => copyPrompt("headers")}>
+                <Copy className="h-4 w-4" />
+                {copiedPrompt === "headers" ? "Copied!" : "Copy Headers"}
+              </button>
+              <details className="rounded-lg border border-white/10 bg-iron-950/60 p-3 text-xs text-iron-300">
+                <summary className="cursor-pointer font-bold">Show Expected Columns</summary>
+                <pre className="mt-3 whitespace-pre-wrap font-mono text-[0.7rem] text-iron-400">{TRAINING_DATA_HEADER_SECTIONS}</pre>
+              </details>
+            </div>
+          </details>
+
+          <details className="rounded-lg border border-white/10 bg-white/[0.03] p-4">
+            <summary className="cursor-pointer text-sm font-black text-white">Advanced CSV Options</summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-xs text-iron-400">These are the original technical import/export actions. Most people should use the main Import / Export buttons above.</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button
+                  className="btn-secondary w-full"
+                  onClick={() => downloadExercisesCSV(userExercises, db.exercises, userBaselines)}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Export Exercises CSV
+                </button>
+                <button
+                  className="btn-secondary w-full"
+                  onClick={() => downloadWorkoutHistoryCSV(db, user)}
+                >
+                  <FileDown className="h-4 w-4" />
+                  Export Workout History CSV
+                </button>
+                <button className="btn-secondary w-full" onClick={() => setShowWorkoutImportFlow(true)}>
+                  <FileUp className="h-4 w-4" />
+                  Import Workout History CSV
+                </button>
+                <button className="btn-secondary w-full" onClick={() => setShowExerciseImportFlow(true)}>
+                  <FileUp className="h-4 w-4" />
+                  Import Exercises / Baselines CSV
+                </button>
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <button className="btn-secondary w-full text-xs" onClick={() => copyPrompt("exercise_headers")}>
+                  <Copy className="h-4 w-4" />
+                  {copiedPrompt === "exercise_headers" ? "Copied!" : "Copy Exercise Headers"}
+                </button>
+                <button className="btn-secondary w-full text-xs" onClick={() => copyPrompt("workout_headers")}>
+                  <Copy className="h-4 w-4" />
+                  {copiedPrompt === "workout_headers" ? "Copied!" : "Copy Workout History Headers"}
+                </button>
+              </div>
+            </div>
+          </details>
+        </div>
+      </Panel>
+      <Modal open={showUnifiedImportFlow} onClose={() => setShowUnifiedImportFlow(false)} title="Import Training Data">
+        <ImportTrainingDataFlow db={db} user={user} updateDb={updateDb} onClose={() => setShowUnifiedImportFlow(false)} />
+      </Modal>
+      <Modal open={showWorkoutImportFlow} onClose={() => setShowWorkoutImportFlow(false)} title="Import Workout History">
+        <ImportWorkoutCSVFlow db={db} user={user} updateDb={updateDb} onClose={() => setShowWorkoutImportFlow(false)} />
+      </Modal>
+      <Modal open={showExerciseImportFlow} onClose={() => setShowExerciseImportFlow(false)} title="Import Exercises / Baselines">
+        <ImportExercisesFlow db={db} user={user} updateDb={updateDb} onClose={() => setShowExerciseImportFlow(false)} />
+      </Modal>
+    </>
+  );
 }
 
 export default App;
