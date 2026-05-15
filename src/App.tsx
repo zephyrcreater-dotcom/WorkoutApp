@@ -1410,13 +1410,16 @@ function LiveLogger({
   });
   const SWIPE_DELETE_WIDTH = 96;
   const SWIPE_OPEN_THRESHOLD = 52;
-  const [swipeState, setSwipeState] = useState<{
+  // swipeDrag: visual drag state — only set after horizontal gesture confirmed, drives translateX + delete opacity.
+  const [swipeDrag, setSwipeDrag] = useState<{ setId: string; offsetX: number } | null>(null);
+  // swipeGestureRef: raw gesture tracking — mutated directly, never triggers re-renders, invisible to rendering.
+  const swipeGestureRef = useRef<{
     setId: string;
     startX: number;
     startY: number;
     initialOffset: number;
-    deltaX: number;
-    gestureMode: "undecided" | "horizontal" | "vertical";
+    mode: "undecided" | "horizontal" | "vertical";
+    currentOffsetX: number;
   } | null>(null);
   const [suggestionApplied, setSuggestionApplied] = useState(false);
   const [pendingOffProgramExercise, setPendingOffProgramExercise] = useState<Exercise | undefined>();
@@ -1482,7 +1485,8 @@ function LiveLogger({
     setShowSetNotes(false);
     setShowMachineSelector(false);
     setOpenSwipeSetId(undefined);
-    setSwipeState(null);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
   }, [activeExerciseId]);
 
   useEffect(() => {
@@ -1490,13 +1494,15 @@ function LiveLogger({
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
     setOpenSwipeSetId(undefined);
-    setSwipeState(null);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
   }, [sessionId]);
 
   useEffect(() => {
     if (isSwipeEnabled) return;
     setOpenSwipeSetId(undefined);
-    setSwipeState(null);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
   }, [isSwipeEnabled]);
 
   useEffect(() => {
@@ -1554,7 +1560,8 @@ function LiveLogger({
     const openRowStillExists = activeExerciseLog?.sets.some((set) => set.id === openSwipeSetId) ?? false;
     if (!openRowStillExists) {
       setOpenSwipeSetId(undefined);
-      setSwipeState(null);
+      swipeGestureRef.current = null;
+      setSwipeDrag(null);
     }
   }, [activeExerciseLog, openSwipeSetId]);
 
@@ -1780,48 +1787,68 @@ function LiveLogger({
 
   function startSetSwipe(setId: string, clientX: number, clientY: number) {
     if (!isSwipeEnabled) return;
-    // Record where the row already is so dragging an open row feels continuous.
-    const initialOffset = openSwipeSetId === setId ? -SWIPE_DELETE_WIDTH : 0;
-    // Close any OTHER open row immediately.
-    setOpenSwipeSetId((current) => current === setId ? current : undefined);
-    setSwipeState({ setId, startX: clientX, startY: clientY, initialOffset, deltaX: 0, gestureMode: "undecided" });
+    // Record coordinates only — NO visual change, NO setState, NO openSwipeSetId change.
+    // Dragging is confirmed only after horizontal movement exceeds threshold in moveSetSwipe.
+    swipeGestureRef.current = {
+      setId,
+      startX: clientX,
+      startY: clientY,
+      initialOffset: openSwipeSetId === setId ? -SWIPE_DELETE_WIDTH : 0,
+      mode: "undecided",
+      currentOffsetX: openSwipeSetId === setId ? -SWIPE_DELETE_WIDTH : 0,
+    };
   }
 
   function moveSetSwipe(clientX: number, clientY: number) {
     if (!isSwipeEnabled) return;
-    setSwipeState((current) => {
-      if (!current) return current;
-      const deltaX = clientX - current.startX;
-      const deltaY = clientY - current.startY;
-      if (current.gestureMode === "undecided") {
-        if (Math.abs(deltaX) < 8 && Math.abs(deltaY) < 8) return current;
-        if (Math.abs(deltaX) > Math.abs(deltaY) + 6) {
-          return { ...current, gestureMode: "horizontal", deltaX };
-        }
-        if (Math.abs(deltaY) > Math.abs(deltaX) + 6) {
-          return { ...current, gestureMode: "vertical" };
-        }
-        return current;
+    const g = swipeGestureRef.current;
+    if (!g) return;
+    const dx = clientX - g.startX;
+    const dy = clientY - g.startY;
+    if (g.mode === "undecided") {
+      // Wait until movement clears threshold before deciding direction.
+      if (Math.abs(dx) < 10 && Math.abs(dy) < 10) return;
+      if (Math.abs(dy) >= Math.abs(dx)) {
+        g.mode = "vertical"; // vertical scroll wins — no visual change ever
+        return;
       }
-      if (current.gestureMode !== "horizontal") return current;
-      return { ...current, deltaX };
-    });
+      // Horizontal left swipe confirmed — now it's safe to start visual drag.
+      g.mode = "horizontal";
+      // Close any other open row at this moment (not on touchstart).
+      setOpenSwipeSetId((current) => current === g.setId ? current : undefined);
+    }
+    if (g.mode !== "horizontal") return;
+    const clampedOffset = Math.max(-SWIPE_DELETE_WIDTH, Math.min(0, g.initialOffset + dx));
+    g.currentOffsetX = clampedOffset;
+    setSwipeDrag({ setId: g.setId, offsetX: clampedOffset });
   }
 
   function endSetSwipe() {
-    if (!isSwipeEnabled || !swipeState) return;
-    if (swipeState.gestureMode === "horizontal") {
-      const finalOffset = Math.max(-SWIPE_DELETE_WIDTH, Math.min(0, swipeState.initialOffset + swipeState.deltaX));
-      if (finalOffset <= -SWIPE_OPEN_THRESHOLD) {
-        setOpenSwipeSetId(swipeState.setId);
-      } else {
-        // Close this row if it was open; leave all others unchanged.
-        setOpenSwipeSetId((current) => current === swipeState.setId ? undefined : current);
-      }
+    if (!isSwipeEnabled) return;
+    const g = swipeGestureRef.current;
+    swipeGestureRef.current = null;
+    if (!g || g.mode !== "horizontal") {
+      // Tap or vertical scroll: no snap needed; onClick handles tap-to-close.
+      return;
     }
-    // gestureMode "undecided" (tap) and "vertical" (scroll): leave openSwipeSetId alone;
-    // the onClick handler on the row already handles tap-to-close.
-    setSwipeState(null);
+    const finalOffset = g.currentOffsetX;
+    setSwipeDrag(null);
+    if (finalOffset <= -SWIPE_OPEN_THRESHOLD) {
+      setOpenSwipeSetId(g.setId);
+    } else {
+      setOpenSwipeSetId((current) => current === g.setId ? undefined : current);
+    }
+  }
+
+  function cancelSetSwipe() {
+    if (!isSwipeEnabled) return;
+    const g = swipeGestureRef.current;
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
+    // On cancel: close the row if it was being dragged open (wasn't snapped open before).
+    if (g && g.mode === "horizontal" && g.initialOffset === 0) {
+      setOpenSwipeSetId((current) => current === g.setId ? undefined : current);
+    }
   }
 
   function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-exercise" | "finish-workout" = "stay") {
@@ -1893,6 +1920,11 @@ function LiveLogger({
         return draft;
       });
       setEditingSetId(null);
+      // After saving an edited completed set, scroll the next pending/current set into view.
+      setTimeout(() => {
+        const el = setLineupRef.current?.querySelector<HTMLElement>('[data-is-current-set="true"]');
+        el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }, 80);
       return;
     }
 
@@ -2241,7 +2273,7 @@ function LiveLogger({
               Delete this set? Use Delete for entry mistakes or removing an unwanted planned set. Use Skip to record a missed set.
             </p>
             <div className="grid grid-cols-2 gap-3">
-              <button className="btn-secondary" onClick={() => { setPendingDeleteTarget(null); setOpenSwipeSetId(undefined); setSwipeState(null); }}>Cancel</button>
+              <button className="btn-secondary" onClick={() => { setPendingDeleteTarget(null); setOpenSwipeSetId(undefined); swipeGestureRef.current = null; setSwipeDrag(null); }}>Cancel</button>
               <button
                 className="btn-secondary border-ember/40 text-orange-100"
                 onClick={() => {
@@ -2276,7 +2308,8 @@ function LiveLogger({
                     return draft;
                   });
                   setOpenSwipeSetId(undefined);
-                  setSwipeState(null);
+                  swipeGestureRef.current = null;
+                  setSwipeDrag(null);
                   if (targetDelete?.actualSetId && editingSetId === targetDelete.actualSetId) setEditingSetId(null);
                   setSelectedLoggingIndex(null);
                 }}
@@ -2357,7 +2390,8 @@ function LiveLogger({
                     setSelectedLoggingIndex(null);
                     setEditingSetId(null);
                     setOpenSwipeSetId(undefined);
-                    setSwipeState(null);
+                    swipeGestureRef.current = null;
+                    setSwipeDrag(null);
                     setPendingDeleteTarget(null);
                   }}
                 >
@@ -2435,12 +2469,16 @@ function LiveLogger({
                   const statusLabel = isEditingThisRow ? "Editing" : actual?.skipped ? "Skipped" : actual ? "Complete" : isSelected ? "Current" : "Pending";
                   const swipeRowId = actual?.id;
                   const isSwipeOpen = isSwipeEnabled && !!swipeRowId && openSwipeSetId === swipeRowId;
-                  const isActiveSwipeRow = isSwipeEnabled && !!swipeRowId && swipeState?.setId === swipeRowId;
-                  const isHorizontalDrag = isActiveSwipeRow && swipeState?.gestureMode === "horizontal";
-                  // Position = clamp(initialOffset + movement, -DELETE_WIDTH, 0), derived each frame.
-                  const rawDragOffset = isActiveSwipeRow && swipeState
-                    ? Math.max(-SWIPE_DELETE_WIDTH, Math.min(0, swipeState.initialOffset + swipeState.deltaX))
-                    : 0;
+                  // translateX is derived solely from confirmed drag or snapped-open state —
+                  // never from touch start, press, or hold.
+                  const isDraggingThisRow = isSwipeEnabled && !!swipeRowId && swipeDrag?.setId === swipeRowId;
+                  const translateX = isDraggingThisRow
+                    ? swipeDrag!.offsetX
+                    : isSwipeOpen
+                      ? -SWIPE_DELETE_WIDTH
+                      : 0;
+                  // Delete opacity and pointer-events are fully derived from translateX.
+                  const deleteOpacity = Math.min(1, Math.abs(translateX) / SWIPE_DELETE_WIDTH);
                   const showSwipeDeleteReveal = isSwipeEnabled && !!actual && !actual.skipped;
                   const showInlineDeleteButton = !showSwipeDeleteReveal || !isSwipeEnabled;
                   const plannedWeightText = bodyweightMovement
@@ -2451,7 +2489,7 @@ function LiveLogger({
                   const actualWeightText = actual && !actual.skipped
                     ? formatExerciseLoadText({ exercise: liveExercise, user, weight: actual.actualWeight, unit: actual.unit || exerciseUnit })
                     : undefined;
-                  const swipeOffset = isHorizontalDrag ? rawDragOffset : isSwipeOpen ? -SWIPE_DELETE_WIDTH : 0;
+                  // No active: classes — content must never become transparent on press/touch.
                   const rowSurfaceClass = isSelected
                     ? "border-volt bg-iron-950"
                     : actual
@@ -2461,11 +2499,13 @@ function LiveLogger({
                     <div
                       key={lineupItem.key}
                       data-swipe-row-id={swipeRowId}
+                      data-is-current-set={isSelected && !isEditingThisRow && !actual ? "true" : undefined}
                       className="relative overflow-hidden rounded-lg"
                     >
                       {showSwipeDeleteReveal && (
                         <div
-                          className={`absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center rounded-lg bg-ember/90 ${isSwipeOpen ? "pointer-events-auto" : "pointer-events-none"}`}
+                          className="absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center rounded-lg bg-ember/90"
+                          style={{ opacity: deleteOpacity, pointerEvents: isSwipeOpen ? "auto" : "none" }}
                         >
                           <button
                             className="flex w-full items-center justify-center px-4 text-sm font-black text-orange-50"
@@ -2480,13 +2520,13 @@ function LiveLogger({
                         </div>
                       )}
                       <div
-                        className={`relative z-10 rounded-lg border p-3 cursor-pointer active:bg-white/10 ${rowSurfaceClass}`}
+                        className={`relative z-10 rounded-lg border p-3 cursor-pointer ${rowSurfaceClass}`}
                         role="button"
                         tabIndex={0}
                         style={{
-                          transform: isSwipeEnabled ? `translateX(${swipeOffset}px)` : "translateX(0px)",
-                          touchAction: isSwipeEnabled ? "pan-y" : "auto",
-                          transition: isHorizontalDrag ? "background-color 150ms" : "transform 200ms ease, background-color 150ms",
+                          transform: isSwipeEnabled && translateX !== 0 ? `translateX(${translateX}px)` : undefined,
+                          touchAction: isSwipeEnabled ? "pan-y" : undefined,
+                          transition: isDraggingThisRow ? undefined : "transform 200ms ease",
                         }}
                         onClick={() => {
                           if (isSwipeOpen) {
@@ -2517,7 +2557,7 @@ function LiveLogger({
                           if (!isSwipeEnabled) return;
                           endSetSwipe();
                         }}
-                        onTouchCancel={() => setSwipeState(null)}
+                        onTouchCancel={() => cancelSetSwipe()}
                       >
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <p className="font-black">Set {lineupItem.displayIndex + 1} — {statusLabel}</p>
