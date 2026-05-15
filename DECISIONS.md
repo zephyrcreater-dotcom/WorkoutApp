@@ -1,5 +1,28 @@
 # DECISIONS.md
 
+## Algorithm Phase 1 Decisions (Session 17)
+
+**Epley with effective reps as the default formula**
+RPE-aware Epley (`e1RM = weight × (1 + (reps + RIR) / 30)`) is used as the default over the RPE-percent table lookup because it produces consistent, invertible results for both the forward (observed e1RM) and reverse (prescription) directions. The RPE-chart formula is kept for backward compatibility but is not the default.
+
+**RIR clamped to 0–5**
+RIR is not allowed to exceed 5 (RPE < 5 entries). A user claiming RPE 4 on a working set likely mis-entered, and allowing RIR = 6+ would inflate e1RM and produce dangerously high prescriptions. The clamp makes the system conservative.
+
+**Readiness adjusts target RPE, not load directly**
+Rather than multiplying prescribed weight by a readiness factor, readiness shifts the target RPE used in the reverse prescription. A 0.5 RPE shift on an 8-RPE target for 10 reps changes the prescription by about 1.7%, which is a small and proportional adjustment. This avoids compounding load multipliers and keeps the math transparent.
+
+**Feel → actual RPE uses simple symmetric offsets**
+Feel 1/2/3/4/5 maps to ±1.0/±0.5/0 relative to target RPE. This is intentionally simple and symmetric. More complex asymmetric calibration is deferred to Phase 2 when there is training history to learn from.
+
+**Live logger recommendation replaced, not augmented**
+The old `algNextSetAdjustment` (multiplier on actual weight) was removed from `buildSetRecommendation` rather than kept as a fallback. A fallback would risk the user seeing contradictory suggestions. The new e1RM pipeline handles all cases cleanly, including feel-based reduce/increase copy.
+
+**Pain warning preserved as an override**
+The pain-rating check from the old `setAdjustment.ts` is kept in `buildSetRecommendation` as the first check before any math runs. A pain rating ≥ 6 always produces a "Stop or substitute" recommendation and bypasses the e1RM pipeline entirely.
+
+**Nominal e1RM deferred to Phase 2**
+Phase 1 uses observed e1RM directly. Nominal e1RM (trend-adjusted, readiness-normalised) requires multiple sessions of history and a decay/confidence model that would add too much complexity and failure surface in Phase 1. The structure is documented with TODOs in `e1rm.ts` and `weightPrescription.ts`.
+
 ## Completed Set Editing + True Delete Flow Fix Decisions (Session 16)
 
 - The live logger needs an explicit distinction between “logging the active set” and “editing an existing set.” A single shared selected-set index is too brittle once completed-set editing and planned-set deletion are both supported.

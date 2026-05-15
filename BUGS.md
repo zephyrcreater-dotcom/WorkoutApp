@@ -2,6 +2,15 @@
 
 ## Known Bugs
 
+## Algorithm Phase 1: Observed e1RM + Reverse Prescription (Session 17)
+
+- The new e1RM-based live logger pipeline is implemented and all spec math verifies. Manual gym-flow verification is still recommended:
+  - Confirm suggestion copy is clear and not contradictory (feel vs RPE copy should agree)
+  - Confirm suggestions round correctly for kg exercises (2.5 kg increment)
+  - Confirm no suggestion appears for bodyweight sets with no added load
+- The old `algNextSetAdjustment` (setAdjustment.ts) is no longer called from the live logger but remains available in `src/lib/algorithms/` if needed elsewhere or for comparison.
+- Nominal e1RM (Phase 2) is not yet built. Current prescription uses observed e1RM directly with a small readiness modifier on the target RPE. This is conservative and safe but does not account for fatigue trends or block context.
+
 ## Completed Set Editing + True Delete Flow Fix (Session 16)
 
 - The logger now has separate logging/editing state in code, but it still needs real workout-flow verification to confirm every tap path feels right after multiple edits, deletes, skips, and resume cycles.

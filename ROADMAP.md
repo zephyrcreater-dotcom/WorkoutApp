@@ -1,5 +1,26 @@
 # ROADMAP.md
 
+## Algorithm Phase 1: Observed e1RM + Reverse Prescription — Completed (Session 17)
+
+### Delivered
+- `calculateObservedE1RMResult()` — structured RPE-aware Epley e1RM with metadata
+- `prescribeLoadFromObservedE1RM()` — reverse Epley prescription with two guardrails
+- `deriveActualRpeFromFeel()` — feel (1–5) → actual RPE mapping relative to target RPE
+- `adjustTargetRpeForReadiness()` — small readiness modifier on target RPE (±0.25–0.75)
+- Live logger `buildSetRecommendation()` replaced with the new e1RM pipeline
+- All spec math examples verified; critical bug (297.5 lb) cannot reproduce with new math
+
+### Next steps
+- Manual gym-flow verification of suggestion copy and rounding
+- **Algorithm Phase 2: Nominal e1RM** — trend-adjusted, readiness-normalised e1RM using:
+  - observed e1RM from multiple sessions
+  - readiness score and workout score
+  - set feel / fatigue signal
+  - recent trend weighting
+  - exercise variation relationship
+  - confidence decay over time
+- Pre-workout recommendation panel (before session starts) should also use the new e1RM pipeline instead of the baseline multiplier approach in `recommendWeightForExercise()`
+
 ## Completed Set Editing + True Delete Flow Fix — Completed (Session 16)
 
 ### Delivered

@@ -1,6 +1,6 @@
 import type { Exercise } from "../../types/domain";
 
-export type E1rmFormula = "epley" | "rpe-chart";
+export type E1rmFormula = "epley" | "epley-rpe" | "rpe-chart";
 
 export interface ObservedE1RMInput {
   weight: number;
@@ -11,6 +11,26 @@ export interface ObservedE1RMInput {
   trackingMetric?: Exercise["bestTrackedBy"][number];
   skipped?: boolean;
   setType?: string;
+}
+
+/**
+ * Structured result from calculateObservedE1RMResult.
+ *
+ * TODO — Nominal e1RM (Phase 2) will extend this by normalising for readiness,
+ * workout score, fatigue, recent trend, exercise variation, and a confidence
+ * score. The observed e1RM here is the raw single-set estimate only.
+ */
+export interface ObservedE1RMResult {
+  e1rm: number;
+  formula: E1rmFormula;
+  confidence: "high" | "medium" | "low";
+  inputs: {
+    weight: number;
+    reps: number;
+    rpe?: number;
+    rir?: number;
+    effectiveReps?: number;
+  };
 }
 
 const RPE_PERCENT_TABLE: Record<number, Record<number, number>> = {
@@ -49,15 +69,83 @@ export function calculateObservedE1RM(input: ObservedE1RMInput): number | null {
   if (input.weight <= 0 || input.reps <= 0) return null;
   if (isNonLoadMetric(input.trackingMetric)) return null;
 
-  if ((input.formula ?? "rpe-chart") === "epley" || input.actualRpe === undefined) {
+  const clampedRpe = input.actualRpe !== undefined
+    ? Math.max(1, Math.min(10, input.actualRpe))
+    : undefined;
+
+  // "epley": plain Epley, no RPE awareness
+  if (input.formula === "epley" || clampedRpe === undefined) {
     return Number((input.weight * (1 + input.reps / 30)).toFixed(1));
   }
 
-  const percent = lookupRpePercent(input.reps, input.actualRpe);
-  if (percent > 0) return Number((input.weight / percent).toFixed(1));
-  return Number((input.weight * (1 + input.reps / 30)).toFixed(1));
+  // "rpe-chart": table lookup (kept for backward compat)
+  if (input.formula === "rpe-chart") {
+    const percent = lookupRpePercent(input.reps, clampedRpe);
+    if (percent > 0) return Number((input.weight / percent).toFixed(1));
+  }
+
+  // Default ("epley-rpe" or unset with RPE): RPE-aware Epley via effective reps.
+  // RIR clamped to 0–5 to prevent absurd inflation from low-RPE entries.
+  const rir = Math.max(0, Math.min(5, 10 - clampedRpe));
+  const effectiveReps = input.reps + rir;
+  return Number((input.weight * (1 + effectiveReps / 30)).toFixed(1));
 }
 
 export function calculateRpeAdjustedE1RM(input: ObservedE1RMInput): number | null {
   return calculateObservedE1RM({ ...input, formula: "rpe-chart" });
+}
+
+/**
+ * Structured version of calculateObservedE1RM for use in the live logger
+ * prescription pipeline. Returns full metadata alongside the e1RM value.
+ *
+ * Formula priority:
+ *   "epley"     — plain Epley (reps only, ignores RPE)
+ *   "rpe-chart" — RPE percentage table lookup
+ *   "epley-rpe" — RPE-aware Epley using effective reps (default when RPE present)
+ */
+export function calculateObservedE1RMResult(input: {
+  weight: number;
+  reps: number;
+  rpe?: number;
+  formula?: E1rmFormula;
+}): ObservedE1RMResult | null {
+  if (input.weight <= 0 || input.reps <= 0) return null;
+
+  const clampedRpe = input.rpe !== undefined
+    ? Math.max(1, Math.min(10, input.rpe))
+    : undefined;
+
+  // Plain Epley (no RPE)
+  if (input.formula === "epley" || clampedRpe === undefined) {
+    return {
+      e1rm: Number((input.weight * (1 + input.reps / 30)).toFixed(1)),
+      formula: "epley",
+      confidence: input.reps <= 10 ? "medium" : "low",
+      inputs: { weight: input.weight, reps: input.reps },
+    };
+  }
+
+  // RPE chart (table lookup)
+  if (input.formula === "rpe-chart") {
+    const percent = lookupRpePercent(input.reps, clampedRpe);
+    if (percent > 0) {
+      return {
+        e1rm: Number((input.weight / percent).toFixed(1)),
+        formula: "rpe-chart",
+        confidence: input.reps <= 10 ? "high" : "medium",
+        inputs: { weight: input.weight, reps: input.reps, rpe: clampedRpe },
+      };
+    }
+  }
+
+  // Default: RPE-aware Epley
+  const rir = Math.max(0, Math.min(5, 10 - clampedRpe));
+  const effectiveReps = input.reps + rir;
+  return {
+    e1rm: Number((input.weight * (1 + effectiveReps / 30)).toFixed(1)),
+    formula: "epley-rpe",
+    confidence: input.reps <= 12 ? "high" : "medium",
+    inputs: { weight: input.weight, reps: input.reps, rpe: clampedRpe, rir, effectiveReps },
+  };
 }

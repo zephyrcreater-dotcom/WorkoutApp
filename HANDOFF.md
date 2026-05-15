@@ -8,7 +8,69 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
-## Current Handoff — Completed Set Editing + True Delete Flow Fix (Session 16)
+## Current Handoff — Algorithm Phase 1: Observed e1RM + Reverse Prescription (Session 17)
+
+### What changed
+
+**New math layer: observed e1RM and reverse prescription**
+- `src/lib/trainingIntelligence/e1rm.ts` — Added `ObservedE1RMResult` type and `calculateObservedE1RMResult()`. Added `"epley-rpe"` formula (RPE-aware Epley using effective reps). Updated `calculateObservedE1RM()` default to use RPE-aware Epley when RPE is provided.
+- `src/lib/trainingIntelligence/weightPrescription.ts` — Added three new exported functions:
+  - `deriveActualRpeFromFeel()` — maps feel rating (1–5) to actual RPE relative to target RPE
+  - `adjustTargetRpeForReadiness()` — applies small readiness modifier (±0.25–0.75) to target RPE
+  - `prescribeLoadFromObservedE1RM()` — reverse Epley prescription with guardrails
+
+**Live logger recommendation pipeline replaced**
+- `src/App.tsx` `buildSetRecommendation()` — replaced the multiplier-based `algNextSetAdjustment` call with the new e1RM pipeline:
+  - derive actual RPE from feel or explicit RPE entry
+  - calculate observed e1RM (RPE-aware Epley)
+  - adjust target RPE for readiness
+  - reverse-prescribe target load
+  - round to exercise increment
+  - show concise reason in suggestion copy
+- All three `buildSetRecommendation` call sites updated to pass `readiness` and `unit`.
+
+**Formulas**
+
+Observed e1RM (RPE-aware Epley):
+- RIR = clamp(10 − RPE, 0, 5)
+- effectiveReps = reps + RIR
+- e1RM = weight × (1 + effectiveReps / 30)
+
+Reverse prescription:
+- targetRIR = clamp(10 − targetRPE, 0, 5)
+- targetEffectiveReps = targetReps + targetRIR
+- targetWeight = e1RM / (1 + targetEffectiveReps / 30)
+
+Verified examples:
+- 100 lb × 6 @ RPE 10 → e1RM 120 lb ✓
+- 100 lb × 6 @ RPE 8 → e1RM 126.7 lb ✓
+- e1RM 120, target 12 @ RPE 7 → 80 lb (not 297.5 lb) ✓
+- e1RM 120, target 6 @ RPE 10 → 100 lb ✓
+
+**Nominal e1RM deferred to Phase 2**
+- `calculateObservedE1RMResult` returns raw single-set observed e1RM only.
+- Phase 2 will add a nominal e1RM layer normalised for readiness, workout score, fatigue, trend, and exercise variation.
+- TODOs are documented in `e1rm.ts` and `weightPrescription.ts`.
+
+### Validation
+- Lint: passing
+- Build: passing
+- All spec math examples verified with node inline test
+
+### Manual verification checklist
+- [ ] Log 100 lb × 6 @ RPE 10, confirm next-set suggestion is ~80 lb for 12 @ RPE 7
+- [ ] Feel 5 on a set lowers actual RPE estimate by ~1
+- [ ] Feel 1 on a set raises actual RPE estimate by ~1
+- [ ] Readiness 85+ adds ~0.5 to target RPE in prescription
+- [ ] Readiness 55 subtracts ~0.5 from target RPE in prescription
+- [ ] Unit stays lb for lb exercises; no cross-unit confusion
+- [ ] Suggestions round to exercise increment and note the rounding
+- [ ] Pain rating ≥ 6 produces "Stop or substitute" override, not a load suggestion
+- [ ] Bodyweight sets without added load produce no recommendation
+
+---
+
+## Previous Handoff — Completed Set Editing + True Delete Flow Fix (Session 16)
 
 ### What changed
 
