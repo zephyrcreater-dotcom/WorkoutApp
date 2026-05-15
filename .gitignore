@@ -10,3 +10,4 @@ build
 imports/*.xlsx
 imports/*.csv
 imports/*.json
+.claude/
