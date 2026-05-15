@@ -35,7 +35,7 @@ import {
   Wand2,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
 import type { SnapshotSummary } from "./lib/cloudSync";
 import {
@@ -92,6 +92,8 @@ import {
   estimateOneRepMax,
   formatWeight,
   getExerciseDisplayUnit,
+  getExerciseLoadUnit,
+  isBodyweightExercise,
   isWeightUnit,
   learnGymExerciseAdjustment,
   powerliftingMetrics,
@@ -277,6 +279,157 @@ function isWeekPlanned(week: { isDraft?: boolean; workouts: { status?: string; e
   const trainingDays = week.workouts.filter((day) => day.status !== "rest");
   if (!trainingDays.length) return false;
   return trainingDays.every((day) => isWorkoutDayPlanned(day));
+}
+
+type ResumeWorkoutState =
+  | { kind: "missing"; reason: string }
+  | { kind: "invalid"; session: WorkoutSession; reason: string }
+  | { kind: "no-exercises"; session: WorkoutSession }
+  | {
+      kind: "ready";
+      session: WorkoutSession;
+      activeExerciseIndex: number;
+      activeExerciseId: string;
+      currentSetIndex: number;
+      repaired: boolean;
+    };
+
+function getLoggedExercisePlannedSets(log?: LoggedExercise, planned?: PlannedExercise): PlannedSet[] {
+  const deletedIds = new Set(log?.deletedPlannedSetIds || []);
+  const sourceSets = planned?.plannedSets || log?.offProgramPlannedSets || [];
+  if (!deletedIds.size) return sourceSets;
+  return sourceSets.filter((set) => !deletedIds.has(set.id));
+}
+
+function getResumeSetIndex(log: LoggedExercise, plannedSets: PlannedSet[]): number {
+  if (!plannedSets.length) return log.sets.length;
+  for (let index = 0; index < plannedSets.length; index += 1) {
+    const plannedSet = plannedSets[index];
+    if (!log.sets.some((set) => set.plannedSetId === plannedSet.id)) return index;
+  }
+  return plannedSets.length;
+}
+
+type LoggerLineupItem = {
+  key: string;
+  displayIndex: number;
+  plannedIndex?: number;
+  plannedSet?: PlannedSet;
+  actualIndex?: number;
+  actualSet?: LoggedSet;
+  isExtra: boolean;
+};
+
+function buildLoggerLineupItems(log: LoggedExercise, plannedSets: PlannedSet[]): LoggerLineupItem[] {
+  const matchedActualSetIds = new Set<string>();
+  const plannedItems = plannedSets.map((plannedSet, plannedIndex) => {
+    const actualIndex = log.sets.findIndex((set) => set.plannedSetId === plannedSet.id);
+    const actualSet = actualIndex >= 0 ? log.sets[actualIndex] : undefined;
+    if (actualSet) matchedActualSetIds.add(actualSet.id);
+    return {
+      key: `planned:${plannedSet.id}`,
+      displayIndex: plannedIndex,
+      plannedIndex,
+      plannedSet,
+      actualIndex: actualIndex >= 0 ? actualIndex : undefined,
+      actualSet,
+      isExtra: false,
+    };
+  });
+
+  const extraItems = log.sets
+    .map((actualSet, actualIndex) => ({ actualSet, actualIndex }))
+    .filter(({ actualSet }) => !matchedActualSetIds.has(actualSet.id))
+    .map(({ actualSet, actualIndex }, extraIndex) => ({
+      key: `extra:${actualSet.id}`,
+      displayIndex: plannedItems.length + extraIndex,
+      actualIndex,
+      actualSet,
+      isExtra: true,
+    }));
+
+  return [...plannedItems, ...extraItems];
+}
+
+function resolveWorkoutResumeState(
+  db: TrainingDatabase,
+  userId: string,
+  sessionId?: string,
+  preferredExerciseId?: string
+): ResumeWorkoutState {
+  const session = sessionId
+    ? db.sessions.find((candidate) => candidate.id === sessionId && candidate.userId === userId)
+    : db.sessions.find((candidate) => candidate.userId === userId && candidate.status === "in-progress");
+
+  if (!session) return { kind: "missing", reason: "session-missing" };
+  if (session.status !== "in-progress") return { kind: "invalid", session, reason: "session-not-in-progress" };
+  if (!session.loggedExercises.length) return { kind: "no-exercises", session };
+
+  const hasExerciseDefinition = (log?: LoggedExercise) => !!log && db.exercises.some((exercise) => exercise.id === log.exerciseId);
+  const findFallbackIndex = (preferIncomplete: boolean): number => {
+    for (let index = 0; index < session.loggedExercises.length; index += 1) {
+      const log = session.loggedExercises[index];
+      if (!hasExerciseDefinition(log)) continue;
+      if (!preferIncomplete || !isLoggedExerciseComplete(log, db, session)) return index;
+    }
+    return -1;
+  };
+  const firstValidIncompleteIndex = findFallbackIndex(true);
+  const firstValidExerciseIndex = findFallbackIndex(false);
+  const preferredIndex = preferredExerciseId
+    ? session.loggedExercises.findIndex((log) => log.id === preferredExerciseId)
+    : -1;
+  const fallbackIndex = firstValidIncompleteIndex >= 0
+    ? firstValidIncompleteIndex
+    : firstValidExerciseIndex >= 0
+      ? firstValidExerciseIndex
+      : -1;
+  if (fallbackIndex < 0) return { kind: "invalid", session, reason: "no-valid-exercises" };
+
+  let activeExerciseIndex = preferredIndex >= 0
+    ? preferredIndex
+    : Math.min(Math.max(session.currentExerciseIndex ?? fallbackIndex, 0), session.loggedExercises.length - 1);
+
+  const currentLog = session.loggedExercises[activeExerciseIndex];
+  if (!currentLog) {
+    const fallbackLog = session.loggedExercises[fallbackIndex];
+    if (!fallbackLog) return { kind: "invalid", session, reason: "active-exercise-missing" };
+    activeExerciseIndex = fallbackIndex;
+  }
+
+  if (preferredExerciseId && preferredIndex < 0) activeExerciseIndex = fallbackIndex;
+  if (!hasExerciseDefinition(session.loggedExercises[activeExerciseIndex])) activeExerciseIndex = fallbackIndex;
+  // Only auto-redirect to the first incomplete exercise during initial resume (no explicit user choice).
+  // When the user explicitly clicks a completed exercise, respect their selection.
+  if (preferredIndex < 0 && firstValidIncompleteIndex >= 0 && isLoggedExerciseComplete(session.loggedExercises[activeExerciseIndex], db, session)) {
+    activeExerciseIndex = firstValidIncompleteIndex;
+  }
+
+  const activeLog = session.loggedExercises[activeExerciseIndex];
+  if (!activeLog) return { kind: "invalid", session, reason: "active-exercise-missing" };
+
+  const planned = findPlannedExercise(db, session, activeLog);
+  const plannedSets = getLoggedExercisePlannedSets(activeLog, planned);
+  const expectedSetIndex = getResumeSetIndex(activeLog, plannedSets);
+  const currentSetIndex = session.currentSetIndex ?? expectedSetIndex;
+  const clampedSetIndex = Math.min(Math.max(currentSetIndex, 0), expectedSetIndex);
+
+  return {
+    kind: "ready",
+    session,
+    activeExerciseIndex,
+    activeExerciseId: activeLog.id,
+    currentSetIndex: clampedSetIndex,
+    repaired:
+      activeExerciseIndex !== (session.currentExerciseIndex ?? fallbackIndex)
+      || activeLog.id !== preferredExerciseId && !!preferredExerciseId
+      || clampedSetIndex !== currentSetIndex,
+  };
+}
+
+function isSessionResumableOnTodayCard(db: TrainingDatabase, userId: string, session?: WorkoutSession): boolean {
+  if (!session) return false;
+  return resolveWorkoutResumeState(db, userId, session.id).kind === "ready";
 }
 
 // localStorage-backed builder form draft per user
@@ -508,6 +661,7 @@ function App() {
   const { db, currentUser, loading, error, authMode, updateDb, importDb, reseed, cloud } = useTrainingDb();
   const [screen, setScreen] = useState<Screen>("today");
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
+  const [resumeMessage, setResumeMessage] = useState<string | undefined>();
   const [planWeekRequest, setPlanWeekRequest] = useState<number | undefined>();
   // Persists the Week Editor open state across tab navigation so editing is not lost on screen switch.
   const [editingWeekNumber, setEditingWeekNumber] = useState<number | undefined>();
@@ -582,6 +736,28 @@ function App() {
 
   const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && session.status === "in-progress");
   const activeSession = activeSessionId ? db.sessions.find((session) => session.id === activeSessionId) || persistedActiveSession : persistedActiveSession;
+  const appDb = db;
+  const currentUserId = currentUser.id;
+
+  async function resumeWorkoutSession(requestedSessionId?: string) {
+    const resumeState = resolveWorkoutResumeState(appDb, currentUserId, requestedSessionId);
+    if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") {
+      setResumeMessage(undefined);
+      setActiveSessionId(resumeState.session.id);
+      setScreen("logger");
+      return;
+    }
+
+    console.error("Workout resume failed", {
+      userId: currentUserId,
+      requestedSessionId,
+      reason: resumeState.reason,
+      activeSessionId,
+    });
+    setActiveSessionId(undefined);
+    setResumeMessage("That workout could not be resumed.");
+    setScreen("today");
+  }
 
   return (
     <div className="min-h-dvh max-w-full pb-32 text-white lg:pb-0">
@@ -615,7 +791,7 @@ function App() {
               {renderCloudStatusLabel(cloud.status)}
             </button>
             {activeSession && (
-              <button className="btn-primary hidden sm:inline-flex" onClick={() => setScreen("logger")}>
+              <button className="btn-primary hidden sm:inline-flex" onClick={() => void resumeWorkoutSession(activeSession.id)}>
                 <Timer className="h-4 w-4" />
                 Live
               </button>
@@ -641,7 +817,20 @@ function App() {
         </aside>
 
         <section className="min-w-0">
-          {screen === "today" && <TodayScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} setActiveSessionId={setActiveSessionId} editingWeekNumber={editingWeekNumber} onPlanWeek={(n) => { setPlanWeekRequest(n); setScreen("week"); }} />}
+          {screen === "today" && (
+            <TodayScreen
+              db={db}
+              user={currentUser}
+              updateDb={updateDb}
+              setScreen={setScreen}
+              setActiveSessionId={setActiveSessionId}
+              editingWeekNumber={editingWeekNumber}
+              onPlanWeek={(n) => { setPlanWeekRequest(n); setScreen("week"); }}
+              onResumeWorkout={resumeWorkoutSession}
+              resumeMessage={resumeMessage}
+              clearResumeMessage={() => setResumeMessage(undefined)}
+            />
+          )}
           {screen === "logger" && (
             <LiveLogger db={db} user={currentUser} updateDb={updateDb} sessionId={activeSession?.id} setActiveSessionId={setActiveSessionId} setScreen={setScreen} />
           )}
@@ -680,22 +869,36 @@ function TodayScreen({
   setScreen,
   setActiveSessionId,
   editingWeekNumber,
-  onPlanWeek
+  onPlanWeek,
+  onResumeWorkout,
+  resumeMessage,
+  clearResumeMessage
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   setScreen: (screen: Screen) => void;
-  setActiveSessionId: (id: string) => void;
+  setActiveSessionId: (id: string | undefined) => void;
   editingWeekNumber?: number;
   onPlanWeek: (weekNumber: number) => void;
+  onResumeWorkout: (sessionId?: string) => Promise<void> | void;
+  resumeMessage?: string;
+  clearResumeMessage: () => void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const todayPlan = getCurrentWorkoutForUser(db, user.id);
   const selectedDay = todayPlan?.day;
   const activeBlock = activeProgram?.blocks[0];
-  const inProgressSession = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress");
-  const otherInProgressSession = selectedDay && inProgressSession?.workoutDayId !== selectedDay.id ? inProgressSession : undefined;
+  const selectedDaySession = selectedDay
+    ? db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId === selectedDay.id)
+    : undefined;
+  const resumableSelectedDaySession = isSessionResumableOnTodayCard(db, user.id, selectedDaySession) ? selectedDaySession : undefined;
+  const otherInProgressSession = selectedDay
+    ? db.sessions.find((session) => {
+        if (session.userId !== user.id || session.status !== "in-progress" || session.workoutDayId === selectedDay.id) return false;
+        return isSessionResumableOnTodayCard(db, user.id, session);
+      })
+    : undefined;
   const [showEditDay, setShowEditDay] = useState(false);
 
   // Week-lock: Today is trainable only when the current week is saved/planned.
@@ -712,8 +915,7 @@ function TodayScreen({
     if (!day) return;
     const sameDaySession = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId === day.id);
     if (sameDaySession) {
-      setActiveSessionId(sameDaySession.id);
-      setScreen("logger");
+      void onResumeWorkout(sameDaySession.id);
       return;
     }
     // Check for any other in-progress session (different day) and confirm before archiving it
@@ -999,6 +1201,17 @@ function TodayScreen({
   return (
     <div className="space-y-5">
       <PageTitle eyebrow="Today" title="Next actionable workout from your active block." />
+      {resumeMessage && (
+        <section className="rounded-lg border border-ember/40 bg-ember/10 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="font-black text-orange-50">Workout could not be resumed</p>
+              <p className="mt-1 text-sm text-orange-100">{resumeMessage}</p>
+            </div>
+            <button className="btn-ghost shrink-0" onClick={clearResumeMessage}>Dismiss</button>
+          </div>
+        </section>
+      )}
       {!activeProgram && (
         <Panel title="No Active Block" icon={CalendarDays}>
           <EmptyState title="No active block yet" detail="Build and activate a block before starting scheduled training." />
@@ -1068,7 +1281,7 @@ function TodayScreen({
             ) : selectedDay.exercises.length ? (
               <button className="btn-primary w-full md:w-auto" onClick={() => startWorkout(selectedDay)}>
                 <Timer className="h-4 w-4" />
-                {inProgressSession?.workoutDayId === selectedDay.id ? "Resume Workout" : "Start Workout"}
+                {resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
               </button>
             ) : (
               <button className="btn-primary w-full md:w-auto" onClick={() => onPlanWeek(currentWeekNumber)}>
@@ -1078,7 +1291,7 @@ function TodayScreen({
             )}
           </div>
           {otherInProgressSession && (
-            <button className="btn-secondary mt-4 w-full" onClick={() => { setActiveSessionId(otherInProgressSession.id); setScreen("logger"); }}>
+            <button className="btn-secondary mt-4 w-full" onClick={() => void onResumeWorkout(otherInProgressSession.id)}>
               Resume Other In-Progress
             </button>
           )}
@@ -1137,25 +1350,46 @@ function LiveLogger({
   setActiveSessionId: (id: string | undefined) => void;
   setScreen: (screen: Screen) => void;
 }) {
-  const session = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
-  const [activeExerciseId, setActiveExerciseId] = useState(session?.loggedExercises[session.currentExerciseIndex || 0]?.id || session?.loggedExercises[0]?.id);
-  const activeExerciseLog = session?.loggedExercises.find((item) => item.id === activeExerciseId) || session?.loggedExercises[session.currentExerciseIndex || 0] || session?.loggedExercises[0];
-  const activeExerciseIndex = session?.loggedExercises.findIndex((item) => item.id === activeExerciseLog?.id) ?? 0;
+  const sessionRecord = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
+  const [activeExerciseId, setActiveExerciseId] = useState(sessionRecord?.loggedExercises[sessionRecord.currentExerciseIndex || 0]?.id || sessionRecord?.loggedExercises[0]?.id);
+  const resumeState = useMemo(
+    () => resolveWorkoutResumeState(db, user.id, sessionId, activeExerciseId),
+    [activeExerciseId, db, sessionId, user.id]
+  );
+  const session = resumeState.kind === "ready" || resumeState.kind === "no-exercises" ? resumeState.session : sessionRecord;
+  const activeExerciseLog = resumeState.kind === "ready"
+    ? session?.loggedExercises[resumeState.activeExerciseIndex]
+    : session?.loggedExercises.find((item) => item.id === activeExerciseId) || session?.loggedExercises[session.currentExerciseIndex || 0] || session?.loggedExercises[0];
+  const activeExerciseIndex = resumeState.kind === "ready"
+    ? resumeState.activeExerciseIndex
+    : session?.loggedExercises.findIndex((item) => item.id === activeExerciseLog?.id) ?? 0;
   const exercise = db.exercises.find((item) => item.id === activeExerciseLog?.exerciseId);
   const foundPlanned = findPlannedExercise(db, session, activeExerciseLog);
   // Synthesize a PlannedExercise for off-program exercises that have offProgramPlannedSets
   const planned = foundPlanned ?? (activeExerciseLog?.offProgramPlannedSets?.length
     ? { id: "", exerciseId: activeExerciseLog.exerciseId, required: false, order: 0, plannedSets: activeExerciseLog.offProgramPlannedSets, restSeconds: 90, substitutionIds: [] } as PlannedExercise
     : undefined);
-  const plannedSets = planned?.plannedSets || [];
-  const currentSetIndex = activeExerciseLog?.sets.length || 0;
-  const [selectedSetIndex, setSelectedSetIndex] = useState<number | null>(null);
-  const effectiveSetIndex = selectedSetIndex ?? currentSetIndex;
-  const currentPlannedSet = plannedSets[effectiveSetIndex];
+  const plannedSets = getLoggedExercisePlannedSets(activeExerciseLog, planned);
+  const currentSetIndex = resumeState.kind === "ready"
+    ? Math.min(resumeState.currentSetIndex, plannedSets.length)
+    : activeExerciseLog ? getResumeSetIndex(activeExerciseLog, plannedSets) : 0;
+  const [selectedLoggingIndex, setSelectedLoggingIndex] = useState<number | null>(null);
+  const [editingSetId, setEditingSetId] = useState<string | null>(null);
+  const lineupItems = useMemo(
+    () => activeExerciseLog ? buildLoggerLineupItems(activeExerciseLog, plannedSets) : [],
+    [activeExerciseLog, plannedSets]
+  );
+  const editingLineupItem = editingSetId ? lineupItems.find((item) => item.actualSet?.id === editingSetId) : undefined;
+  const effectiveSetIndex = editingLineupItem
+    ? (editingLineupItem.plannedIndex ?? currentSetIndex)
+    : (selectedLoggingIndex ?? currentSetIndex);
+  const currentPlannedSet = editingLineupItem?.plannedSet ?? plannedSets[effectiveSetIndex];
   const lastSet = activeExerciseLog?.sets.at(-1);
-  const selectedActualSet = activeExerciseLog?.sets[effectiveSetIndex];
+  const selectedActualSet = editingLineupItem?.actualSet;
   const previousCompletedSet = activeExerciseLog ? findPreviousCompletedSet(activeExerciseLog.sets, effectiveSetIndex) : undefined;
-  const draftKey = `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
+  const draftKey = editingLineupItem?.actualSet
+    ? `edit:${editingLineupItem.actualSet.id}`
+    : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
   const [setDraft, setSetDraft] = useState(() => emptySetDraft(currentPlannedSet, undefined, draftKey));
   const [restRemaining, setRestRemaining] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
@@ -1165,9 +1399,25 @@ function LiveLogger({
   const [showSetNotes, setShowSetNotes] = useState(false);
   const [showCompletionSummary, setShowCompletionSummary] = useState(false);
   const [completionSummary, setCompletionSummary] = useState<{ score: number; status: string; hardSets: number; skippedSets: number; completedSets: number; suggestions: string[] } | null>(null);
-  const [pendingDeleteSetIndex, setPendingDeleteSetIndex] = useState<number | null>(null);
+  const [pendingDeleteTarget, setPendingDeleteTarget] = useState<{ actualSetId?: string; plannedSetId?: string; lineupKey: string } | null>(null);
+  const [openSwipeSetId, setOpenSwipeSetId] = useState<string | undefined>();
+  const [isSwipeEnabled, setIsSwipeEnabled] = useState(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+    return window.matchMedia("(hover: none) and (pointer: coarse)").matches;
+  });
+  const SWIPE_DELETE_WIDTH = 96;
+  const SWIPE_OPEN_THRESHOLD = 52;
+  const [swipeState, setSwipeState] = useState<{
+    setId: string;
+    startX: number;
+    startY: number;
+    initialOffset: number;
+    deltaX: number;
+    gestureMode: "undecided" | "horizontal" | "vertical";
+  } | null>(null);
   const [suggestionApplied, setSuggestionApplied] = useState(false);
   const [pendingOffProgramExercise, setPendingOffProgramExercise] = useState<Exercise | undefined>();
+  const setLineupRef = useRef<HTMLDivElement | null>(null);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
 
@@ -1186,9 +1436,27 @@ function LiveLogger({
   const adjustedWeight = weightRec?.recommendedWeight ?? undefined;
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+    const mediaQuery = window.matchMedia("(hover: none) and (pointer: coarse)");
+    const syncSwipeCapability = () => setIsSwipeEnabled(mediaQuery.matches);
+    syncSwipeCapability();
+    mediaQuery.addEventListener("change", syncSwipeCapability);
+    return () => mediaQuery.removeEventListener("change", syncSwipeCapability);
+  }, []);
+
+  useEffect(() => {
     setSetDraft((current) => {
-      // Don't overwrite a draft the user manually loaded by tapping a set row
-      if (selectedSetIndex !== null) return current;
+      if (editingLineupItem?.actualSet) {
+        return draftFromSetOrPlan(
+          editingLineupItem.actualSet,
+          editingLineupItem.plannedSet,
+          activeExerciseLog?.sets[(editingLineupItem.actualIndex ?? 0) - 1],
+          draftKey
+        );
+      }
+      if (selectedLoggingIndex !== null) {
+        return emptySetDraft(currentPlannedSet, previousCompletedSet, draftKey);
+      }
       if (current.draftKey === draftKey && current.actualWeight) return current;
       const shouldUseAdjustedFallback = !previousCompletedSet && !!adjustedWeight && !!currentPlannedSet && currentPlannedSet.plannedWeight === undefined;
       const plannedForDraft = shouldUseAdjustedFallback
@@ -1200,23 +1468,147 @@ function LiveLogger({
         draftKey
       );
     });
-  }, [adjustedWeight, currentPlannedSet, draftKey, previousCompletedSet, selectedSetIndex]);
+  }, [activeExerciseLog, adjustedWeight, currentPlannedSet, draftKey, editingLineupItem, previousCompletedSet, selectedLoggingIndex]);
 
   useEffect(() => {
     // Reset set navigation and UI state when switching exercises
-    setSelectedSetIndex(null);
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
+    setPendingDeleteTarget(null);
     setSuggestionApplied(false);
     setShowSetNotes(false);
     setShowMachineSelector(false);
+    setOpenSwipeSetId(undefined);
+    setSwipeState(null);
   }, [activeExerciseId]);
+
+  useEffect(() => {
+    setPendingDeleteTarget(null);
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
+    setOpenSwipeSetId(undefined);
+    setSwipeState(null);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (isSwipeEnabled) return;
+    setOpenSwipeSetId(undefined);
+    setSwipeState(null);
+  }, [isSwipeEnabled]);
 
   useEffect(() => {
     setSuggestionApplied(false);
   }, [lastSet?.id]);
 
   useEffect(() => {
+    if (resumeState.kind === "ready" && activeExerciseId !== resumeState.activeExerciseId) {
+      setActiveExerciseId(resumeState.activeExerciseId);
+      return;
+    }
     if (session && !activeExerciseId) setActiveExerciseId(session.loggedExercises[session.currentExerciseIndex || 0]?.id);
-  }, [activeExerciseId, session]);
+  }, [activeExerciseId, resumeState, session]);
+
+  useEffect(() => {
+    if (resumeState.kind !== "ready" || !session) return;
+    if (
+      session.currentExerciseIndex === resumeState.activeExerciseIndex
+      && (session.currentSetIndex ?? getResumeSetIndex(activeExerciseLog!, plannedSets)) === resumeState.currentSetIndex
+    ) return;
+    void updateDb((draft) => {
+      const target = draft.sessions.find((item) => item.id === session.id);
+      if (!target) return draft;
+      target.currentExerciseIndex = resumeState.activeExerciseIndex;
+      target.currentSetIndex = resumeState.currentSetIndex;
+      target.updatedAt = nowIso();
+      return draft;
+    });
+  }, [activeExerciseLog, plannedSets, resumeState, session, updateDb]);
+
+  useEffect(() => {
+    if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") return;
+    console.error("Workout could not be resumed", {
+      sessionId,
+      userId: user.id,
+      reason: resumeState.reason,
+      activeExerciseId,
+    });
+  }, [activeExerciseId, resumeState, sessionId, user.id]);
+
+  useEffect(() => {
+    if (!isSwipeEnabled || !openSwipeSetId) return undefined;
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (!target) return;
+      if (target.closest(`[data-swipe-row-id="${openSwipeSetId}"]`)) return;
+      setOpenSwipeSetId(undefined);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [isSwipeEnabled, openSwipeSetId]);
+
+  useEffect(() => {
+    if (!openSwipeSetId) return;
+    const openRowStillExists = activeExerciseLog?.sets.some((set) => set.id === openSwipeSetId) ?? false;
+    if (!openRowStillExists) {
+      setOpenSwipeSetId(undefined);
+      setSwipeState(null);
+    }
+  }, [activeExerciseLog, openSwipeSetId]);
+
+  useEffect(() => {
+    if (!editingSetId) return;
+    const editingSetStillExists = lineupItems.some((item) => item.actualSet?.id === editingSetId);
+    if (!editingSetStillExists) setEditingSetId(null);
+  }, [editingSetId, lineupItems]);
+
+  useEffect(() => {
+    if (!pendingDeleteTarget) return;
+    const targetStillExists = lineupItems.some((item) => {
+      if (pendingDeleteTarget.actualSetId && item.actualSet?.id === pendingDeleteTarget.actualSetId) return true;
+      if (pendingDeleteTarget.plannedSetId && item.plannedSet?.id === pendingDeleteTarget.plannedSetId) return true;
+      return item.key === pendingDeleteTarget.lineupKey;
+    });
+    if (!targetStillExists) setPendingDeleteTarget(null);
+  }, [lineupItems, pendingDeleteTarget]);
+
+  if (resumeState.kind === "missing" || resumeState.kind === "invalid") {
+    const recoverableSession = resumeState.kind === "invalid" ? resumeState.session : undefined;
+    return (
+      <Panel title="Workout could not be resumed" icon={ShieldAlert}>
+        <p className="text-sm text-iron-300">The saved workout state was incomplete or stale.</p>
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              setActiveSessionId(undefined);
+              setScreen("today");
+            }}
+          >
+            Return to Today
+          </button>
+          <button
+            className="btn-secondary border-ember/40 text-orange-100"
+            onClick={() => {
+              if (recoverableSession) {
+                void updateDb((draft) => {
+                  const target = draft.sessions.find((item) => item.id === recoverableSession.id);
+                  if (target) {
+                    target.status = "abandoned";
+                    target.updatedAt = nowIso();
+                  }
+                  return draft;
+                });
+              }
+              setActiveSessionId(undefined);
+              setScreen("today");
+            }}
+          >
+            Abandon Workout
+          </button>
+        </div>
+      </Panel>
+    );
+  }
 
   if (!session) {
     return (
@@ -1227,20 +1619,23 @@ function LiveLogger({
   }
 
   // Off-program or brand-new empty session: no exercises yet — let the user add them
-  if (!session.loggedExercises.length || !activeExerciseLog || !exercise) {
+  if (resumeState.kind === "no-exercises" || !activeExerciseLog || !exercise) {
     const isEmptySession = !session.loggedExercises.length;
     return (
       <div className="space-y-5">
-        <PageTitle eyebrow="Today" title={isEmptySession ? "Off-Program Session" : "No exercise selected"} />
+        <PageTitle eyebrow="Today" title={isEmptySession ? "Workout could not be resumed" : "No exercise selected"} />
         {isEmptySession && (
           <Panel title="Build your workout" icon={Dumbbell}>
             <p className="mb-3 text-sm text-iron-300">
-              This is an off-program session. Add exercises below to start logging. Nothing will change in your active block or future weeks.
+              This in-progress workout has no exercises.
             </p>
-            <EmptyState title="No exercises yet" detail="Tap Add Exercise to begin." />
+            <EmptyState title="Add an exercise to continue" detail="Open Today to return safely, abandon this workout, or add an exercise below." />
           </Panel>
         )}
         <div className="grid gap-2 sm:grid-cols-2">
+          <button className="btn-secondary" onClick={() => { setActiveSessionId(undefined); setScreen("today"); }}>
+            Return to Today
+          </button>
           <button className="btn-primary" onClick={() => setShowAddExercisePicker(true)}>
             <Plus className="h-4 w-4" /> Add Exercise
           </button>
@@ -1324,9 +1719,10 @@ function LiveLogger({
   const liveExerciseLog = activeExerciseLog;
   const liveExercise = exercise;
   // Use exercise display unit everywhere in the logger — do NOT default to user.unit alone
-  const exerciseUnit = getExerciseDisplayUnit(liveExercise, user);
+  const exerciseUnit = getExerciseLoadUnit(liveExercise, user, liveExerciseLog.sets.find((set) => isWeightUnit(set.unit))?.unit);
+  const bodyweightMovement = isBodyweightExercise(liveExercise);
   const exerciseIncrement = getExerciseIncrement(liveExercise, exerciseUnit);
-  const isEditingLoggedSet = selectedSetIndex !== null && !!selectedActualSet;
+  const isEditingLoggedSet = !!editingLineupItem?.actualSet;
   const sourceSetIndex = findRecommendationSourceIndex(liveExerciseLog.sets, effectiveSetIndex);
   const sourceSet = sourceSetIndex >= 0 ? liveExerciseLog.sets[sourceSetIndex] : undefined;
   const recommendation = sourceSet
@@ -1354,10 +1750,11 @@ function LiveLogger({
   const primaryActionLabel = isEditingLoggedSet
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
     : primaryAction === "finish-workout" ? "Finish Workout" : primaryAction === "finish-exercise" ? "Finish Exercise" : "Next Set";
+  const plannedLineupItems = lineupItems.filter((item) => !item.isExtra);
+  const completedPlannedCount = plannedLineupItems.filter((item) => !!item.actualSet).length;
+  const totalPlannedCount = plannedLineupItems.length;
   const allExercisesComplete = liveSession.loggedExercises.every((logged) => {
-    const plannedForLog = findPlannedExercise(db, liveSession, logged);
-    if (plannedForLog?.plannedSets.length) return logged.sets.length >= plannedForLog.plannedSets.length;
-    return logged.sets.filter((s) => !s.skipped).length > 0;
+    return isLoggedExerciseComplete(logged, db, liveSession);
   });
 
   function addReadiness(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">) {
@@ -1376,6 +1773,52 @@ function LiveLogger({
     });
   }
 
+  function startSetSwipe(setId: string, clientX: number, clientY: number) {
+    if (!isSwipeEnabled) return;
+    // Record where the row already is so dragging an open row feels continuous.
+    const initialOffset = openSwipeSetId === setId ? -SWIPE_DELETE_WIDTH : 0;
+    // Close any OTHER open row immediately.
+    setOpenSwipeSetId((current) => current === setId ? current : undefined);
+    setSwipeState({ setId, startX: clientX, startY: clientY, initialOffset, deltaX: 0, gestureMode: "undecided" });
+  }
+
+  function moveSetSwipe(clientX: number, clientY: number) {
+    if (!isSwipeEnabled) return;
+    setSwipeState((current) => {
+      if (!current) return current;
+      const deltaX = clientX - current.startX;
+      const deltaY = clientY - current.startY;
+      if (current.gestureMode === "undecided") {
+        if (Math.abs(deltaX) < 8 && Math.abs(deltaY) < 8) return current;
+        if (Math.abs(deltaX) > Math.abs(deltaY) + 6) {
+          return { ...current, gestureMode: "horizontal", deltaX };
+        }
+        if (Math.abs(deltaY) > Math.abs(deltaX) + 6) {
+          return { ...current, gestureMode: "vertical" };
+        }
+        return current;
+      }
+      if (current.gestureMode !== "horizontal") return current;
+      return { ...current, deltaX };
+    });
+  }
+
+  function endSetSwipe() {
+    if (!isSwipeEnabled || !swipeState) return;
+    if (swipeState.gestureMode === "horizontal") {
+      const finalOffset = Math.max(-SWIPE_DELETE_WIDTH, Math.min(0, swipeState.initialOffset + swipeState.deltaX));
+      if (finalOffset <= -SWIPE_OPEN_THRESHOLD) {
+        setOpenSwipeSetId(swipeState.setId);
+      } else {
+        // Close this row if it was open; leave all others unchanged.
+        setOpenSwipeSetId((current) => current === swipeState.setId ? undefined : current);
+      }
+    }
+    // gestureMode "undecided" (tap) and "vertical" (scroll): leave openSwipeSetId alone;
+    // the onClick handler on the row already handles tap-to-close.
+    setSwipeState(null);
+  }
+
   function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-exercise" | "finish-workout" = "stay") {
     const actualWeight = Number(setDraft.actualWeight) || 0;
     const actualReps = Number(setDraft.actualReps) || 0;
@@ -1386,24 +1829,26 @@ function LiveLogger({
       return;
     }
 
-    if (isEditingLoggedSet && selectedSetIndex !== null && selectedActualSet) {
+    if (isEditingLoggedSet && editingLineupItem?.actualSet) {
+      const editingActualSet = editingLineupItem.actualSet;
+      const editingActualIndex = editingLineupItem.actualIndex ?? liveExerciseLog.sets.findIndex((set) => set.id === editingActualSet.id);
       const updatedSet: LoggedSet = {
-        ...selectedActualSet,
+        ...editingActualSet,
         kind: setDraft.kind,
-        plannedSetId: currentPlannedSet?.id ?? selectedActualSet?.plannedSetId,
-        plannedWeight: currentPlannedSet?.plannedWeight ?? selectedActualSet?.plannedWeight,
-        plannedReps: currentPlannedSet?.targetReps ?? selectedActualSet?.plannedReps,
+        plannedSetId: currentPlannedSet?.id ?? editingActualSet?.plannedSetId,
+        plannedWeight: currentPlannedSet?.plannedWeight ?? editingActualSet?.plannedWeight,
+        plannedReps: currentPlannedSet?.targetReps ?? editingActualSet?.plannedReps,
         actualWeight,
-        unit: selectedActualSet?.unit || liveExercise.defaultUnit || user.unit,
+        unit: editingActualSet?.unit || exerciseUnit,
         actualReps,
-        targetRpe: currentPlannedSet?.targetRpe ?? selectedActualSet?.targetRpe,
+        targetRpe: currentPlannedSet?.targetRpe ?? editingActualSet?.targetRpe,
         actualRpe: setDraft.actualRpe ? Math.min(10, Math.max(0, Number(setDraft.actualRpe))) || undefined : undefined,
         setRating: rating,
-        formRating: Number(setDraft.formRating) || selectedActualSet?.formRating,
-        muscleFeelRating: Number(setDraft.muscleFeelRating) || selectedActualSet?.muscleFeelRating,
-        pumpRating: Number(setDraft.pumpRating) || selectedActualSet?.pumpRating,
-        painRating: Number(setDraft.painRating) || selectedActualSet?.painRating,
-        sorenessRating: Number(setDraft.sorenessRating) || selectedActualSet?.sorenessRating,
+        formRating: Number(setDraft.formRating) || editingActualSet?.formRating,
+        muscleFeelRating: Number(setDraft.muscleFeelRating) || editingActualSet?.muscleFeelRating,
+        pumpRating: Number(setDraft.pumpRating) || editingActualSet?.pumpRating,
+        painRating: Number(setDraft.painRating) || editingActualSet?.painRating,
+        sorenessRating: Number(setDraft.sorenessRating) || editingActualSet?.sorenessRating,
         notes: setDraft.notes,
         skipped: false,
         completedAt: nowIso()
@@ -1411,26 +1856,26 @@ function LiveLogger({
       const performance = calculateSetPerformanceScore(currentPlannedSet, updatedSet);
       updatedSet.performanceScore = performance.score;
       updatedSet.performanceStatus = performance.status;
-      const nextTargetIndex = selectedSetIndex + 1;
+      const nextTargetIndex = (editingLineupItem.plannedIndex ?? effectiveSetIndex) + 1;
       const rec = buildSetRecommendation({
         user,
         exercise: liveExercise,
         sourceSet: updatedSet,
-        sourceSetIndex: selectedSetIndex,
+        sourceSetIndex: editingActualIndex,
         targetSetIndex: nextTargetIndex,
         sourceExerciseIndex: activeExerciseIndex,
         targetExerciseIndex: activeExerciseIndex,
         nextPlannedSet: plannedSets[nextTargetIndex],
         setsCompletedThisExercise: countCompletedThroughIndex(
-          liveExerciseLog.sets.map((set, index) => index === selectedSetIndex ? updatedSet : set),
-          selectedSetIndex
+          liveExerciseLog.sets.map((set, index) => index === editingActualIndex ? updatedSet : set),
+          editingActualIndex
         )
       });
       void updateDb((draft) => {
         const target = draft.sessions.find((item) => item.id === liveSession.id);
         const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
-        if (log?.sets[selectedSetIndex]) {
-          log.sets[selectedSetIndex] = updatedSet;
+        if (log && editingActualIndex >= 0 && log.sets[editingActualIndex]) {
+          log.sets[editingActualIndex] = updatedSet;
           log.weakPointTags = detectWeakPointTags(log);
         }
         if (target) {
@@ -1440,7 +1885,7 @@ function LiveLogger({
         if (rec) upsertRecommendation(draft.recommendations, rec);
         return draft;
       });
-      setSelectedSetIndex(null);
+      setEditingSetId(null);
       return;
     }
 
@@ -1452,7 +1897,7 @@ function LiveLogger({
       plannedWeight: currentPlannedSet?.plannedWeight,
       plannedReps: currentPlannedSet?.targetReps,
       actualWeight,
-      unit: liveExercise.defaultUnit || user.unit,
+      unit: exerciseUnit,
       actualReps,
       targetRpe: currentPlannedSet?.targetRpe,
       actualRpe: setDraft.actualRpe ? Math.min(10, Math.max(0, Number(setDraft.actualRpe))) || undefined : undefined,
@@ -1495,7 +1940,7 @@ function LiveLogger({
           target.currentSetIndex = 0;
         } else {
           target.currentExerciseIndex = activeExerciseIndex;
-          target.currentSetIndex = (log?.sets.length || 0);
+          target.currentSetIndex = log ? getResumeSetIndex(log, plannedSets) : 0;
         }
         target.updatedAt = nowIso();
       }
@@ -1507,7 +1952,8 @@ function LiveLogger({
       }
       return draft;
     });
-    setSelectedSetIndex(null);
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
     setRestRemaining(planned?.restSeconds || user.settings.defaultRestSeconds);
     const nextDraftIndex = effectiveSetIndex + 1;
     setSetDraft(emptySetDraft(plannedSets[nextDraftIndex], loggedSet, `${liveExerciseLog.id}:${nextDraftIndex}`));
@@ -1536,7 +1982,7 @@ function LiveLogger({
       plannedWeight: currentPlannedSet?.plannedWeight,
       plannedReps: currentPlannedSet?.targetReps,
       actualWeight: 0,
-      unit: liveExercise.defaultUnit || user.unit,
+      unit: exerciseUnit,
       actualReps: 0,
       targetRpe: currentPlannedSet?.targetRpe,
       setRating: 1 as SetRating,
@@ -1557,14 +2003,15 @@ function LiveLogger({
           target.currentSetIndex = 0;
         } else {
           target.currentExerciseIndex = activeExerciseIndex;
-          target.currentSetIndex = log?.sets.length || 0;
+          target.currentSetIndex = log ? getResumeSetIndex(log, plannedSets) : 0;
         }
         target.updatedAt = nowIso();
         if (shouldFinishWorkout) finishWorkoutInDraft(draft, user, target);
       }
       return draft;
     });
-    setSelectedSetIndex(null);
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
     setSetDraft(emptySetDraft(plannedSets[currentSetIndex + 1], skippedSet, `${liveExerciseLog.id}:${currentSetIndex + 1}`));
     if (shouldAdvanceExercise) {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
@@ -1579,12 +2026,12 @@ function LiveLogger({
   }
 
   function addSet() {
-    const base = currentPlannedSet || planned?.plannedSets.at(-1);
+    const base = currentPlannedSet || plannedSets.at(-1);
     const extra: PlannedSet = {
       ...(base || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 }),
       id: createId("pset"),
       kind: "working",
-      setNumber: (planned?.plannedSets.length || currentSetIndex) + 1,
+      setNumber: (plannedSets.length || currentSetIndex) + 1,
       percentageOfTopSet: base?.percentageOfTopSet,
       notes: "Added set."
     };
@@ -1600,9 +2047,10 @@ function LiveLogger({
 
   function previousSet() {
     const targetIndex = Math.max(0, effectiveSetIndex - 1);
-    const targetSet = liveExerciseLog.sets[targetIndex];
-    setSelectedSetIndex(targetIndex);
-    setSetDraft(draftFromSetOrPlan(targetSet, plannedSets[targetIndex], liveExerciseLog.sets[targetIndex - 1], `${liveExerciseLog.id}:${targetIndex}`));
+    setEditingSetId(null);
+    setSelectedLoggingIndex(targetIndex);
+    const targetLineupItem = lineupItems.find((item) => item.plannedIndex === targetIndex);
+    setSetDraft(draftFromSetOrPlan(targetLineupItem?.actualSet, targetLineupItem?.plannedSet, previousCompletedSet, `${liveExerciseLog.id}:${targetIndex}`));
   }
 
   function navigateToNextExercise() {
@@ -1628,8 +2076,8 @@ function LiveLogger({
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
-      if (log && planned) {
-        const setsToSkip = planned.plannedSets.slice(log.sets.length);
+      if (log && plannedSets.length) {
+        const setsToSkip = plannedSets.slice(log.sets.length);
         for (const ps of setsToSkip) {
           log.sets.push({
             id: createId("set"),
@@ -1638,7 +2086,7 @@ function LiveLogger({
             plannedSetId: ps.id,
             plannedReps: ps.targetReps,
             actualWeight: 0,
-            unit: liveExercise.defaultUnit || user.unit,
+            unit: exerciseUnit,
             actualReps: 0,
             targetRpe: ps.targetRpe,
             setRating: 1 as SetRating,
@@ -1667,7 +2115,8 @@ function LiveLogger({
       setShowFinishConfirm(true);
       return;
     }
-    setSelectedSetIndex(null);
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
     navigateToNextExercise();
   }
 
@@ -1775,33 +2224,52 @@ function LiveLogger({
           </div>
         </div>
       )}
-      {pendingDeleteSetIndex !== null && (
+      {pendingDeleteTarget !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
           <div className="panel w-full max-w-sm space-y-4 p-6">
-            <h3 className="text-xl font-black">Delete Set {pendingDeleteSetIndex + 1}?</h3>
+            <h3 className="text-xl font-black">Delete this set?</h3>
             <p className="text-sm text-iron-300">
-              Use Delete only for entry mistakes. To record a missed set, use Skip instead.
-              Deleted sets are removed and do not count toward hard sets or skipped totals.
+              Delete this set? Use Delete for entry mistakes or removing an unwanted planned set. Use Skip to record a missed set.
             </p>
             <div className="grid grid-cols-2 gap-3">
-              <button className="btn-secondary" onClick={() => setPendingDeleteSetIndex(null)}>Cancel</button>
+              <button className="btn-secondary" onClick={() => { setPendingDeleteTarget(null); setOpenSwipeSetId(undefined); setSwipeState(null); }}>Cancel</button>
               <button
                 className="btn-secondary border-ember/40 text-orange-100"
                 onClick={() => {
-                  const idx = pendingDeleteSetIndex;
-                  setPendingDeleteSetIndex(null);
+                  const targetDelete = pendingDeleteTarget;
+                  setPendingDeleteTarget(null);
                   void updateDb((draft) => {
                     const target = draft.sessions.find((item) => item.id === liveSession.id);
                     const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
-                    if (log) {
-                      log.sets.splice(idx, 1);
-                      // Re-number remaining sets
+                    if (log && targetDelete) {
+                      if (targetDelete.actualSetId) {
+                        const deletedIndex = log.sets.findIndex((set) => set.id === targetDelete.actualSetId);
+                        const deletedSet = deletedIndex >= 0 ? log.sets[deletedIndex] : undefined;
+                        if (deletedIndex >= 0) log.sets.splice(deletedIndex, 1);
+                        if (deletedSet?.plannedSetId) {
+                          log.deletedPlannedSetIds = Array.from(new Set([...(log.deletedPlannedSetIds || []), deletedSet.plannedSetId]));
+                        }
+                      } else if (targetDelete.plannedSetId) {
+                        log.deletedPlannedSetIds = Array.from(new Set([...(log.deletedPlannedSetIds || []), targetDelete.plannedSetId]));
+                      }
                       log.sets.forEach((s, i) => { s.setNumber = i + 1; });
+                      log.weakPointTags = detectWeakPointTags(log);
                     }
-                    if (target) target.updatedAt = nowIso();
+                    if (target) {
+                      const logIndex = target.loggedExercises.findIndex((item) => item.id === liveExerciseLog.id);
+                      if (logIndex >= 0 && target.currentExerciseIndex === logIndex && log) {
+                        const updatedPlanned = findPlannedExercise(draft, target, log);
+                        const updatedPlannedSets = getLoggedExercisePlannedSets(log, updatedPlanned);
+                        target.currentSetIndex = getResumeSetIndex(log, updatedPlannedSets);
+                      }
+                      target.updatedAt = nowIso();
+                    }
                     return draft;
                   });
-                  setSelectedSetIndex(null);
+                  setOpenSwipeSetId(undefined);
+                  setSwipeState(null);
+                  if (targetDelete?.actualSetId && editingSetId === targetDelete.actualSetId) setEditingSetId(null);
+                  setSelectedLoggingIndex(null);
                 }}
               >
                 Delete Set
@@ -1877,7 +2345,11 @@ function LiveLogger({
                   }`}
                   onClick={() => {
                     setActiveExerciseId(logged.id);
-      setSetDraft(emptySetDraft(findPlannedExercise(db, session, logged)?.plannedSets[logged.sets.length] || undefined, logged.sets.at(-1), `${logged.id}:${logged.sets.length}`));
+                    setSelectedLoggingIndex(null);
+                    setEditingSetId(null);
+                    setOpenSwipeSetId(undefined);
+                    setSwipeState(null);
+                    setPendingDeleteTarget(null);
                   }}
                 >
                   <span>
@@ -1903,7 +2375,7 @@ function LiveLogger({
                 <p className="mt-1 text-xs text-iron-500">
                   {activeGym?.name || "No gym selected"}
                   {weightRec?.recommendedWeight
-                    ? ` — suggested ${weightRec.recommendedWeight} ${exerciseUnit} (${weightRec.confidence}% ${weightRec.confidenceBand})`
+                    ? ` — suggested ${formatExerciseLoadText({ exercise: liveExercise, user, weight: weightRec.recommendedWeight, unit: exerciseUnit })} (${weightRec.confidence}% ${weightRec.confidenceBand})`
                     : ""}
                 </p>
               </div>
@@ -1941,57 +2413,137 @@ function LiveLogger({
             <div className="mt-4 rounded-lg border border-white/10 bg-iron-950/55 p-3">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <p className="label">Set lineup</p>
-                <p className="text-xs font-bold text-iron-400">{Math.min(liveExerciseLog.sets.length, plannedSets.length)} / {plannedSets.length || liveExerciseLog.sets.length} planned complete</p>
+                <p className="text-xs font-bold text-iron-400">{completedPlannedCount} / {totalPlannedCount || lineupItems.length} planned complete</p>
               </div>
-              <div className="space-y-2">
-                {plannedSets.map((set, index) => {
-                  const actual = liveExerciseLog.sets[index];
-                  const isSelected = index === effectiveSetIndex;
+              <div ref={setLineupRef} className="space-y-2">
+                {lineupItems.map((lineupItem) => {
+                  const set = lineupItem.plannedSet;
+                  const actual = lineupItem.actualSet;
+                  const isEditingThisRow = !!actual && editingSetId === actual.id;
+                  const isSelected = isEditingThisRow || (!isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
                   const isLoggedSet = !!actual;
-                  const isPending = !actual && index >= currentSetIndex;
-                  const statusLabel = actual?.skipped ? "Skipped" : actual ? "Complete" : isSelected && !actual ? "Current" : "Pending";
+                  const isPending = !actual && lineupItem.plannedIndex !== undefined && lineupItem.plannedIndex >= currentSetIndex;
+                  const statusLabel = isEditingThisRow ? "Editing" : actual?.skipped ? "Skipped" : actual ? "Complete" : isSelected ? "Current" : "Pending";
+                  const swipeRowId = actual?.id;
+                  const isSwipeOpen = isSwipeEnabled && !!swipeRowId && openSwipeSetId === swipeRowId;
+                  const isActiveSwipeRow = isSwipeEnabled && !!swipeRowId && swipeState?.setId === swipeRowId;
+                  const isHorizontalDrag = isActiveSwipeRow && swipeState?.gestureMode === "horizontal";
+                  // Position = clamp(initialOffset + movement, -DELETE_WIDTH, 0), derived each frame.
+                  const rawDragOffset = isActiveSwipeRow && swipeState
+                    ? Math.max(-SWIPE_DELETE_WIDTH, Math.min(0, swipeState.initialOffset + swipeState.deltaX))
+                    : 0;
+                  const showSwipeDeleteReveal = isSwipeEnabled && !!actual && !actual.skipped;
+                  const showInlineDeleteButton = !showSwipeDeleteReveal || !isSwipeEnabled;
+                  const plannedWeightText = bodyweightMovement
+                    ? formatExerciseLoadText({ exercise: liveExercise, user, weight: set?.plannedWeight, unit: exerciseUnit })
+                    : set?.plannedWeight && set.plannedWeight > 0
+                      ? `${formatWeight(set.plannedWeight, exerciseUnit)} ${exerciseUnit}`
+                      : lineupItem.isExtra ? "Extra set" : "Enter starting weight";
+                  const actualWeightText = actual && !actual.skipped
+                    ? formatExerciseLoadText({ exercise: liveExercise, user, weight: actual.actualWeight, unit: actual.unit || exerciseUnit })
+                    : undefined;
+                  const swipeOffset = isHorizontalDrag ? rawDragOffset : isSwipeOpen ? -SWIPE_DELETE_WIDTH : 0;
+                  const rowSurfaceClass = isSelected
+                    ? "border-volt bg-iron-950"
+                    : actual
+                      ? "border-volt/30 bg-iron-950"
+                      : "border-white/10 bg-white/[0.035]";
                   return (
                     <div
-                      key={set.id}
-                      className={`rounded-lg border p-3 transition cursor-pointer active:bg-white/10 ${isSelected ? "border-volt bg-volt/10" : actual ? "border-volt/30 bg-white/[0.07]" : "border-white/10 bg-white/[0.035]"}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => {
-                        setSelectedSetIndex(index);
-                        const newDraftKey = `${liveExerciseLog.id}:${index}`;
-                        setSetDraft(draftFromSetOrPlan(actual, set, liveExerciseLog.sets[index - 1], newDraftKey));
-                      }}
-                      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); }}
+                      key={lineupItem.key}
+                      data-swipe-row-id={swipeRowId}
+                      className="relative overflow-hidden rounded-lg"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="font-black">Set {index + 1} — {statusLabel}</p>
-                        <div className="flex items-center gap-2">
-                          <p className="text-xs text-iron-400">{set.kind}{isLoggedSet ? " · tap to edit" : isPending ? " · tap to jump" : ""}</p>
-                          {actual && !actual.skipped && (
-                            <button
-                              className="rounded px-1.5 py-0.5 text-[0.6rem] font-bold text-iron-500 hover:bg-ember/20 hover:text-orange-300"
-                              onClick={(e) => { e.stopPropagation(); setPendingDeleteSetIndex(index); }}
-                              title="Delete this set (entry mistake only)"
-                            >
-                              ✕ delete
-                            </button>
-                          )}
+                      {showSwipeDeleteReveal && (
+                        <div
+                          className={`absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center rounded-lg bg-ember/90 ${isSwipeOpen ? "pointer-events-auto" : "pointer-events-none"}`}
+                        >
+                          <button
+                            className="flex w-full items-center justify-center px-4 text-sm font-black text-orange-50"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPendingDeleteTarget({ actualSetId: actual?.id, plannedSetId: set?.id, lineupKey: lineupItem.key });
+                            }}
+                            title="Delete this set (entry mistake only)"
+                          >
+                            Delete
+                          </button>
                         </div>
+                      )}
+                      <div
+                        className={`relative z-10 rounded-lg border p-3 cursor-pointer active:bg-white/10 ${rowSurfaceClass}`}
+                        role="button"
+                        tabIndex={0}
+                        style={{
+                          transform: isSwipeEnabled ? `translateX(${swipeOffset}px)` : "translateX(0px)",
+                          touchAction: isSwipeEnabled ? "pan-y" : "auto",
+                          transition: isHorizontalDrag ? "background-color 150ms" : "transform 200ms ease, background-color 150ms",
+                        }}
+                        onClick={() => {
+                          if (isSwipeOpen) {
+                            setOpenSwipeSetId(undefined);
+                            return;
+                          }
+                          setOpenSwipeSetId(undefined);
+                          if (actual) {
+                            setSelectedLoggingIndex(null);
+                            setEditingSetId(actual.id);
+                            return;
+                          }
+                          if (lineupItem.plannedIndex !== undefined) {
+                            setEditingSetId(null);
+                            setSelectedLoggingIndex(lineupItem.plannedIndex);
+                          }
+                        }}
+                        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); }}
+                        onTouchStart={(event) => {
+                          if (!isSwipeEnabled || !swipeRowId) return;
+                          startSetSwipe(swipeRowId, event.touches[0].clientX, event.touches[0].clientY);
+                        }}
+                        onTouchMove={(event) => {
+                          if (!isSwipeEnabled) return;
+                          moveSetSwipe(event.touches[0].clientX, event.touches[0].clientY);
+                        }}
+                        onTouchEnd={() => {
+                          if (!isSwipeEnabled) return;
+                          endSetSwipe();
+                        }}
+                        onTouchCancel={() => setSwipeState(null)}
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <p className="font-black">Set {lineupItem.displayIndex + 1} — {statusLabel}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs text-iron-400">{set?.kind || actual?.kind || "working"}{isLoggedSet ? " · tap to edit" : isPending ? " · tap to jump" : ""}</p>
+                            {showInlineDeleteButton && (
+                              <button
+                                className="rounded-full p-1 text-iron-500 hover:bg-white/10 hover:text-orange-300"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setPendingDeleteTarget({ actualSetId: actual?.id, plannedSetId: set?.id, lineupKey: lineupItem.key });
+                                }}
+                                title="Delete this set (entry mistake only)"
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {set && <p className="mt-1 text-sm text-iron-300">Planned: {plannedWeightText} × {set.targetReps} @ RPE {set.targetRpe || "?"}</p>}
+                        {!set && <p className="mt-1 text-sm text-iron-300">Extra set</p>}
+                        {actual && <p className="mt-1 text-sm text-volt">Actual: {actual.skipped ? "Skipped" : `${actualWeightText || getBodyweightPreviewLabel(liveExercise)} × ${actual.actualReps} @ RPE ${actual.actualRpe || "?"}`}</p>}
                       </div>
-                      <p className="mt-1 text-sm text-iron-300">Planned: {set.plannedWeight || "-"} {exerciseUnit} × {set.targetReps} @ RPE {set.targetRpe || "?"}</p>
-                      {actual && <p className="mt-1 text-sm text-volt">Actual: {actual.skipped ? "Skipped" : `${actual.actualWeight} ${exerciseUnit} × ${actual.actualReps} @ RPE ${actual.actualRpe || "?"}`}</p>}
                     </div>
                   );
                 })}
-                {!plannedSets.length && <EmptyState title="No planned sets" detail="Add a set or pick a planned exercise before logging." />}
+                {!lineupItems.length && <EmptyState title="No planned sets" detail="Add a set or pick a planned exercise before logging." />}
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <BigInput label={`Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualWeight: value }))} />
+              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualWeight: value }))} placeholder={bodyweightMovement ? "BW" : undefined} />
               <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualReps: value }))} />
               <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualRpe: value }))} step="0.5" />
             </div>
-            <p className="mt-1 text-xs text-iron-600">Increment: {exerciseIncrement} {exerciseUnit}</p>
+            <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
               <p className="label mb-2">Set difficulty (1 = much harder · 3 = as planned · 5 = very easy)</p>
             </div>
@@ -2063,37 +2615,39 @@ function LiveLogger({
                 </div>
               </div>
             )}
-            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
-              {isEditingLoggedSet
-                ? <button className="btn-secondary" onClick={() => setSelectedSetIndex(null)}>Cancel</button>
-                : <button className="btn-secondary" onClick={previousSet} disabled={!liveExerciseLog.sets.length}>Back</button>
-              }
-              <button
-                className="btn-secondary border-ember/40 text-orange-100"
-                disabled={isPastLastPlannedSet || isEditingLoggedSet}
-                onClick={() => setShowSkipReason((v) => !v)}
-              >
-                Skip Set
-              </button>
-              <button
-                className="btn-primary"
-                onClick={() => {
-                  if (isEditingLoggedSet) {
-                    logSet(setDraft.setRating, "stay");
-                    return;
-                  }
-                  if (isPastLastPlannedSet) {
-                    if (hasMoreExercises) finishExercise();
-                    else finishWorkout();
-                    return;
-                  }
-                  logSet(setDraft.setRating, primaryAction === "finish-workout" ? "finish-workout" : primaryAction === "finish-exercise" ? "next-exercise" : "stay");
-                }}
-              >
-                <Check className="h-5 w-5" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : "Finish Workout") : primaryActionLabel}
-              </button>
-              <button className="btn-secondary" onClick={addSet}>Add Set</button>
-              <button className="btn-secondary" onClick={hasMoreExercises ? finishExercise : finishWorkout}>{hasMoreExercises ? "Finish Exercise" : "Finish Workout"}</button>
+            <div className="safe-bottom sticky bottom-0 z-10 -mx-3 mt-4 border-t border-white/10 bg-iron-950/95 px-3 py-3 backdrop-blur sm:-mx-4 sm:px-4">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                {isEditingLoggedSet
+                  ? <button className="btn-secondary" onClick={() => setEditingSetId(null)}>Cancel</button>
+                  : <button className="btn-secondary" onClick={previousSet} disabled={!liveExerciseLog.sets.length}>Back</button>
+                }
+                <button
+                  className="btn-secondary border-ember/40 text-orange-100"
+                  disabled={isPastLastPlannedSet || isEditingLoggedSet}
+                  onClick={() => setShowSkipReason((v) => !v)}
+                >
+                  Skip Set
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={() => {
+                    if (isEditingLoggedSet) {
+                      logSet(setDraft.setRating, "stay");
+                      return;
+                    }
+                    if (isPastLastPlannedSet) {
+                      if (hasMoreExercises) finishExercise();
+                      else finishWorkout();
+                      return;
+                    }
+                    logSet(setDraft.setRating, primaryAction === "finish-workout" ? "finish-workout" : primaryAction === "finish-exercise" ? "next-exercise" : "stay");
+                  }}
+                >
+                  <Check className="h-5 w-5" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : "Finish Workout") : primaryActionLabel}
+                </button>
+                <button className="btn-secondary" onClick={addSet}>Add Set</button>
+                <button className="btn-secondary" onClick={hasMoreExercises ? finishExercise : finishWorkout}>{hasMoreExercises ? "Finish Exercise" : "Finish Workout"}</button>
+              </div>
             </div>
           </section>
 
@@ -2119,7 +2673,7 @@ function LiveLogger({
                 <p className="label">Suggestion from Set {sourceSetNum}</p>
                 <h3 className="mt-1 text-xl font-black">
                   {recommendation.action?.suggestedWeight
-                    ? `Use ${recommendation.action.suggestedWeight} ${exerciseUnit} for this set`
+                    ? `Use ${formatExerciseLoadText({ exercise: liveExercise, user, weight: recommendation.action.suggestedWeight, unit: exerciseUnit })} for this set`
                     : recommendation.title}
                 </h3>
                 <p className="mt-2 text-sm text-iron-200">{recommendation.explanation}</p>
@@ -4489,6 +5043,7 @@ function ExerciseProgressPanel({
     ...structuredLogs.map((log) => convertWeight(log.e1rm, log.unit, displayUnit) || 0),
   );
   const latestEntryValues = latestEntry ? getEntryDisplayValues(latestEntry, displayUnit) : undefined;
+  const latestEntryExercise = latestEntry ? db.exercises.find((item) => item.id === latestEntry.exerciseId) || exercise : exercise;
 
   const overallPoints = historyEntries
     .filter((entry) => entry.e1rm && entry.e1rm > 0)
@@ -4553,7 +5108,7 @@ function ExerciseProgressPanel({
               <div className="mt-4 rounded-lg border border-white/10 bg-white/[0.04] p-3">
                 <p className="label">Most recent</p>
                 <p className="mt-1 text-lg font-black text-white">
-                  {latestEntryValues?.weight ? `${formatWeight(latestEntryValues.weight, displayUnit)} ${displayUnit}` : "-"}
+                  {formatExerciseLoadText({ exercise: latestEntryExercise, user, weight: latestEntryValues?.weight ?? latestEntry.weight, unit: displayUnit })}
                   {latestEntry.reps ? ` × ${latestEntry.reps}` : ""}
                   {latestEntry.rpe ? ` @ RPE ${latestEntry.rpe}` : ""}
                 </p>
@@ -4606,10 +5161,11 @@ function ExerciseProgressPanel({
               <div className="space-y-2">
                 {historyEntries.slice(0, 8).map((entry) => {
                   const displayValues = getEntryDisplayValues(entry, displayUnit);
+                  const entryExercise = db.exercises.find((item) => item.id === entry.exerciseId) || exercise;
                   return (
                   <div key={entry.id} className="rounded-lg bg-iron-950/55 p-2.5">
                     <p className="text-sm font-bold text-white">
-                      {displayValues.weight ? `${formatWeight(displayValues.weight, displayUnit)} ${displayUnit}` : "-"}
+                      {formatExerciseLoadText({ exercise: entryExercise, user, weight: displayValues.weight ?? entry.weight, unit: displayUnit })}
                       {entry.reps ? ` × ${entry.reps}` : ""}
                       {entry.rpe ? ` @ RPE ${entry.rpe}` : ""}
                     </p>
@@ -5922,13 +6478,15 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
           <div className="space-y-2">
             {topSets.map(({ exerciseId, set }) => {
               const exercise = db.exercises.find((item) => item.id === exerciseId);
+              const loadText = formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || user.unit });
+              const e1rm = estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10);
               return (
                 <div key={set.id} className="rounded-lg bg-white/[0.06] p-3">
                   <div className="flex items-center justify-between gap-3">
                     <p className="font-bold">{exercise?.name}</p>
-                    <p className="text-sm text-volt">{estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)} e1RM</p>
+                    <p className="text-sm text-volt">{e1rm > 0 ? `${e1rm} e1RM` : "Bodyweight set"}</p>
                   </div>
-                  <p className="text-xs text-iron-400">{set.actualWeight} x {set.actualReps} @ {set.actualRpe || "?"} - feel {set.setRating}/5</p>
+                  <p className="text-xs text-iron-400">{loadText} × {set.actualReps} @ RPE {set.actualRpe || "?"} - feel {set.setRating}/5</p>
                 </div>
               );
             })}
@@ -6024,7 +6582,7 @@ function BodybuildingDashboard({
             <div className="space-y-2">
               {recentProgression.map(({ exerciseId, set }) => {
                 const exercise = db.exercises.find((item) => item.id === exerciseId);
-                return <p key={set.id} className="text-sm text-iron-200">{exercise?.name}: {set.actualWeight} x {set.actualReps} @ {set.actualRpe || "?"}</p>;
+                return <p key={set.id} className="text-sm text-iron-200">{exercise?.name}: {formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || user.unit })} × {set.actualReps} @ RPE {set.actualRpe || "?"}</p>;
               })}
               {!recentProgression.length && <p className="text-sm text-iron-400">Log completed sessions to see exercise progression.</p>}
             </div>
@@ -6392,6 +6950,12 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
       <div className="space-y-3">
         {day.exercises.map((planned) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+          const latestHistory = getLatestExercisePerformanceLog(db, user.id, planned.exerciseId);
+          const displayUnit = getExerciseDisplayUnit(
+            exercise,
+            user,
+            isWeightUnit(latestHistory?.unit) ? latestHistory.unit : undefined,
+          );
           const recommendation = getExerciseRecommendation({
             db,
             user,
@@ -6400,6 +6964,15 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
             goal: user.goal,
             gymId: user.activeGymId,
           });
+          const recentHistory = getLatestExercisePreviewHistory(db, user, exercise, displayUnit);
+          const badgeText = getPlannedExerciseBadgeText({
+            exercise,
+            displayUnit,
+            recommendationWeight: recommendation?.recommendedWeight,
+            plannedWeight: planned.plannedSets[0]?.plannedWeight,
+          });
+          const bodyweightMovement = isBodyweightExercise(exercise);
+          const previewReasonParts = recommendation?.reasonParts.filter((part) => !part.startsWith("Recent:")) || [];
           return (
             <div key={planned.id} className="rounded-lg border border-white/10 bg-white/[0.055] p-3">
               <div className="flex items-start justify-between gap-3">
@@ -6411,15 +6984,28 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
                     {planned.fatigueTag === "high" && <span className="ml-2 rounded-full bg-ember/15 px-2 py-0.5 text-orange-100">high fatigue</span>}
                   </p>
                 </div>
-                <span className="rounded-full bg-volt/15 px-2 py-1 text-xs font-bold text-volt">
-                  {recommendation?.recommendedWeight || planned.plannedSets[0]?.plannedWeight || "-"} {user.unit}
-                </span>
+                {badgeText && (
+                  <span className="rounded-full bg-volt/15 px-2 py-1 text-xs font-bold text-volt">
+                    {badgeText}
+                  </span>
+                )}
               </div>
+              <p className="mt-2 text-xs text-iron-300">
+                {recentHistory?.reps
+                  ? `Recent: ${formatExerciseLoadText({ exercise, user, weight: recentHistory.weight, unit: displayUnit, bodyweightEmptyLabel: "BW" })} × ${recentHistory.reps}${recentHistory.rpe ? ` @ RPE ${recentHistory.rpe}` : ""}`
+                  : bodyweightMovement
+                    ? getBodyweightMovementCopy(exercise)
+                    : "No recent entry. Enter starting weight."}
+              </p>
               {recommendation?.recommendedWeight
-                ? recommendation.reasonParts.map((part, index) => (
+                ? previewReasonParts.map((part, index) => (
                     <p key={index} className={index === 0 ? "mt-2 text-xs text-iron-300" : "mt-1 text-xs text-iron-500"}>{part}</p>
                   ))
-                : <p className="mt-2 text-xs text-iron-500">No recent history. Enter starting weight.</p>}
+                : (
+                  <p className="mt-1 text-xs text-iron-500">
+                    {bodyweightMovement ? getBodyweightMovementCopy(exercise) : "No recent entry. Enter starting weight."}
+                  </p>
+                )}
               {planned.notes && <p className="mt-2 text-xs text-iron-300">{planned.notes}</p>}
             </div>
           );
@@ -6430,7 +7016,8 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
 }
 
 function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: LoggedExercise; exercise: Exercise; user: UserProfile; displayUnit?: UnitPreference }) {
-  const unit = displayUnit || getExerciseDisplayUnit(exercise, user);
+  const unit = displayUnit || getExerciseLoadUnit(exercise, user);
+  const bodyweightMovement = isBodyweightExercise(exercise);
   if (!logged.sets.length) return null;
   return (
     <section className="panel-soft overflow-hidden">
@@ -6442,22 +7029,22 @@ function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: Logg
           <thead className="text-xs uppercase text-iron-500">
             <tr>
               <th className="p-3">Set</th>
-              <th className="p-3">Load ({unit})</th>
+              <th className="p-3">{bodyweightMovement ? "Load" : `Load (${unit})`}</th>
               <th className="p-3">Reps</th>
               <th className="p-3">RPE</th>
               <th className="p-3">Feel</th>
-              <th className="p-3">e1RM ({unit})</th>
+              <th className="p-3">{bodyweightMovement ? "e1RM" : `e1RM (${unit})`}</th>
             </tr>
           </thead>
           <tbody>
             {logged.sets.map((set, index) => (
               <tr key={set.id} className={`border-t border-white/10 ${set.skipped ? "opacity-40" : ""}`}>
                 <td className="p-3">{index + 1}{set.skipped ? " (skip)" : ""}</td>
-                <td className="p-3">{set.skipped ? "—" : `${set.actualWeight} ${unit}`}</td>
+                <td className="p-3">{set.skipped ? "—" : formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || unit })}</td>
                 <td className="p-3">{set.skipped ? "—" : set.actualReps}</td>
                 <td className="p-3">{set.skipped ? "—" : set.actualRpe || "-"}</td>
                 <td className="p-3">{set.skipped ? "—" : `${set.setRating}/5`}</td>
-                <td className="p-3">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)}</td>
+                <td className="p-3">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10) || "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -6549,7 +7136,7 @@ function emptySetDraft(planned?: PlannedSet, last?: LoggedSet, draftKey = "") {
   // 1) actual performed weight from the last set (strongest signal — user just did this)
   // 2) explicit planned/recommended weight for the target set
   // 3) blank
-  const lastActual = isCompletedValidSet(last) ? last.actualWeight : undefined;
+  const lastActual = isCompletedValidSet(last) && last.actualWeight > 0 ? last.actualWeight : undefined;
   const defaultWeight = lastActual !== undefined
     ? String(lastActual)
     : planned?.plannedWeight !== undefined
@@ -6604,8 +7191,9 @@ function countSessionCompletedSets(session: WorkoutSession): number {
 
 function isLoggedExerciseComplete(log: LoggedExercise, db: TrainingDatabase, session: WorkoutSession): boolean {
   const plannedEx = findPlannedExercise(db, session, log);
-  if (plannedEx?.plannedSets.length) {
-    return log.sets.length >= plannedEx.plannedSets.length;
+  const visiblePlannedSets = getLoggedExercisePlannedSets(log, plannedEx);
+  if (visiblePlannedSets.length) {
+    return log.sets.length >= visiblePlannedSets.length;
   }
   // No planned sets: complete if at least one non-skipped set exists
   return log.sets.filter((s) => !s.skipped).length > 0;
@@ -6680,6 +7268,87 @@ function getLatestExercisePerformanceLog(db: TrainingDatabase, userId: string, e
     .at(0);
 }
 
+function getLatestExercisePreviewHistory(
+  db: TrainingDatabase,
+  user: UserProfile,
+  exercise?: Exercise,
+  displayUnit?: UnitPreference,
+) {
+  if (!exercise || !displayUnit) return undefined;
+  const latestSessionSet = db.sessions
+    .filter((session) => session.userId === user.id && session.status === "completed")
+    .flatMap((session) =>
+      session.loggedExercises
+        .filter((logged) => logged.exerciseId === exercise.id)
+        .flatMap((logged) =>
+          logged.sets
+            .filter((set) => isCompletedValidSet(set))
+            .map((set) => ({
+              set,
+              completedAt: set.completedAt || session.completedAt || session.startedAt,
+            }))
+        )
+    )
+    .sort((a, b) => b.completedAt.localeCompare(a.completedAt))
+    .at(0)?.set;
+  if (!latestSessionSet) return undefined;
+  const sourceUnit = getExerciseLoadUnit(exercise, user, latestSessionSet.unit);
+  return {
+    weight: convertWeight(latestSessionSet.actualWeight, sourceUnit, displayUnit),
+    reps: latestSessionSet.actualReps,
+    rpe: latestSessionSet.actualRpe,
+    unit: displayUnit,
+  };
+}
+
+function getBodyweightPreviewLabel(exercise?: Exercise): string {
+  if (exercise?.trackByBodyweight && exercise?.bestTrackedBy.includes("load")) return "BW";
+  return "BW";
+}
+
+function getBodyweightMovementCopy(exercise?: Exercise): string {
+  if (exercise?.trackByBodyweight && exercise?.bestTrackedBy.includes("load")) {
+    return "No recent added load. Use bodyweight or enter added load.";
+  }
+  return "Bodyweight movement.";
+}
+
+function formatExerciseLoadText(params: {
+  exercise?: Exercise;
+  user: UserProfile;
+  weight?: number | null;
+  unit?: ExerciseUnit | UnitPreference | null;
+  bodyweightEmptyLabel?: string;
+}): string {
+  const { exercise, user, weight, unit, bodyweightEmptyLabel = "BW" } = params;
+  if (!exercise) return "—";
+  const loadUnit = getExerciseLoadUnit(exercise, user, unit);
+  if (isBodyweightExercise(exercise)) {
+    if (weight !== undefined && weight !== null && weight > 0) {
+      return `BW + ${formatWeight(convertWeight(weight, loadUnit, loadUnit), loadUnit)} ${loadUnit}`;
+    }
+    return bodyweightEmptyLabel;
+  }
+  if (weight === undefined || weight === null || weight <= 0) return "—";
+  return `${formatWeight(convertWeight(weight, loadUnit, loadUnit), loadUnit)} ${loadUnit}`;
+}
+
+function getPlannedExerciseBadgeText(params: {
+  exercise?: Exercise;
+  displayUnit?: UnitPreference;
+  recommendationWeight?: number | null;
+  plannedWeight?: number;
+}): string | undefined {
+  const { exercise, displayUnit, recommendationWeight, plannedWeight } = params;
+  if (!exercise) return undefined;
+  if (isBodyweightExercise(exercise)) {
+    return getBodyweightPreviewLabel(exercise);
+  }
+  const weight = recommendationWeight ?? plannedWeight;
+  if (!displayUnit || weight === undefined || weight === null || weight <= 0) return undefined;
+  return `${formatWeight(weight, displayUnit)} ${displayUnit}`;
+}
+
 function getExerciseRecommendation(params: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -6695,6 +7364,7 @@ function getExerciseRecommendation(params: {
 
   const targetReps = plannedSet.targetReps || 8;
   const targetRpe = plannedSet.targetRpe || 8;
+  const exerciseDisplayUnit = getExerciseDisplayUnit(exercise, user);
   const baseline = getSameExerciseBaseline({
     userId: user.id,
     exerciseId: exercise.id,
@@ -6702,13 +7372,14 @@ function getExerciseRecommendation(params: {
     targetReps,
     targetRpe,
     gymId,
+    desiredUnit: exerciseDisplayUnit,
+    exerciseDefaultUnit: exercise.defaultUnit,
   });
   const targets = getTrainingTargets(
     mapTrainingGoal(goal || user.goal),
     mapBlockType(blockType),
     exercise.exerciseCategory
   );
-  const exerciseDisplayUnit = getExerciseDisplayUnit(exercise, user);
   const recommendation = recommendWeightForExercise({
     exercise,
     targetReps,
@@ -6962,11 +7633,11 @@ function SelectField({
   );
 }
 
-function BigInput({ label, value, onChange, step = "1", disabled = false }: { label: string; value: string; onChange: (value: string) => void; step?: string; disabled?: boolean }) {
+function BigInput({ label, value, onChange, step = "1", disabled = false, placeholder }: { label: string; value: string; onChange: (value: string) => void; step?: string; disabled?: boolean; placeholder?: string }) {
   return (
     <div>
       <label className="label">{label}</label>
-      <input className="field mt-2 min-h-14 text-2xl font-black disabled:opacity-60" inputMode="decimal" type="number" step={step} value={value} disabled={disabled} onChange={(event) => onChange(event.target.value)} />
+      <input className="field mt-2 min-h-14 text-2xl font-black disabled:opacity-60" inputMode="decimal" type="number" step={step} value={value} disabled={disabled} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }

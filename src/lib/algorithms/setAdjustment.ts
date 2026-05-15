@@ -31,6 +31,10 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   const setFeel = loggedSet.setRating ?? 3;
   const feelPoorAccessory =
     exercise.kind.includes("isolation") && (loggedSet.muscleFeelRating ?? 4) <= 2;
+  const bodyweightMovement = exercise.defaultUnit === "bodyweight"
+    || exercise.trackByBodyweight
+    || exercise.isBodyweight
+    || exercise.category === "bodyweight";
 
   const fatiguePerSet = fatigueProfile.repDropSensitivity * 0.012;
   const fatigueFactor = Math.max(0.85, 1 - fatiguePerSet * Math.max(0, setsCompletedThisExercise - 1));
@@ -38,6 +42,15 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   const currentWeight = loggedSet.actualWeight;
   // Use exercise display unit; fall back to user unit only if exercise has no unit set
   const unitLabel = (exercise.defaultUnit === "lb" || exercise.defaultUnit === "kg") ? exercise.defaultUnit : user.unit;
+
+  if (bodyweightMovement && currentWeight <= 0) {
+    return {
+      recommendation: undefined,
+      fatigueFactor,
+      adjustedTargetWeight: 0,
+      reason: "Bodyweight set logged without added load.",
+    };
+  }
 
   // ── Pain: always stop/substitute ──────────────────────────────────────────
   if (painHigh) {
@@ -52,6 +65,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       user,
       loggedSet,
       fatigueFactor,
+      unitLabel,
     });
   }
 
@@ -64,7 +78,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       if (suggestedWeight <= currentWeight) {
         return buildMaintain({
           reason: `This felt easy — keep the same load. No practical increase available after rounding to the nearest ${unitLabel} increment.`,
-          fatiguedBase, exercise, user, loggedSet, fatigueFactor,
+          fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel,
         });
       }
       return buildRec({
@@ -78,6 +92,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
         user,
         loggedSet,
         fatigueFactor,
+        unitLabel,
         enforceDirectionCheck: "increase",
       });
     }
@@ -85,13 +100,26 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       // Easy feel but slightly above target RPE — keep load steady
       return buildMaintain({
         reason: `This felt easy, but RPE was slightly above target. Keep the same load.`,
-        fatiguedBase, exercise, user, loggedSet, fatigueFactor,
+        fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel,
       });
     }
-    // rpeDelta >= 2 but still rated 5 — rare, trust feel rating → maintain
-    return buildMaintain({
-      reason: `This felt easy despite higher RPE. Keep the same load and reassess next set.`,
-      fatiguedBase, exercise, user, loggedSet, fatigueFactor,
+    // Easy feel but much higher RPE is a conflict. Respect the RPE gap.
+    const reductionPct = getMeaningfulReductionPct({ exercise, currentWeight, actualReps: loggedSet.actualReps, targetReps: plannedReps, rpeDelta });
+    const suggestedWeight = getMeaningfulReducedWeight({ exercise, unitLabel, currentWeight, fatiguedBase, reductionPct });
+    return buildRec({
+      type: "load-change",
+      priority: "medium",
+      title: "Reduce next set",
+      reason: `RPE was higher than target. Reduce to ${suggestedWeight} ${unitLabel} unless that RPE entry was accidental.`,
+      multiplier: suggestedWeight / Math.max(fatiguedBase, 1),
+      fatiguedBase,
+      exercise,
+      user,
+      loggedSet,
+      fatigueFactor,
+      unitLabel,
+      explicitSuggestedWeight: suggestedWeight,
+      enforceDirectionCheck: "decrease",
     });
   }
 
@@ -103,7 +131,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       if (suggestedWeight <= currentWeight) {
         return buildMaintain({
           reason: `This felt a bit easy. No practical increase available after rounding — keep the same load.`,
-          fatiguedBase, exercise, user, loggedSet, fatigueFactor,
+          fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel,
         });
       }
       return buildRec({
@@ -117,60 +145,86 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
         user,
         loggedSet,
         fatigueFactor,
+        unitLabel,
         enforceDirectionCheck: "increase",
       });
     }
     // rpeDelta >= 0: at or above target RPE — never decrease when feel is 4
+    if (rpeDelta >= 1.5) {
+      const reductionPct = getMeaningfulReductionPct({ exercise, currentWeight, actualReps: loggedSet.actualReps, targetReps: plannedReps, rpeDelta });
+      const suggestedWeight = getMeaningfulReducedWeight({ exercise, unitLabel, currentWeight, fatiguedBase, reductionPct });
+      return buildRec({
+        type: "load-change",
+        priority: "medium",
+        title: "Reduce next set",
+        reason: `RPE was higher than target. Reduce to ${suggestedWeight} ${unitLabel} for the next set.`,
+        multiplier: suggestedWeight / Math.max(fatiguedBase, 1),
+        fatiguedBase,
+        exercise,
+        user,
+        loggedSet,
+        fatigueFactor,
+        unitLabel,
+        explicitSuggestedWeight: suggestedWeight,
+        enforceDirectionCheck: "decrease",
+      });
+    }
     return buildMaintain({
       reason: `This felt a bit easy, but RPE was at or above target. Keep the same load.`,
-      fatiguedBase, exercise, user, loggedSet, fatigueFactor,
+      fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel,
     });
   }
 
   // ── setFeel = 3 (Moderate) → follow RPE delta ────────────────────────────
   if (setFeel === 3) {
     if (rpeDelta >= 2) {
-      const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.95, exercise, unitLabel);
+      const reductionPct = getMeaningfulReductionPct({ exercise, currentWeight, actualReps: loggedSet.actualReps, targetReps: plannedReps, rpeDelta });
+      const suggestedWeight = getMeaningfulReducedWeight({ exercise, unitLabel, currentWeight, fatiguedBase, reductionPct });
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `This felt on target, but RPE ran high. No practical reduction available — keep ${currentWeight} ${unitLabel}.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `This felt on target, but RPE ran high. No practical reduction available — keep ${currentWeight} ${unitLabel}.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
       }
       return buildRec({
         type: "load-change",
         priority: "medium",
         title: "Reduce next set",
-        reason: `This felt on target, but RPE ran higher than planned. Reduce slightly to ${suggestedWeight} ${unitLabel}.`,
-        multiplier: 0.95,
+        reason: `RPE was higher than target. Reduce to ${suggestedWeight} ${unitLabel} for the next set.`,
+        multiplier: suggestedWeight / Math.max(fatiguedBase, 1),
         fatiguedBase,
         exercise,
         user,
         loggedSet,
         fatigueFactor,
+        unitLabel,
+        explicitSuggestedWeight: suggestedWeight,
         enforceDirectionCheck: "decrease",
       });
     }
     if (rpeDelta >= 1 && missedReps) {
-      const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.975, exercise, unitLabel);
+      const reductionPct = getMeaningfulReductionPct({ exercise, currentWeight, actualReps: loggedSet.actualReps, targetReps: plannedReps, rpeDelta: Math.max(rpeDelta, 1) });
+      const suggestedWeight = getMeaningfulReducedWeight({ exercise, unitLabel, currentWeight, fatiguedBase, reductionPct });
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `Reps were below plan. Keep ${currentWeight} ${unitLabel} and check your setup.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `Reps were below plan. Keep ${currentWeight} ${unitLabel} and check your setup.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
       }
       return buildRec({
         type: "load-change",
         priority: "low",
         title: "Slight reduction or hold",
-        reason: `Reps were below plan. A small reduction to ${suggestedWeight} ${unitLabel} may help next set.`,
-        multiplier: 0.975,
+        reason: `Target is easier than the last set. Reduce to ${suggestedWeight} ${unitLabel}.`,
+        multiplier: suggestedWeight / Math.max(fatiguedBase, 1),
         fatiguedBase,
         exercise,
         user,
         loggedSet,
         fatigueFactor,
+        unitLabel,
+        explicitSuggestedWeight: suggestedWeight,
         enforceDirectionCheck: "decrease",
       });
     }
     if (formPoor) {
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.975, exercise, unitLabel);
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `Form was poor. Keep ${currentWeight} ${unitLabel} and prioritize technique.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `Form was poor. Keep ${currentWeight} ${unitLabel} and prioritize technique.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
       }
       return buildRec({
         type: "load-change",
@@ -183,6 +237,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
         user,
         loggedSet,
         fatigueFactor,
+        unitLabel,
         enforceDirectionCheck: "decrease",
       });
     }
@@ -197,47 +252,53 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   // ── setFeel = 2 (Hard) → maintain/reduce only if RPE above target ────────
   if (setFeel === 2) {
     if (rpeDelta >= 2 || (missedReps && rpeDelta >= 1)) {
-      const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.95, exercise, unitLabel);
+      const reductionPct = getMeaningfulReductionPct({ exercise, currentWeight, actualReps: loggedSet.actualReps, targetReps: plannedReps, rpeDelta: Math.max(rpeDelta, 1.5) });
+      const suggestedWeight = getMeaningfulReducedWeight({ exercise, unitLabel, currentWeight, fatiguedBase, reductionPct });
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `This felt harder than planned. Keep ${currentWeight} ${unitLabel} — no practical reduction available after rounding.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `This felt harder than planned. Keep ${currentWeight} ${unitLabel} — no practical reduction available after rounding.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
       }
       return buildRec({
         type: "load-change",
         priority: "medium",
         title: "Reduce next set",
-        reason: `This felt harder than planned. Reduce the next set slightly to ${suggestedWeight} ${unitLabel}.`,
-        multiplier: 0.95,
+        reason: `RPE was higher than target. Reduce to ${suggestedWeight} ${unitLabel} for the next set.`,
+        multiplier: suggestedWeight / Math.max(fatiguedBase, 1),
         fatiguedBase,
         exercise,
         user,
         loggedSet,
         fatigueFactor,
+        unitLabel,
+        explicitSuggestedWeight: suggestedWeight,
         enforceDirectionCheck: "decrease",
       });
     }
     return buildMaintain({
       reason: `This felt harder than planned, but RPE was near target. Keep the same load.`,
-      fatiguedBase, exercise, user, loggedSet, fatigueFactor,
+      fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel,
     });
   }
 
   // ── setFeel = 1 (Very Hard / Failed) ────────────────────────────────────
   if (setFeel <= 1) {
-    const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.90, exercise, unitLabel);
+    const reductionPct = getMeaningfulReductionPct({ exercise, currentWeight, actualReps: loggedSet.actualReps, targetReps: plannedReps, rpeDelta: Math.max(rpeDelta, 2) });
+    const suggestedWeight = getMeaningfulReducedWeight({ exercise, unitLabel, currentWeight, fatiguedBase, reductionPct });
     if (suggestedWeight >= currentWeight) {
-      return buildMaintain({ reason: `This felt much harder than planned. Keep ${currentWeight} ${unitLabel} — no practical reduction available after rounding.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+      return buildMaintain({ reason: `This felt much harder than planned. Keep ${currentWeight} ${unitLabel} — no practical reduction available after rounding.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
     }
     return buildRec({
       type: "load-change",
       priority: "high",
       title: "Reduce next set",
-      reason: `This felt much harder than planned${missedReps ? " and reps were missed" : ""}. Reduce the next set to ${suggestedWeight} ${unitLabel}.`,
-      multiplier: 0.90,
+      reason: `Target is easier than the last set. Reduce to ${suggestedWeight} ${unitLabel}.${missedReps ? " Reps were also missed." : ""}`,
+      multiplier: suggestedWeight / Math.max(fatiguedBase, 1),
       fatiguedBase,
       exercise,
       user,
       loggedSet,
       fatigueFactor,
+      unitLabel,
+      explicitSuggestedWeight: suggestedWeight,
       enforceDirectionCheck: "decrease",
     });
   }
@@ -255,6 +316,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       user,
       loggedSet,
       fatigueFactor,
+      unitLabel,
     });
   }
 
@@ -279,22 +341,26 @@ type BuildRecInput = {
   user: UserProfile;
   loggedSet: LoggedSet;
   fatigueFactor: number;
+  unitLabel: "lb" | "kg";
+  explicitSuggestedWeight?: number;
   enforceDirectionCheck?: "increase" | "decrease";
 };
 
 function buildRec(input: BuildRecInput): SetAdjustmentResult {
-  const { type, priority, title, reason, multiplier, fatiguedBase, exercise, user, loggedSet, fatigueFactor, enforceDirectionCheck } = input;
+  const { type, priority, title, reason, multiplier, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel, explicitSuggestedWeight, enforceDirectionCheck } = input;
 
   const suggestedWeight =
-    multiplier === 0
+    explicitSuggestedWeight !== undefined
+      ? explicitSuggestedWeight
+      : multiplier === 0
       ? 0
-      : roundToExerciseIncrement(fatiguedBase * multiplier, exercise, user.unit);
+      : roundToExerciseIncrement(fatiguedBase * multiplier, exercise, unitLabel);
 
   if (enforceDirectionCheck === "increase" && suggestedWeight <= loggedSet.actualWeight) {
-    return buildMaintain({ reason: reason.replace(/Increase next set to.*$/, `but after rounding the next practical jump is not available. Maintain ${loggedSet.actualWeight} ${user.unit}.`), fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+    return buildMaintain({ reason: reason.replace(/Increase next set to.*$/, `but after rounding the next practical jump is not available. Maintain ${loggedSet.actualWeight} ${unitLabel}.`), fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
   }
   if (enforceDirectionCheck === "decrease" && suggestedWeight >= loggedSet.actualWeight) {
-    return buildMaintain({ reason: reason.replace(/Reduce next set to.*$/, `but after rounding no practical reduction is available. Maintain ${loggedSet.actualWeight} ${user.unit}.`), fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+    return buildMaintain({ reason: reason.replace(/Reduce next set to.*$/, `but after rounding no practical reduction is available. Maintain ${loggedSet.actualWeight} ${unitLabel}.`), fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel });
   }
 
   const recommendation: Recommendation = {
@@ -315,9 +381,9 @@ function buildRec(input: BuildRecInput): SetAdjustmentResult {
   return { recommendation, fatigueFactor, adjustedTargetWeight: suggestedWeight, reason };
 }
 
-function buildMaintain(input: Omit<BuildRecInput, "type" | "priority" | "title" | "multiplier" | "enforceDirectionCheck">): SetAdjustmentResult {
-  const { reason, fatiguedBase, exercise, user, loggedSet, fatigueFactor } = input;
-  const suggestedWeight = roundToExerciseIncrement(fatiguedBase, exercise, user.unit);
+function buildMaintain(input: Omit<BuildRecInput, "type" | "priority" | "title" | "multiplier" | "enforceDirectionCheck" | "explicitSuggestedWeight">): SetAdjustmentResult {
+  const { reason, fatiguedBase, exercise, user, loggedSet, fatigueFactor, unitLabel } = input;
+  const suggestedWeight = roundToExerciseIncrement(fatiguedBase, exercise, unitLabel);
   const recommendation: Recommendation = {
     id: createId("rec"),
     userId: user.id,
@@ -337,4 +403,48 @@ function buildMaintain(input: Omit<BuildRecInput, "type" | "priority" | "title" 
     adjustedTargetWeight: suggestedWeight,
     reason,
   };
+}
+
+function getMeaningfulReductionPct(params: {
+  exercise: Exercise;
+  currentWeight: number;
+  actualReps: number;
+  targetReps: number;
+  rpeDelta: number;
+}): number {
+  const { exercise, actualReps, targetReps, rpeDelta } = params;
+  const isolationBonus = exercise.kind.includes("isolation") || exercise.category === "cable" || exercise.category === "machine" ? 0.02 : 0;
+  let basePct = 0;
+  if (rpeDelta >= 2) basePct = 0.05;
+  else if (rpeDelta >= 1.5) basePct = 0.04;
+  else if (rpeDelta >= 1) basePct = 0.025;
+  const repIncrease = Math.max(0, targetReps - actualReps);
+  const repPct = Math.min(0.05, repIncrease * 0.015);
+  return Math.min(0.15, basePct + isolationBonus + repPct);
+}
+
+function getIncrementSize(exercise: Exercise, unit: "lb" | "kg"): number {
+  const override = exercise.customIncrement ?? exercise.defaultIncrement;
+  if (override && override > 0) return override;
+  if (exercise.category === "dumbbell" || exercise.trackPerSide) return 2.5;
+  return unit === "kg" ? 2.5 : 5;
+}
+
+function getMeaningfulReducedWeight(params: {
+  exercise: Exercise;
+  unitLabel: "lb" | "kg";
+  currentWeight: number;
+  fatiguedBase: number;
+  reductionPct: number;
+}): number {
+  const { exercise, unitLabel, currentWeight, fatiguedBase, reductionPct } = params;
+  const increment = getIncrementSize(exercise, unitLabel);
+  const rawWeight = Math.max(0, fatiguedBase * (1 - reductionPct));
+  let rounded = roundToExerciseIncrement(rawWeight, exercise, unitLabel);
+  if (rounded > rawWeight) rounded = Math.max(0, rounded - increment);
+  const maxAllowedWeight = currentWeight * (1 - reductionPct);
+  while (rounded > maxAllowedWeight + 0.001 && rounded - increment >= 0) {
+    rounded = Math.max(0, rounded - increment);
+  }
+  return rounded;
 }

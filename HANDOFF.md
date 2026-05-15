@@ -8,6 +8,315 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
+## Current Handoff — Completed Set Editing + True Delete Flow Fix (Session 16)
+
+### What changed
+
+**Logger now separates logging mode from editing mode**
+- `src/App.tsx` now distinguishes:
+  - the current logging target (`selectedLoggingIndex` / current planned slot)
+  - the completed set being edited (`editingSetId`)
+- Tapping a completed set now enters explicit edit mode instead of silently pushing its values into the current pending set.
+- Canceling edit exits edit mode and returns the form to the active logging target.
+
+**Set lineup is now driven by lineup items instead of raw array index assumptions**
+- The live logger builds a session-local lineup from:
+  - visible planned sets
+  - matching logged completions/skips
+  - extra logged sets that do not map to a visible planned slot
+- This makes pending-set deletion, completed-set editing, and resume behavior more stable after session modifications.
+
+**Delete now works for planned and completed sets**
+- Delete confirmation now supports:
+  - completed sets
+  - skipped sets
+  - pending planned sets
+- Deleting a logged set removes it from the session.
+- Deleting a planned set hides that planned slot for the current session so it does not come back as a normal pending row.
+- Skip remains separate and still records a skipped set.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Complete a set, tap it, and confirm the form enters edit mode with that set’s actual values.
+2. Save changes and confirm only that completed set updates.
+3. Cancel edit and confirm the current logging draft comes back cleanly.
+4. Delete a pending planned set and confirm the denominator drops for the active session.
+5. Delete a completed set and confirm it stays gone after resume.
+
+## Current Handoff — Swipe Delete Visual + Actual Delete Fix (Session 15)
+
+### What changed
+
+**Closed rows now fully cover the delete background**
+- The completed set row in `src/App.tsx` now uses:
+  - hidden/opacity-gated delete background
+  - an opaque foreground card with `z-10`
+- The orange delete panel is only visible while a swipe is actively open or dragging on mobile/touch.
+- Closed rows no longer leak the delete background through semi-transparent card styling.
+
+**Delete now removes the logged set for this session**
+- Delete no longer behaves like a reset/undo that leaves the same planned slot looking like a normal pending set.
+- When a completed set is deleted:
+  - its logged set entry is removed from `log.sets`
+  - its `plannedSetId` is added to a session-local hidden list on the `LoggedExercise`
+  - counts drop accordingly because the set no longer exists in the session log
+- Skip remains separate and still records an explicit skipped set.
+
+**Resume and set-pointer safety stayed intact**
+- After delete, the session pointer is clamped against the updated visible planned-set list.
+- Resume still uses the filtered visible planned sets, so deleted planned completions stay gone instead of reappearing after re-entry.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Load a logger with completed sets and confirm closed rows show no orange delete background.
+2. Swipe a completed row open on mobile/touch and confirm the delete panel reveals cleanly behind the card.
+3. Confirm desktop still shows only the compact trash action.
+4. Delete a completed set and confirm hard/completed counts decrease while skipped does not increase.
+5. Resume the workout and confirm the deleted set does not reappear.
+
+## Current Handoff — Swipe Delete Device Behavior Fix (Session 14)
+
+### What changed
+
+**Swipe is now mobile/touch only**
+- The live logger in `src/App.tsx` now uses a device capability check based on:
+  - `(hover: none) and (pointer: coarse)`
+- When that query matches, swipe reveal stays enabled for completed set rows.
+- When it does not match, swipe reveal is disabled and the row never shifts left.
+
+**Desktop now uses a compact delete button only**
+- Desktop/computer behavior no longer shows the orange delete reveal behind completed rows.
+- Completed set rows instead keep a small trash button that opens the existing delete confirmation.
+- Mouse interaction does not open the swipe panel.
+
+**Stale swipe state is cleared more aggressively**
+- The logger now clears swipe-open and drag state when:
+  - resuming/re-entering a session
+  - switching exercises
+  - the device mode changes to desktop/non-swipe
+  - the open row no longer exists
+- This prevents stale mobile swipe state from leaking into desktop rendering.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Open or resume a workout with completed sets on desktop and confirm no orange delete panel is visible.
+2. Confirm desktop rows do not shift and only show the compact trash action.
+3. Confirm mobile/touch still supports swipe-left reveal with one row open at a time.
+4. Confirm resume still works and no blank page appears.
+
+## Current Handoff — Resume Workout Swipe Null Crash Fix (Session 13)
+
+### What changed
+
+**Swipe state reads are now null-safe**
+- The completed-set row renderer in `src/App.tsx` no longer reads swipe fields directly from a nullable `swipeState`.
+- The crashy swipe offset logic now uses safe defaults for:
+  - `isHorizontalSwipe`
+  - `deltaX`
+- Resume can now render the logger even when there is no active swipe gesture state.
+
+**Transient swipe UI is cleared on logger re-entry**
+- On logger re-entry / session resume, the component now clears:
+  - `openSwipeSetId`
+  - `pendingDeleteSetIndex`
+  - active `swipeState`
+- If `openSwipeSetId` points to a set that no longer exists, it is automatically cleared.
+- If the pending delete index is out of range after state changes, it is also cleared safely.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Start a workout and log at least two sets.
+2. Swipe one completed set open, leave the logger, then resume the workout.
+3. Confirm the logger opens normally with no blank page.
+4. Confirm swipe delete, cancel, and confirm-delete still work afterward.
+
+## Current Handoff — Resume Workout Blank Page Hotfix (Session 12)
+
+### What changed
+
+**Resume flow now validates before opening the logger**
+- `src/App.tsx` now uses a shared resume validator before opening an in-progress session from:
+  - the Today `Resume Workout` button
+  - `Resume Other In-Progress`
+  - the header `Live` button
+- The validator checks:
+  - session existence
+  - `in-progress` status
+  - whether the session still has exercises
+  - whether the current exercise pointer still maps to a valid exercise/log entry
+  - whether the saved set pointer needs clamping after logger edits
+- Invalid/stale sessions now clear the active resume pointer and return the user to Today with:
+  - `That workout could not be resumed.`
+
+**Logger now repairs stale pointers instead of assuming saved state is perfect**
+- The live logger now rehydrates to the nearest valid exercise/set instead of blindly trusting `currentExerciseIndex`, `currentSetIndex`, or a stale row-level exercise id.
+- If the saved active exercise is missing, complete, or no longer valid, the logger moves to the earliest valid incomplete exercise, otherwise the first valid one.
+- If the current set pointer is out of range, it is clamped to the next valid set slot before rendering.
+
+**Recovery screens replace blank-state failure**
+- If logger state is unrecoverable, the app now shows a recovery panel instead of a blank page:
+  - `Workout could not be resumed`
+  - `The saved workout state was incomplete or stale.`
+- Recovery actions:
+  - `Return to Today`
+  - `Abandon Workout`
+- If an in-progress session has no exercises, the logger now shows a safe recovery screen with:
+  - `Return to Today`
+  - `Add Exercise`
+  - `Cancel`
+
+**Delete-set regression guard**
+- Deleting a completed set now also clamps the saved `currentSetIndex` for the active exercise.
+- This prevents a stale post-delete set pointer from breaking later resume attempts.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Start a workout, log a set, leave the logger, and confirm `Resume Workout` returns to the logger instead of a blank page.
+2. Delete a completed set, leave, resume, and confirm the logger still opens normally.
+3. Finish one exercise, leave, resume, and confirm the logger lands on the next incomplete exercise.
+4. Confirm completed/abandoned workouts do not keep showing as resumable.
+5. If possible, simulate a stale session pointer and confirm the Today recovery message appears instead of a blank page.
+
+## Current Handoff — Swipe Delete UX Fix (Session 11)
+
+### What changed
+
+**Single-open swipe state**
+- The live logger swipe-delete rows in `src/App.tsx` now use one open-row state:
+  - `openSwipeSetId?: string`
+- Only one completed set row can stay open at a time.
+- Starting a swipe on a new row closes any previously open row automatically.
+
+**Cleaner gesture behavior**
+- Swipe tracking now uses:
+  - `startX`
+  - `startY`
+  - axis lock
+  - horizontal-vs-vertical dominance check
+- Delete reveal only opens after a meaningful left swipe threshold (`52px`).
+- Small accidental swipes snap closed.
+- Vertical scrolling is no longer hijacked by brittle delete logic.
+
+**Cleaner row layout**
+- Each swipable row now uses a cleaner mobile-list structure:
+  - outer clipped container
+  - fixed-width delete background behind the content
+  - sliding content card above it
+- The orange delete panel no longer leaves multiple rows visually open at once or awkwardly exposes the underlying row text.
+- Tapping an already-open row closes it instead of editing it.
+- Tapping outside the open row closes it.
+
+**Delete confirmation behavior**
+- Cancel now closes both the confirmation and the open swipe row.
+- Confirm delete removes the set and clears the open swipe state.
+- Delete remains a mistake-correction action only; Skip remains the path for intentionally missed sets.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Swipe one completed set row left and confirm only that row opens.
+2. Swipe a second completed set row left and confirm the first closes.
+3. Tap outside the open row and confirm it closes.
+4. Tap the row while open and confirm it closes instead of entering edit mode.
+5. Confirm small swipes do not open delete.
+6. Confirm vertical scrolling still feels natural in the logger.
+
+## Current Handoff — Bodyweight Logger + RPE Reduction Hotfix (Session 10)
+
+### What changed
+
+**Bodyweight display now uses BW instead of fake zero-load units**
+- Added a bodyweight-aware display layer in `src/App.tsx` and `src/lib/trainingMath.ts`.
+- Planned preview cards, live logger set rows, recent history, and completed-set displays now render:
+  - `BW`
+  - `BW + 25 lb`
+  instead of `0 kg`, `0 lb`, `- kg`, or `- lb`.
+- Bodyweight movements now use bodyweight-specific empty-state copy:
+  - `No recent added load. Use bodyweight or enter added load.`
+
+**Live logger added-load flow**
+- Bodyweight logger input now uses `Added load (lb/kg)` labeling with a grey `BW` placeholder.
+- Blank added load means bodyweight for that set.
+- When added load is entered, the logger stores/display it as external load in the user/exercise weight unit instead of treating bodyweight as `0 kg`.
+- Next-set draft carry-forward no longer turns a prior BW set into a literal `0` in the input.
+
+**RPE-based reduction logic is more meaningful**
+- `src/lib/algorithms/setAdjustment.ts` now applies a meaningful reduction floor before rounding when actual RPE is materially above target.
+- Large RPE gaps now reduce load by percentage intent first, then round, instead of letting “nearest increment” erase the adjustment.
+- Isolation/cable/machine work gets a slightly stronger reduction floor than big compounds.
+- Conflicting cases like “easy feel but RPE much higher than target” now respect the RPE mismatch and reduce with clearer copy.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Open a bodyweight movement like Pull-Up in the planned preview and confirm the badge/copy shows `BW` or bodyweight guidance, never `0 kg` / `- kg`.
+2. In the live logger, confirm the weight field shows grey `BW` placeholder for bodyweight movements.
+3. Log a bodyweight set with blank added load and confirm the lineup/completed display shows `BW × reps @ RPE`.
+4. Log a weighted bodyweight set and confirm it shows `BW + X lb/kg`.
+5. Confirm bodyweight recent history/analytics cards no longer show `-` where `BW` should appear.
+6. Test a high-RPE accessory example like `100 lb × 10 @ RPE 10` toward `@ RPE 8` and confirm the reduction is meaningful before rounding.
+7. Confirm reduction copy stays clear and unit-correct, including rounded messages.
+
+## Current Handoff — Live Logger Preview + Mobile Delete Polish (Session 9)
+
+### What changed
+
+**Preview cards now respect the exercise display unit**
+- The Today/preview workout cards in `src/App.tsx` now use the same display-unit path as the live logger.
+- Recommendation baselines are converted into the exercise display unit before preview copy is built, so the preview card no longer mixes `kg` and `lb` in the badge, observed e1RM, recent performance, and rounding text.
+- Preview recent-performance copy now uses concise wording:
+  - `Recent: 80 lb × 10 @ RPE 9`
+  - `Observed e1RM: 255 lb.`
+  - `Conservative target: 175 lb for 8 reps @ RPE 7.`
+
+**Blank weight states are cleaner**
+- Preview cards and live logger set rows no longer render broken empty labels such as `- kg` or `- lb`.
+- When no load history exists, the preview uses `No recent entry. Enter starting weight.`
+- Bodyweight movements now show `Bodyweight` or `Added load optional` instead of a fake empty load.
+
+**Live logger mobile delete + action visibility**
+- Live logger set rows now support swipe-left reveal on touch screens for deleting logged sets.
+- A quieter fallback delete icon remains on each completed set row.
+- Delete still uses confirmation text that steers users toward `Skip` for missed sets, and deleted sets are removed entirely so they do not count as skipped or hard sets.
+- The logger action row is now sticky at the bottom of the card so `Next Set` / `Finish Exercise` / `Finish Workout` stays visible on mobile.
+
+**Set-feel flow decision**
+- Feel buttons still only select feel; they do not auto-advance.
+- This pass intentionally kept progression conservative to avoid accidental saves/advances during training. The speed improvement in this session is the sticky primary action rather than implicit advance behavior.
+
+### Validation
+- Lint: passing
+- Build: passing
+
+### Manual verification checklist
+1. Open a planned workout whose exercise display unit is `lb` and confirm the preview badge, observed e1RM, conservative target, recent performance, and rounding copy all stay in `lb`.
+2. Confirm preview cards with no saved load do not show `- kg` or `- lb`.
+3. Confirm bodyweight preview cards show `Bodyweight` or `Added load optional`.
+4. In the live logger, confirm planned rows with no load use clean fallback text instead of empty unit labels.
+5. On mobile/touch, swipe left on a completed set row and confirm Delete is revealed.
+6. Confirm the fallback delete icon still opens the delete path without making Delete louder than Skip.
+7. Delete a set and confirm the workout summary/hard-set counts reflect full removal rather than a skip.
+8. Confirm the sticky bottom action row keeps the main Next/Finish action visible while logging.
+
 ## Current Handoff — Data Management UX Simplification + Unified Import/Export (Session 8)
 
 ### What changed

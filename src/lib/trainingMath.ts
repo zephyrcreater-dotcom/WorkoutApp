@@ -96,6 +96,28 @@ export function getExerciseDisplayUnit(
   return "lb";
 }
 
+export function isBodyweightExercise(
+  exercise?: Pick<Exercise, "defaultUnit" | "trackByBodyweight" | "isBodyweight" | "category"> | null,
+): boolean {
+  return exercise?.defaultUnit === "bodyweight"
+    || exercise?.trackByBodyweight === true
+    || exercise?.isBodyweight === true
+    || exercise?.category === "bodyweight";
+}
+
+export function getExerciseLoadUnit(
+  exercise?: Pick<Exercise, "defaultUnit" | "trackByBodyweight" | "isBodyweight" | "category"> | null,
+  user?: Pick<UserProfile, "unit"> | null,
+  fallbackUnit?: ExerciseUnit | UnitPreference | null,
+): UnitPreference {
+  if (isBodyweightExercise(exercise)) {
+    if (isWeightUnit(fallbackUnit)) return fallbackUnit;
+    if (user?.unit) return user.unit;
+    return "lb";
+  }
+  return getExerciseDisplayUnit(exercise, user, fallbackUnit);
+}
+
 export function formatWeight(value?: number | null, unit?: ExerciseUnit | UnitPreference | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return "-";
   const digits = unit === "kg" ? 1 : 0;

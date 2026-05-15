@@ -2,6 +2,44 @@
 
 ## Known Bugs
 
+## Completed Set Editing + True Delete Flow Fix (Session 16)
+
+- The logger now has separate logging/editing state in code, but it still needs real workout-flow verification to confirm every tap path feels right after multiple edits, deletes, skips, and resume cycles.
+
+## Swipe Delete Visual + Actual Delete Fix (Session 15)
+
+- The closed-row delete background leak and the “delete behaves like reset” issue are fixed in code.
+- Manual verification is still recommended for delete-after-resume and delete-mid-workout flows to confirm the filtered planned-set behavior feels right in real use.
+
+## Swipe Delete Device Behavior Fix (Session 14)
+
+- Desktop stale-swipe rendering is fixed in code, but manual verification is still recommended on both desktop and touch devices to confirm the coarse-pointer detection matches the expected environments.
+
+## Resume Workout Swipe Null Crash Fix (Session 13)
+
+- The specific `swipeState is null` resume crash is fixed in code.
+- Manual verification is still recommended for resume-after-swipe and resume-after-delete flows on a real device/browser session.
+
+## Resume Workout Blank Page Hotfix (Session 12)
+
+- The blank-page resume blocker is fixed in code by validating and repairing in-progress session pointers before opening the logger.
+- Manual verification is still recommended for stale-state edge cases created by older local data or unusual logger flows, especially resume after deleting sets and resume after library edits.
+
+## Swipe Delete UX Fix (Session 11)
+
+- The broken “multiple rows visually open at once” swipe state was fixed in code.
+- Real-device verification is still recommended to confirm the current swipe threshold feels right on iPhone Safari and does not need minor tuning.
+
+## Bodyweight Logger + RPE Reduction Hotfix (Session 10)
+
+- The new bodyweight display flow is implemented in code, but it still needs real-device/manual verification across all logger and preview surfaces to confirm no remaining `0 lb/kg` or `- lb/kg` strings survive edge cases.
+- The stronger reduction floor in `setAdjustment.ts` is intentionally more assertive for isolation/cable/machine work. Real gym testing is still needed to decide whether those isolation reductions should be tuned slightly up or down.
+
+## Live Logger Preview + Mobile Delete Polish (Session 9)
+
+- Swipe-delete was implemented with touch swipe reveal plus a fallback delete icon, but it still needs real-device verification on iPhone Safari to confirm the reveal threshold feels reliable and does not conflict with vertical scrolling.
+- This pass did not add feel-button auto-advance. If live testing later shows the sticky action bar is still not fast enough, a guarded double-tap or same-feel-confirm flow can be revisited.
+
 ## Data Management UX Simplification + Unified Import/Export (Session 8)
 
 - The primary `Export Training Data` action currently produces an Excel-compatible multi-sheet `.xls` XML workbook, not a zipped `.xlsx` file. It opens in spreadsheet apps, but true `.xlsx` export would require a library or a custom ZIP writer.
