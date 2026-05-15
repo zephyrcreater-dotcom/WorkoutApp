@@ -1,4 +1,4 @@
-import type { Exercise, LoggedSet, ReadinessCheckIn, UnitPreference, WorkoutSession } from "../../types/domain";
+import type { Exercise, ExerciseUnit, LoggedSet, ReadinessCheckIn, UnitPreference, WorkoutSession } from "../../types/domain";
 import { calculateObservedE1RM } from "./e1rm";
 import {
   calculateNormalizedE1RM,
@@ -29,6 +29,8 @@ export interface SameExerciseBaselineInput {
   targetReps?: number;
   targetRpe?: number;
   gymId?: string;
+  desiredUnit?: UnitPreference;
+  exerciseDefaultUnit?: ExerciseUnit;
 }
 
 function daysBetween(laterIso: string, earlierIso: string): number {
@@ -41,6 +43,20 @@ type CandidateSet = {
   ageDays: number;
   score: number;
 };
+
+function isWeightUnit(unit?: ExerciseUnit | UnitPreference | null): unit is UnitPreference {
+  return unit === "lb" || unit === "kg";
+}
+
+function convertWeight(
+  value?: number | null,
+  fromUnit?: ExerciseUnit | UnitPreference | null,
+  toUnit?: UnitPreference | null,
+): number | undefined {
+  if (value === undefined || value === null || Number.isNaN(value)) return undefined;
+  if (!isWeightUnit(fromUnit) || !toUnit || fromUnit === toUnit) return value;
+  return toUnit === "kg" ? value * 0.45359237 : value * 2.2046226218;
+}
 
 function collectSameExerciseCandidates(input: SameExerciseBaselineInput): CandidateSet[] {
   const now = new Date().toISOString();
@@ -109,9 +125,18 @@ export function getSameExerciseBaseline(input: SameExerciseBaselineInput): SameE
     setType: best.set.kind,
     skipped: best.set.skipped,
   }) ?? undefined;
-  const normalized = observedE1RM
+  const sourceUnit = isWeightUnit(best.set.unit)
+    ? best.set.unit
+    : isWeightUnit(input.exerciseDefaultUnit)
+      ? input.exerciseDefaultUnit
+      : input.desiredUnit;
+  const baselineWeight = convertWeight(best.set.actualWeight, sourceUnit, input.desiredUnit) ?? best.set.actualWeight;
+  const convertedObservedE1RM = observedE1RM
+    ? (convertWeight(observedE1RM, sourceUnit, input.desiredUnit) ?? observedE1RM)
+    : undefined;
+  const normalized = convertedObservedE1RM
     ? calculateNormalizedE1RM({
-        observedE1RM,
+        observedE1RM: convertedObservedE1RM,
         actualRpe: best.set.actualRpe,
         targetRpe: input.targetRpe,
         setRating: best.set.setRating,
@@ -120,7 +145,7 @@ export function getSameExerciseBaseline(input: SameExerciseBaselineInput): SameE
     : undefined;
 
   return {
-    baselineWeight: best.set.actualWeight,
+    baselineWeight,
     baselineReps: best.set.actualReps,
     baselineRpe: best.set.actualRpe ?? null,
     source: best.ageDays <= 42 ? "recent_same_exercise" : "older_same_exercise",
@@ -129,7 +154,7 @@ export function getSameExerciseBaseline(input: SameExerciseBaselineInput): SameE
     sourceSessionId: best.session.id,
     sourceSetId: best.set.id,
     historyAgeDays: best.ageDays,
-    observedE1RM,
+    observedE1RM: convertedObservedE1RM,
     normalizedE1RM: normalized?.normalizedE1RM,
     sourceDate: best.set.completedAt || best.session.completedAt || best.session.startedAt,
   };
@@ -161,13 +186,24 @@ export function buildConciseRecommendationReason(input: {
   unit: UnitPreference;
   rounded?: boolean;
   increment?: number;
+  recommendedWeight?: number;
 }): string[] {
   const parts: string[] = [];
-  if (input.baseline?.baselineWeight && input.baseline.baselineReps) {
-    const baselineRpe = input.baseline.baselineRpe ? ` @ ${input.baseline.baselineRpe}` : "";
-    parts.push(`Last time: ${input.baseline.baselineWeight} ${input.unit} x ${input.baseline.baselineReps}${baselineRpe}.`);
+  if (input.baseline?.observedE1RM && input.baseline.baselineWeight && input.baseline.baselineReps) {
+    const baselineRpe = input.baseline.baselineRpe ? ` @ RPE ${input.baseline.baselineRpe}` : "";
+    parts.push(
+      `Observed e1RM: ${Math.round(input.baseline.observedE1RM)} ${input.unit}.`
+    );
+    parts.push(`Recent: ${input.baseline.baselineWeight} ${input.unit} × ${input.baseline.baselineReps}${baselineRpe}.`);
+  } else if (input.baseline?.baselineWeight && input.baseline.baselineReps) {
+    const baselineRpe = input.baseline.baselineRpe ? ` @ RPE ${input.baseline.baselineRpe}` : "";
+    parts.push(`Recent: ${input.baseline.baselineWeight} ${input.unit} × ${input.baseline.baselineReps}${baselineRpe}.`);
   }
-  parts.push(`Target today: ${input.targetReps} reps @ ${input.targetRpe}.`);
+  if (input.recommendedWeight && input.recommendedWeight > 0) {
+    parts.push(`Conservative target: ${input.recommendedWeight} ${input.unit} for ${input.targetReps} reps @ RPE ${input.targetRpe}.`);
+  } else {
+    parts.push(`Target today: ${input.targetReps} reps @ RPE ${input.targetRpe}.`);
+  }
   if (input.rounded && input.increment) {
     parts.push(`Rounded to nearest ${input.increment} ${input.unit}.`);
   }
@@ -175,12 +211,16 @@ export function buildConciseRecommendationReason(input: {
 }
 
 export function recommendWeightForExercise(input: ExerciseRecommendationInput): ExerciseRecommendation {
+  const bodyweightMovement = input.exercise.defaultUnit === "bodyweight"
+    || input.exercise.trackByBodyweight
+    || input.exercise.isBodyweight
+    || input.exercise.category === "bodyweight";
   if (!input.baseline.baselineWeight || !input.baseline.baselineReps) {
     return {
       recommendedWeight: null,
       confidence: input.baseline.confidence,
       confidenceBand: input.baseline.confidenceBand,
-      reasonParts: ["No recent history. Enter starting weight."],
+      reasonParts: [bodyweightMovement ? "No recent added load. Use bodyweight or enter added load." : "No recent entry. Enter starting weight."],
       source: "no_history",
       warningFlags: ["no_history"],
     };
@@ -203,8 +243,23 @@ export function recommendWeightForExercise(input: ExerciseRecommendationInput): 
   if (Math.abs(rpeDelta) >= 1.5) warningFlags.push("rpe_gap_large");
   if (input.baseline.historyAgeDays !== undefined && input.baseline.historyAgeDays > 90) warningFlags.push("history_old");
 
-  const rawWeight = baselineWeight * Math.max(0.88, Math.min(1.12, multiplier));
-  const recommendedWeight = roundToIncrement(rawWeight, input.increment);
+  let rawWeight = baselineWeight * Math.max(0.88, Math.min(1.12, multiplier));
+
+  // ── Sanity guardrails ──────────────────────────────────────────────────────
+  // If going to more reps at lower or equal RPE, load must be lower than baseline.
+  if (repDelta > 0 && rpeDelta <= 0) {
+    rawWeight = Math.min(rawWeight, baselineWeight * 0.97);
+    warningFlags.push("guardrail_more_reps_lower_rpe");
+  }
+  // Cap at observed e1RM — prescribed load should never exceed theoretical max.
+  if (input.baseline.observedE1RM && rawWeight > input.baseline.observedE1RM) {
+    rawWeight = input.baseline.observedE1RM * 0.9;
+    warningFlags.push("guardrail_capped_at_e1rm");
+  }
+  // Clamp to a sane range of the baseline weight (prevent 2–3× jumps from stale data).
+  rawWeight = Math.min(rawWeight, baselineWeight * 1.15);
+
+  const recommendedWeight = roundToIncrement(Math.max(0, rawWeight), input.increment);
   const reasonParts = buildConciseRecommendationReason({
     baseline: input.baseline,
     targetReps: input.targetReps,
@@ -212,6 +267,7 @@ export function recommendWeightForExercise(input: ExerciseRecommendationInput): 
     unit: input.unit,
     rounded: recommendedWeight !== rawWeight,
     increment: input.increment,
+    recommendedWeight,
   });
 
   return {

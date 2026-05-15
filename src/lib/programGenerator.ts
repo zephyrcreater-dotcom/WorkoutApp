@@ -328,6 +328,8 @@ function plannedExerciseFor(
     targetReps: plannedSet.targetReps,
     targetRpe: plannedSet.targetRpe,
     gymId: user.activeGymId,
+    desiredUnit: user.unit,
+    exerciseDefaultUnit: exercise.defaultUnit,
   });
   const suggested = recommendWeightForExercise({
     exercise,

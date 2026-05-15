@@ -1,5 +1,96 @@
 # ROADMAP.md
 
+## Completed Set Editing + True Delete Flow Fix — Completed (Session 16)
+
+### Delivered
+- Split logger state into explicit logging vs editing behavior.
+- Added session-local lineup items so planned rows, completed rows, and extra rows are handled more predictably than raw index matching.
+- Enabled deletion of pending planned sets as well as completed/skipped sets.
+- Prevented completed-set taps from leaking values into the current logging draft.
+
+### Next steps
+- Manually verify multi-step edit/delete flows in the gym logger, especially after deleting an early set and then resuming the workout later.
+
+## Swipe Delete Visual + Actual Delete Fix — Completed (Session 15)
+
+### Delivered
+- Hid the orange delete background until a row is actively opened by swipe.
+- Made the foreground completed-row card opaque so the delete surface no longer shows through when closed.
+- Changed Delete so it removes the logged set and hides that planned slot for the current session instead of reverting it into a normal pending row.
+- Kept Skip as a separate explicit skipped-set action.
+
+### Next steps
+- Manually verify the session-local hidden planned-slot behavior on real workout flows, especially deleting an early planned set after logging multiple completed sets.
+
+## Swipe Delete Device Behavior Fix — Completed (Session 14)
+
+### Delivered
+- Added device-gated swipe behavior using a coarse-pointer media query.
+- Disabled swipe reveal on desktop and switched desktop completed-set rows to a compact trash-button delete flow.
+- Added cleanup so stale mobile swipe-open state is cleared when the logger resumes, changes exercise, or enters desktop mode.
+
+### Next steps
+- Manually verify the device detection on real desktop and phone/tablet hardware, especially if any hybrid touch laptops are part of the target use cases.
+
+## Resume Workout Swipe Null Crash Fix — Completed (Session 13)
+
+### Delivered
+- Made the completed-set swipe offset logic null-safe so resume no longer crashes when `swipeState` is missing.
+- Cleared transient swipe/delete UI state on logger re-entry.
+- Added safe cleanup for stale open swipe ids and out-of-range pending delete indexes.
+
+### Next steps
+- Manually verify resume after swiping a set open, and confirm delete/cancel/confirm flows still feel correct afterward.
+
+## Resume Workout Blank Page Hotfix — Completed (Session 12)
+
+### Delivered
+- Added a shared resume-validation path in `src/App.tsx` for Today resume buttons and the header `Live` button.
+- Repaired stale logger pointers before render by validating the active session, active exercise, and current set index.
+- Added logger recovery panels for unrecoverable or empty in-progress sessions so resume cannot fail into a blank screen.
+- Clamped saved set navigation state after delete so resume remains valid after removing a completed set.
+
+### Next steps
+- Manually test stale-session recovery paths in the browser/device flow, especially resume after deleting sets and resume after editing or removing exercises from the library.
+
+## Swipe Delete UX Fix — Completed (Session 11)
+
+### Delivered
+- Replaced the multi-open swipe behavior in the live logger with a single-open row model keyed by set id.
+- Added stricter gesture gating so swipe reveal only opens after a meaningful horizontal drag and no longer fights normal vertical scrolling.
+- Cleaned the swipable row layout so the delete background stays behind the sliding content and rows snap closed/open more cleanly.
+- Made tap-outside and tap-while-open close the swipe row reliably.
+
+### Next steps
+- Real-device verification is still useful to tune the exact swipe threshold if needed, but the broken multi-open row behavior is fixed.
+
+## Bodyweight Logger + RPE Reduction Hotfix — Completed (Session 10)
+
+### Delivered
+- Added `BW` / `BW + added load` display handling across the planned preview, live logger, recent-history panels, and completed-set table.
+- Switched bodyweight logger input to an added-load model with `BW` placeholder instead of showing literal zero load.
+- Prevented bodyweight sets from carrying forward into the next draft as a visible `0`.
+- Strengthened next-set reduction logic so a large actual-vs-target RPE gap produces a meaningful percentage reduction before rounding.
+- Added slightly stronger reduction floors for isolation/cable/machine work and clearer high-RPE reduction copy.
+
+### Next steps
+- Manually verify bodyweight set displays and the added-load placeholder on a real device in a gym flow.
+- Live-test the new reduction floors across cable stacks, dumbbells, and barbell accessories to tune whether isolation reductions should stay this aggressive.
+
+## Live Logger Preview + Mobile Delete Polish — Completed (Session 9)
+
+### Delivered
+- Unified the planned-workout preview cards with the live logger display-unit logic so preview badges, observed e1RM, recent performance, and rounding copy stay in the exercise display unit.
+- Converted same-exercise recommendation baselines into the target display unit before generating preview recommendation text.
+- Removed broken empty load labels like `- kg` / `- lb` from preview cards and live logger set rows.
+- Added bodyweight-aware fallback copy: `Bodyweight` and `Added load optional`.
+- Added swipe-left delete reveal for completed logger set rows on touch devices, while keeping a quieter fallback delete icon.
+- Made the logger action bar sticky so the primary next-step action stays visible on mobile.
+
+### Next steps
+- Manually verify the swipe-delete feel on a real iPhone Safari session and tune the reveal threshold if needed.
+- Consider a guarded “tap same feel twice to save” interaction only if live gym testing shows it improves speed without accidental advances.
+
 ## Data Management UX Simplification + Unified Import/Export — Completed (Session 8)
 
 ### Delivered

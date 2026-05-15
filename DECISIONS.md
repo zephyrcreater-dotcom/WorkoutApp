@@ -1,5 +1,63 @@
 # DECISIONS.md
 
+## Completed Set Editing + True Delete Flow Fix Decisions (Session 16)
+
+- The live logger needs an explicit distinction between “logging the active set” and “editing an existing set.” A single shared selected-set index is too brittle once completed-set editing and planned-set deletion are both supported.
+- Tapping a completed set should always enter edit mode, not opportunistically repurpose the current logging draft.
+- Deleting a pending planned set is a session-level workout modification. That planned slot should disappear for the current session instead of reappearing as a normal pending row.
+- Skip remains a training outcome; Delete remains mistake correction / unwanted-set removal.
+
+## Swipe Delete Visual + Actual Delete Fix Decisions (Session 15)
+
+- Delete and Skip are different training actions. Delete is mistake correction and removes the set from the session; Skip is an intentional missed-set record and stays visible as skipped.
+- For planned completed sets, deleting the logged completion should also hide that planned slot for the current session so the row does not bounce back as a normal pending set.
+- The delete background should behave like a concealed action surface, not a persistent row background. It stays hidden until a swipe is actively open or dragging.
+
+## Swipe Delete Device Behavior Fix Decisions (Session 14)
+
+- Swipe-delete is a mobile/touch interaction, not a desktop interaction. Desktop rows should stay visually stable and use a compact explicit delete action instead.
+- Device gating is based on coarse-pointer media-query detection instead of trying to support mouse-drag swipe behavior.
+- If swipe is disabled for the current device mode, stale swipe-open UI state must be cleared immediately so desktop never renders a revealed delete panel.
+- Feel-button auto-advance remains deferred. The sticky primary action is still the intended progression control for now.
+
+## Resume Workout Swipe Null Crash Fix Decisions (Session 13)
+
+- Transient swipe UI state is render-only state and must always be treated as optional. It should never be assumed present after navigation, resume, or list changes.
+- Resume should clear swipe-open and pending-delete UI state on entry. That state is not meaningful workout data and should not survive logger re-entry.
+- Completed-set row rendering should always use safe defaults when no swipe gesture is active.
+
+## Resume Workout Blank Page Hotfix Decisions (Session 12)
+
+- Resume entry points should validate session state before switching screens. Opening the logger first and hoping the saved pointers are still valid is too brittle.
+- A resumable workout is not just any session with `status: "in-progress"`. The app should prefer sessions with valid exercise data and a repairable active pointer.
+- The live logger must never assume that `currentExerciseIndex`, `currentSetIndex`, or the previously selected exercise id are still valid after edits like delete, skip, or library changes.
+- When resume state is invalid or stale, the app should fail with a recovery panel and a clear Today message, never with a blank screen.
+- Set deletion is mistake correction only, but it still has to update saved logger navigation state so later resume attempts stay valid.
+
+## Swipe Delete UX Fix Decisions (Session 11)
+
+- Swipe-delete in the live logger now uses a single open-row id (`openSwipeSetId`) instead of independent row-open state. This prevents multiple rows from remaining visually open together.
+- Swipe should only commit to horizontal interaction after the gesture clearly beats vertical movement. Normal page scrolling takes priority until that horizontal intent is obvious.
+- Tapping an open row is treated as a close action, not an edit action. This matches the “mobile list action” mental model and avoids accidental edits while a delete reveal is open.
+- Canceling delete confirmation closes the row as well as the modal so the logger returns to a clean baseline state immediately.
+
+## Bodyweight Logger + RPE Reduction Decisions (Session 10)
+
+- For bodyweight movements, the logged weight field represents added external load only. Empty or zero added load should render as `BW`, not as `0 lb/kg`.
+- Bodyweight display is semantic, not numeric. Preview cards, logger rows, and recent-history text should say `BW` or `BW + X lb/kg` rather than trying to convert bodyweight into a standard weight-unit placeholder.
+- Bodyweight movements use different no-history guidance: `No recent added load. Use bodyweight or enter added load.` This is clearer than generic starting-weight language.
+- When actual RPE is materially above target, the reduction intent must be preserved through rounding. The app now applies a minimum meaningful reduction percentage before rounding instead of allowing nearest-increment rounding to collapse the change into a token step.
+- Isolation/cable/machine exercises tolerate somewhat larger relative downward adjustments than heavy compounds when RPE overshoots the target, because single-step rounding can otherwise under-correct accessories.
+- If set feel and RPE conflict strongly, the logger now respects the high-RPE signal rather than blindly trusting the “easy” feel selection.
+
+## Live Logger Preview + Mobile Delete Polish Decisions (Session 9)
+
+- The planned-workout preview must use the same display-unit path as the live logger. Recommendation baselines are now converted into the exercise display unit before preview text is generated so one card cannot mix `kg` and `lb`.
+- Preview cards should never show placeholder load strings like `- kg` or `- lb`. If no usable load exists, the card should either hide the badge or show clean guidance text instead.
+- Bodyweight movements use semantic copy (`Bodyweight` / `Added load optional`) rather than pretending a load is missing.
+- Set deletion in the live logger is treated as mistake correction, not training outcome. Deleted sets are removed entirely and should not count as skipped sets, hard sets, or fatigue signals.
+- Mobile logger speed-up in this pass stays conservative: the primary action is made sticky/visible, but feel-button taps do not auto-advance. Avoiding accidental progression during training is more important than shaving one tap right now.
+
 ## Data Management UX Simplification + Unified Import/Export Decisions (Session 8)
 
 - Data Management should speak in user goals, not file formats. The primary actions are now `Import Training Data`, `Export Training Data`, and `Backup`.

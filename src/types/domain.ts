@@ -646,6 +646,7 @@ export interface LoggedExercise {
   plannedExerciseId?: ID;
   order: number;
   sets: LoggedSet[];
+  deletedPlannedSetIds?: ID[];
   notes?: string;
   weakPointTags: string[];
   offProgram?: boolean;
