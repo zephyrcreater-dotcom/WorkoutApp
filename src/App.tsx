@@ -156,6 +156,7 @@ import type {
   SetKind,
   SetRating,
   SplitDay,
+  UnitPreference,
   SplitDayRequirement,
   SplitLoopMode,
   SplitTemplate,
@@ -1160,6 +1161,11 @@ function LiveLogger({
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
   const [showSkipReason, setShowSkipReason] = useState(false);
+  const [showMachineSelector, setShowMachineSelector] = useState(false);
+  const [showSetNotes, setShowSetNotes] = useState(false);
+  const [showCompletionSummary, setShowCompletionSummary] = useState(false);
+  const [completionSummary, setCompletionSummary] = useState<{ score: number; status: string; hardSets: number; skippedSets: number; completedSets: number; suggestions: string[] } | null>(null);
+  const [pendingDeleteSetIndex, setPendingDeleteSetIndex] = useState<number | null>(null);
   const [suggestionApplied, setSuggestionApplied] = useState(false);
   const [pendingOffProgramExercise, setPendingOffProgramExercise] = useState<Exercise | undefined>();
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
@@ -1197,9 +1203,11 @@ function LiveLogger({
   }, [adjustedWeight, currentPlannedSet, draftKey, previousCompletedSet, selectedSetIndex]);
 
   useEffect(() => {
-    // Reset set navigation when switching exercises
+    // Reset set navigation and UI state when switching exercises
     setSelectedSetIndex(null);
     setSuggestionApplied(false);
+    setShowSetNotes(false);
+    setShowMachineSelector(false);
   }, [activeExerciseId]);
 
   useEffect(() => {
@@ -1315,6 +1323,9 @@ function LiveLogger({
   const liveSession = session;
   const liveExerciseLog = activeExerciseLog;
   const liveExercise = exercise;
+  // Use exercise display unit everywhere in the logger — do NOT default to user.unit alone
+  const exerciseUnit = getExerciseDisplayUnit(liveExercise, user);
+  const exerciseIncrement = getExerciseIncrement(liveExercise, exerciseUnit);
   const isEditingLoggedSet = selectedSetIndex !== null && !!selectedActualSet;
   const sourceSetIndex = findRecommendationSourceIndex(liveExerciseLog.sets, effectiveSetIndex);
   const sourceSet = sourceSetIndex >= 0 ? liveExerciseLog.sets[sourceSetIndex] : undefined;
@@ -1337,7 +1348,8 @@ function LiveLogger({
     : undefined;
   const isCurrentSetLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex === plannedSets.length - 1;
   const isPastLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex >= plannedSets.length;
-  const hasMoreExercises = activeExerciseIndex < liveSession.loggedExercises.length - 1;
+  // True if any exercise other than the current one is still incomplete
+  const hasMoreExercises = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex) !== undefined;
   const primaryAction = isCurrentSetLastPlannedSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
   const primaryActionLabel = isEditingLoggedSet
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
@@ -1500,12 +1512,14 @@ function LiveLogger({
     const nextDraftIndex = effectiveSetIndex + 1;
     setSetDraft(emptySetDraft(plannedSets[nextDraftIndex], loggedSet, `${liveExerciseLog.id}:${nextDraftIndex}`));
     if (afterAction === "next-exercise") {
-      const nextLog = liveSession.loggedExercises[activeExerciseIndex + 1];
+      const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
+      const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
       if (nextLog) setActiveExerciseId(nextLog.id);
     }
     if (afterAction === "finish-workout") {
-      setActiveSessionId(undefined);
-      setScreen("week");
+      const summary = buildCompletionSummary(liveSession);
+      setCompletionSummary(summary);
+      setShowCompletionSummary(true);
     }
   }
 
@@ -1553,12 +1567,14 @@ function LiveLogger({
     setSelectedSetIndex(null);
     setSetDraft(emptySetDraft(plannedSets[currentSetIndex + 1], skippedSet, `${liveExerciseLog.id}:${currentSetIndex + 1}`));
     if (shouldAdvanceExercise) {
-      const nextLog = liveSession.loggedExercises[activeExerciseIndex + 1];
+      const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
+      const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
       if (nextLog) setActiveExerciseId(nextLog.id);
     }
     if (shouldFinishWorkout) {
-      setActiveSessionId(undefined);
-      setScreen("week");
+      const summary = buildCompletionSummary(liveSession);
+      setCompletionSummary(summary);
+      setShowCompletionSummary(true);
     }
   }
 
@@ -1590,13 +1606,16 @@ function LiveLogger({
   }
 
   function navigateToNextExercise() {
-    const nextLog = liveSession.loggedExercises[activeExerciseIndex + 1];
-    if (nextLog) {
-      setActiveExerciseId(nextLog.id);
+    // Route to the earliest INCOMPLETE exercise, not simply the next in sequence.
+    // This ensures jumping ahead and back doesn't leave exercises orphaned.
+    const targetIndex = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
+    const targetLog = targetIndex !== undefined ? liveSession.loggedExercises[targetIndex] : undefined;
+    if (targetLog) {
+      setActiveExerciseId(targetLog.id);
       void updateDb((draft) => {
         const target = draft.sessions.find((item) => item.id === liveSession.id);
         if (target) {
-          target.currentExerciseIndex = activeExerciseIndex + 1;
+          target.currentExerciseIndex = targetIndex!;
           target.currentSetIndex = 0;
           target.updatedAt = nowIso();
         }
@@ -1637,8 +1656,10 @@ function LiveLogger({
       return draft;
     });
     setShowFinishConfirm(false);
-    const nextLog = liveSession.loggedExercises[activeExerciseIndex + 1];
-    if (nextLog) setActiveExerciseId(nextLog.id);
+    // Navigate to earliest incomplete exercise, not just the next index
+    const targetIndex = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
+    const targetLog = targetIndex !== undefined ? liveSession.loggedExercises[targetIndex] : undefined;
+    if (targetLog) setActiveExerciseId(targetLog.id);
   }
 
   function finishExercise() {
@@ -1706,8 +1727,9 @@ function LiveLogger({
       if (target) finishWorkoutInDraft(draft, user, target);
       return draft;
     });
-    setActiveSessionId(undefined);
-    setScreen("week");
+    const summary = buildCompletionSummary(liveSession);
+    setCompletionSummary(summary);
+    setShowCompletionSummary(true);
   }
 
   function confirmAddOffProgramExercise(exercise: Exercise) {
@@ -1753,6 +1775,79 @@ function LiveLogger({
           </div>
         </div>
       )}
+      {pendingDeleteSetIndex !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+          <div className="panel w-full max-w-sm space-y-4 p-6">
+            <h3 className="text-xl font-black">Delete Set {pendingDeleteSetIndex + 1}?</h3>
+            <p className="text-sm text-iron-300">
+              Use Delete only for entry mistakes. To record a missed set, use Skip instead.
+              Deleted sets are removed and do not count toward hard sets or skipped totals.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button className="btn-secondary" onClick={() => setPendingDeleteSetIndex(null)}>Cancel</button>
+              <button
+                className="btn-secondary border-ember/40 text-orange-100"
+                onClick={() => {
+                  const idx = pendingDeleteSetIndex;
+                  setPendingDeleteSetIndex(null);
+                  void updateDb((draft) => {
+                    const target = draft.sessions.find((item) => item.id === liveSession.id);
+                    const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
+                    if (log) {
+                      log.sets.splice(idx, 1);
+                      // Re-number remaining sets
+                      log.sets.forEach((s, i) => { s.setNumber = i + 1; });
+                    }
+                    if (target) target.updatedAt = nowIso();
+                    return draft;
+                  });
+                  setSelectedSetIndex(null);
+                }}
+              >
+                Delete Set
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showCompletionSummary && completionSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/90 px-4">
+          <div className="panel w-full max-w-sm space-y-4 p-6">
+            <div className="text-center">
+              <p className="text-4xl font-black text-volt">{completionSummary.score}</p>
+              <p className="text-lg font-bold capitalize text-iron-200">{completionSummary.status}</p>
+              <p className="text-sm text-iron-400">Workout Score</p>
+            </div>
+            <div className="grid grid-cols-3 gap-3 rounded-lg bg-white/[0.05] p-3">
+              <div className="text-center">
+                <p className="text-xl font-black">{completionSummary.hardSets}</p>
+                <p className="text-xs text-iron-400">Hard sets</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xl font-black">{completionSummary.completedSets}</p>
+                <p className="text-xs text-iron-400">Completed</p>
+              </div>
+              <div className="text-center">
+                <p className="text-xl font-black">{completionSummary.skippedSets}</p>
+                <p className="text-xs text-iron-400">Skipped</p>
+              </div>
+            </div>
+            {completionSummary.suggestions.slice(0, 2).map((s, i) => (
+              <p key={i} className="text-xs text-iron-400">{s}</p>
+            ))}
+            <button
+              className="btn-primary w-full"
+              onClick={() => {
+                setShowCompletionSummary(false);
+                setActiveSessionId(undefined);
+                setScreen("week");
+              }}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      )}
       <PageTitle eyebrow="Live Logger" title={session.name} />
       {!session.readiness && <ReadinessCard onSubmit={addReadiness} user={user} />}
       {session.readiness && (
@@ -1787,7 +1882,9 @@ function LiveLogger({
                 >
                   <span>
                     <span className="block text-sm font-black">{item?.name}</span>
-                    <span className="text-xs opacity-75">{logged.sets.length} sets logged</span>
+                    <span className="text-xs opacity-75">
+                      {logged.sets.filter(isHardSet).length} hard · {logged.sets.filter(s => s.skipped).length > 0 ? `${logged.sets.filter(s => s.skipped).length} skipped · ` : ""}{logged.sets.length} total
+                    </span>
                   </span>
                   <ChevronRight className="h-4 w-4" />
                 </button>
@@ -1806,32 +1903,39 @@ function LiveLogger({
                 <p className="mt-1 text-xs text-iron-500">
                   {activeGym?.name || "No gym selected"}
                   {weightRec?.recommendedWeight
-                    ? ` — suggested ${weightRec.recommendedWeight} ${user.unit} (${weightRec.confidence}% ${weightRec.confidenceBand})`
+                    ? ` — suggested ${weightRec.recommendedWeight} ${exerciseUnit} (${weightRec.confidence}% ${weightRec.confidenceBand})`
                     : ""}
                 </p>
               </div>
               <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
             </div>
             {compatibleMachines.length > 0 && (
-              <div className="mt-4">
-                <label className="label">Machine / station</label>
-                <select
-                  className="field mt-2"
-                  value={activeExerciseLog.machineId || ""}
-                  onChange={(event) =>
-                    updateDb((draft) => {
-                      const target = draft.sessions.find((item) => item.id === liveSession.id);
-                      const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
-                      if (log) log.machineId = event.target.value || undefined;
-                      return draft;
-                    })
-                  }
+              <div className="mt-3">
+                <button
+                  className="text-xs font-bold text-iron-500 underline-offset-2 hover:text-iron-300"
+                  onClick={() => setShowMachineSelector((v) => !v)}
                 >
-                  <option value="">No machine selected</option>
-                  {compatibleMachines.map((machine) => (
-                    <option key={machine.id} value={machine.id}>{machine.name}</option>
-                  ))}
-                </select>
+                  {showMachineSelector ? "Hide machine selector" : "Select machine / station"}
+                </button>
+                {showMachineSelector && (
+                  <select
+                    className="field mt-2"
+                    value={activeExerciseLog.machineId || ""}
+                    onChange={(event) =>
+                      updateDb((draft) => {
+                        const target = draft.sessions.find((item) => item.id === liveSession.id);
+                        const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
+                        if (log) log.machineId = event.target.value || undefined;
+                        return draft;
+                      })
+                    }
+                  >
+                    <option value="">No machine selected</option>
+                    {compatibleMachines.map((machine) => (
+                      <option key={machine.id} value={machine.id}>{machine.name}</option>
+                    ))}
+                  </select>
+                )}
               </div>
             )}
             <div className="mt-4 rounded-lg border border-white/10 bg-iron-950/55 p-3">
@@ -1861,10 +1965,21 @@ function LiveLogger({
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="font-black">Set {index + 1} — {statusLabel}</p>
-                        <p className="text-xs text-iron-400">{set.kind}{isLoggedSet ? " · tap to edit" : isPending ? " · tap to jump" : ""}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs text-iron-400">{set.kind}{isLoggedSet ? " · tap to edit" : isPending ? " · tap to jump" : ""}</p>
+                          {actual && !actual.skipped && (
+                            <button
+                              className="rounded px-1.5 py-0.5 text-[0.6rem] font-bold text-iron-500 hover:bg-ember/20 hover:text-orange-300"
+                              onClick={(e) => { e.stopPropagation(); setPendingDeleteSetIndex(index); }}
+                              title="Delete this set (entry mistake only)"
+                            >
+                              ✕ delete
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <p className="mt-1 text-sm text-iron-300">Planned: {set.plannedWeight || "-"} {user.unit} × {set.targetReps} @ RPE {set.targetRpe || "?"}</p>
-                      {actual && <p className="mt-1 text-sm text-volt">Actual: {actual.skipped ? "Skipped" : `${actual.actualWeight} ${user.unit} × ${actual.actualReps} @ RPE ${actual.actualRpe || "?"}`}</p>}
+                      <p className="mt-1 text-sm text-iron-300">Planned: {set.plannedWeight || "-"} {exerciseUnit} × {set.targetReps} @ RPE {set.targetRpe || "?"}</p>
+                      {actual && <p className="mt-1 text-sm text-volt">Actual: {actual.skipped ? "Skipped" : `${actual.actualWeight} ${exerciseUnit} × ${actual.actualReps} @ RPE ${actual.actualRpe || "?"}`}</p>}
                     </div>
                   );
                 })}
@@ -1872,10 +1987,11 @@ function LiveLogger({
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <BigInput label="Weight" value={setDraft.actualWeight} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualWeight: value }))} />
+              <BigInput label={`Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualWeight: value }))} />
               <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualReps: value }))} />
               <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualRpe: value }))} step="0.5" />
             </div>
+            <p className="mt-1 text-xs text-iron-600">Increment: {exerciseIncrement} {exerciseUnit}</p>
             <div className="mt-4">
               <p className="label mb-2">Set difficulty (1 = much harder · 3 = as planned · 5 = very easy)</p>
             </div>
@@ -1889,10 +2005,32 @@ function LiveLogger({
                 );
               })}
             </div>
-            {/* Form/Feel/Pump/Pain/Sore are stored in the data model but hidden from the default
-                per-set UI to reduce friction. They will surface at exercise-level in a future pass.
-                Data fields remain in setDraft and are saved when non-default values exist. */}
-            <textarea className="field mt-4 min-h-14" placeholder="Optional set notes..." value={setDraft.notes} onChange={(event) => setSetDraft((draft) => ({ ...draft, notes: event.target.value }))} />
+            {/* Notes: collapsed by default to reduce friction. Data is preserved. */}
+            <div className="mt-4">
+              {!showSetNotes && !setDraft.notes
+                ? (
+                  <button className="text-xs font-bold text-iron-500 hover:text-iron-300" onClick={() => setShowSetNotes(true)}>
+                    + Add note
+                  </button>
+                ) : (
+                  <div>
+                    {!showSetNotes && setDraft.notes && (
+                      <button className="mb-1 text-xs font-bold text-iron-400 hover:text-iron-200" onClick={() => setShowSetNotes(true)}>
+                        Note: {setDraft.notes.slice(0, 60)}{setDraft.notes.length > 60 ? "…" : ""} (tap to edit)
+                      </button>
+                    )}
+                    {showSetNotes && (
+                      <textarea
+                        className="field min-h-14"
+                        placeholder="Optional set notes..."
+                        value={setDraft.notes}
+                        onChange={(event) => setSetDraft((draft) => ({ ...draft, notes: event.target.value }))}
+                      />
+                    )}
+                  </div>
+                )
+              }
+            </div>
             {showSkipReason && (
               <div className="mt-4 rounded-lg border border-ember/30 bg-ember/5 p-3">
                 <p className="label mb-2 text-orange-300">Skip reason (optional)</p>
@@ -1981,7 +2119,7 @@ function LiveLogger({
                 <p className="label">Suggestion from Set {sourceSetNum}</p>
                 <h3 className="mt-1 text-xl font-black">
                   {recommendation.action?.suggestedWeight
-                    ? `Use ${recommendation.action.suggestedWeight} ${user.unit} for this set`
+                    ? `Use ${recommendation.action.suggestedWeight} ${exerciseUnit} for this set`
                     : recommendation.title}
                 </h3>
                 <p className="mt-2 text-sm text-iron-200">{recommendation.explanation}</p>
@@ -2008,7 +2146,7 @@ function LiveLogger({
             </section>
           )}
 
-          <LoggedSetsTable logged={activeExerciseLog} exercise={exercise} user={user} />
+          <LoggedSetsTable logged={activeExerciseLog} exercise={exercise} user={user} displayUnit={exerciseUnit} />
           <div className="grid gap-2 sm:grid-cols-3">
             <button className="btn-secondary" onClick={() => setShowAddExercisePicker(true)}>+ Add Exercise</button>
             <button className="btn-secondary border-ember/40 text-orange-100" onClick={abandonWorkout}>Abandon Workout</button>
@@ -6291,33 +6429,35 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
   );
 }
 
-function LoggedSetsTable({ logged, exercise, user }: { logged: LoggedExercise; exercise: Exercise; user: UserProfile }) {
+function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: LoggedExercise; exercise: Exercise; user: UserProfile; displayUnit?: UnitPreference }) {
+  const unit = displayUnit || getExerciseDisplayUnit(exercise, user);
+  if (!logged.sets.length) return null;
   return (
     <section className="panel-soft overflow-hidden">
       <div className="border-b border-white/10 p-3">
-        <p className="font-black">{exercise.name} sets</p>
+        <p className="font-black">{exercise.name} — {logged.sets.filter(isHardSet).length} hard sets, {logged.sets.filter(s => s.skipped).length} skipped</p>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[34rem] text-left text-sm">
           <thead className="text-xs uppercase text-iron-500">
             <tr>
               <th className="p-3">Set</th>
-              <th className="p-3">Load</th>
+              <th className="p-3">Load ({unit})</th>
               <th className="p-3">Reps</th>
               <th className="p-3">RPE</th>
               <th className="p-3">Feel</th>
-              <th className="p-3">e1RM</th>
+              <th className="p-3">e1RM ({unit})</th>
             </tr>
           </thead>
           <tbody>
             {logged.sets.map((set, index) => (
-              <tr key={set.id} className="border-t border-white/10">
-                <td className="p-3">{index + 1}</td>
-                <td className="p-3">{set.actualWeight} {user.unit}</td>
-                <td className="p-3">{set.actualReps}</td>
-                <td className="p-3">{set.actualRpe || "-"}</td>
-                <td className="p-3">{set.setRating}/5</td>
-                <td className="p-3">{estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)}</td>
+              <tr key={set.id} className={`border-t border-white/10 ${set.skipped ? "opacity-40" : ""}`}>
+                <td className="p-3">{index + 1}{set.skipped ? " (skip)" : ""}</td>
+                <td className="p-3">{set.skipped ? "—" : `${set.actualWeight} ${unit}`}</td>
+                <td className="p-3">{set.skipped ? "—" : set.actualReps}</td>
+                <td className="p-3">{set.skipped ? "—" : set.actualRpe || "-"}</td>
+                <td className="p-3">{set.skipped ? "—" : `${set.setRating}/5`}</td>
+                <td className="p-3">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10)}</td>
               </tr>
             ))}
           </tbody>
@@ -6405,12 +6545,16 @@ function findPlannedExercise(db: TrainingDatabase, session?: WorkoutSession, log
 }
 
 function emptySetDraft(planned?: PlannedSet, last?: LoggedSet, draftKey = "") {
-  // The baseline for the next set is:
-  // 1) an explicit planned/recommended weight for that target set
-  // 2) otherwise the last actual weight the user logged
-  const defaultWeight = planned?.plannedWeight !== undefined
-    ? String(planned.plannedWeight)
-    : String(isCompletedValidSet(last) ? last.actualWeight : "");
+  // Weight carryover priority:
+  // 1) actual performed weight from the last set (strongest signal — user just did this)
+  // 2) explicit planned/recommended weight for the target set
+  // 3) blank
+  const lastActual = isCompletedValidSet(last) ? last.actualWeight : undefined;
+  const defaultWeight = lastActual !== undefined
+    ? String(lastActual)
+    : planned?.plannedWeight !== undefined
+      ? String(planned.plannedWeight)
+      : "";
   return {
     draftKey,
     kind: planned?.kind || "working" as SetKind,
@@ -6449,9 +6593,53 @@ function isCompletedValidSet(set?: LoggedSet): set is LoggedSet {
   return !!set && !set.skipped && set.kind !== "warmup" && (set.actualWeight > 0 || set.actualReps > 0);
 }
 
+function isHardSet(set: LoggedSet): boolean {
+  return !set.skipped && set.kind !== "warmup" && set.actualWeight > 0 && set.actualReps > 0;
+}
+
 function countSessionCompletedSets(session: WorkoutSession): number {
   if (session.status !== "completed") return 0;
   return session.loggedExercises.reduce((sum, exercise) => sum + exercise.sets.filter(isCompletedValidSet).length, 0);
+}
+
+function isLoggedExerciseComplete(log: LoggedExercise, db: TrainingDatabase, session: WorkoutSession): boolean {
+  const plannedEx = findPlannedExercise(db, session, log);
+  if (plannedEx?.plannedSets.length) {
+    return log.sets.length >= plannedEx.plannedSets.length;
+  }
+  // No planned sets: complete if at least one non-skipped set exists
+  return log.sets.filter((s) => !s.skipped).length > 0;
+}
+
+function findEarliestIncompleteExerciseIndex(
+  session: WorkoutSession,
+  db: TrainingDatabase,
+  currentIndex: number
+): number | undefined {
+  // Search all exercises (excluding current) for the first that is not complete
+  for (let i = 0; i < session.loggedExercises.length; i++) {
+    if (i === currentIndex) continue;
+    if (!isLoggedExerciseComplete(session.loggedExercises[i], db, session)) return i;
+  }
+  return undefined;
+}
+
+function buildCompletionSummary(session: WorkoutSession): {
+  score: number; status: string; hardSets: number; skippedSets: number; completedSets: number; suggestions: string[];
+} {
+  const allSets = session.loggedExercises.flatMap((e) => e.sets);
+  const hardSets = allSets.filter(isHardSet).length;
+  const skippedSets = allSets.filter((s) => s.skipped).length;
+  const completedSets = allSets.filter((s) => !s.skipped).length;
+  const workoutScore = calculateWorkoutScore(session);
+  return {
+    score: workoutScore.score,
+    status: workoutScore.status,
+    hardSets,
+    skippedSets,
+    completedSets,
+    suggestions: workoutScore.suggestions,
+  };
 }
 
 function findPreviousCompletedSet(sets: LoggedSet[], targetSetIndex: number): LoggedSet | undefined {
@@ -6520,14 +6708,15 @@ function getExerciseRecommendation(params: {
     mapBlockType(blockType),
     exercise.exerciseCategory
   );
+  const exerciseDisplayUnit = getExerciseDisplayUnit(exercise, user);
   const recommendation = recommendWeightForExercise({
     exercise,
     targetReps,
     targetRpe: Math.max(targetRpe, targets.selectedRpeRange.min),
     baseline,
     readiness,
-    increment: getExerciseIncrement(exercise, user.unit),
-    unit: user.unit,
+    increment: getExerciseIncrement(exercise, exerciseDisplayUnit),
+    unit: exerciseDisplayUnit,
   });
 
   return {

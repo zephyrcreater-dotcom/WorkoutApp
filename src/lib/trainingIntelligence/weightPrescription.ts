@@ -161,13 +161,23 @@ export function buildConciseRecommendationReason(input: {
   unit: UnitPreference;
   rounded?: boolean;
   increment?: number;
+  recommendedWeight?: number;
 }): string[] {
   const parts: string[] = [];
-  if (input.baseline?.baselineWeight && input.baseline.baselineReps) {
-    const baselineRpe = input.baseline.baselineRpe ? ` @ ${input.baseline.baselineRpe}` : "";
-    parts.push(`Last time: ${input.baseline.baselineWeight} ${input.unit} x ${input.baseline.baselineReps}${baselineRpe}.`);
+  if (input.baseline?.observedE1RM && input.baseline.baselineWeight && input.baseline.baselineReps) {
+    const baselineRpe = input.baseline.baselineRpe ? ` @ RPE ${input.baseline.baselineRpe}` : "";
+    parts.push(
+      `Based on observed e1RM ${Math.round(input.baseline.observedE1RM)} ${input.unit} (from ${input.baseline.baselineWeight} ${input.unit} × ${input.baseline.baselineReps}${baselineRpe}).`
+    );
+  } else if (input.baseline?.baselineWeight && input.baseline.baselineReps) {
+    const baselineRpe = input.baseline.baselineRpe ? ` @ RPE ${input.baseline.baselineRpe}` : "";
+    parts.push(`Based on recent performance: ${input.baseline.baselineWeight} ${input.unit} × ${input.baseline.baselineReps}${baselineRpe}.`);
   }
-  parts.push(`Target today: ${input.targetReps} reps @ ${input.targetRpe}.`);
+  if (input.recommendedWeight && input.recommendedWeight > 0) {
+    parts.push(`Conservative target for ${input.targetReps} reps @ RPE ${input.targetRpe}: ${input.recommendedWeight} ${input.unit}.`);
+  } else {
+    parts.push(`Target today: ${input.targetReps} reps @ RPE ${input.targetRpe}.`);
+  }
   if (input.rounded && input.increment) {
     parts.push(`Rounded to nearest ${input.increment} ${input.unit}.`);
   }
@@ -203,8 +213,23 @@ export function recommendWeightForExercise(input: ExerciseRecommendationInput): 
   if (Math.abs(rpeDelta) >= 1.5) warningFlags.push("rpe_gap_large");
   if (input.baseline.historyAgeDays !== undefined && input.baseline.historyAgeDays > 90) warningFlags.push("history_old");
 
-  const rawWeight = baselineWeight * Math.max(0.88, Math.min(1.12, multiplier));
-  const recommendedWeight = roundToIncrement(rawWeight, input.increment);
+  let rawWeight = baselineWeight * Math.max(0.88, Math.min(1.12, multiplier));
+
+  // ── Sanity guardrails ──────────────────────────────────────────────────────
+  // If going to more reps at lower or equal RPE, load must be lower than baseline.
+  if (repDelta > 0 && rpeDelta <= 0) {
+    rawWeight = Math.min(rawWeight, baselineWeight * 0.97);
+    warningFlags.push("guardrail_more_reps_lower_rpe");
+  }
+  // Cap at observed e1RM — prescribed load should never exceed theoretical max.
+  if (input.baseline.observedE1RM && rawWeight > input.baseline.observedE1RM) {
+    rawWeight = input.baseline.observedE1RM * 0.9;
+    warningFlags.push("guardrail_capped_at_e1rm");
+  }
+  // Clamp to a sane range of the baseline weight (prevent 2–3× jumps from stale data).
+  rawWeight = Math.min(rawWeight, baselineWeight * 1.15);
+
+  const recommendedWeight = roundToIncrement(Math.max(0, rawWeight), input.increment);
   const reasonParts = buildConciseRecommendationReason({
     baseline: input.baseline,
     targetReps: input.targetReps,
@@ -212,6 +237,7 @@ export function recommendWeightForExercise(input: ExerciseRecommendationInput): 
     unit: input.unit,
     rounded: recommendedWeight !== rawWeight,
     increment: input.increment,
+    recommendedWeight,
   });
 
   return {

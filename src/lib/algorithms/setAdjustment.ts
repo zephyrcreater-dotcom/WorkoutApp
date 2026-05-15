@@ -36,7 +36,8 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   const fatigueFactor = Math.max(0.85, 1 - fatiguePerSet * Math.max(0, setsCompletedThisExercise - 1));
   const fatiguedBase = loggedSet.actualWeight * fatigueFactor;
   const currentWeight = loggedSet.actualWeight;
-  const unitLabel = user.unit;
+  // Use exercise display unit; fall back to user unit only if exercise has no unit set
+  const unitLabel = (exercise.defaultUnit === "lb" || exercise.defaultUnit === "kg") ? exercise.defaultUnit : user.unit;
 
   // ── Pain: always stop/substitute ──────────────────────────────────────────
   if (painHigh) {
@@ -62,7 +63,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * multiplier, exercise, unitLabel);
       if (suggestedWeight <= currentWeight) {
         return buildMaintain({
-          reason: `You rated this set Easy and matched/below target RPE, but after rounding the next practical jump is not available. Maintain ${currentWeight} ${unitLabel}.`,
+          reason: `This felt easy — keep the same load. No practical increase available after rounding to the nearest ${unitLabel} increment.`,
           fatiguedBase, exercise, user, loggedSet, fatigueFactor,
         });
       }
@@ -70,7 +71,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
         type: "load-change",
         priority: "low",
         title: "Increase next set",
-        reason: `You rated this set Easy and actual RPE (${loggedSet.actualRpe ?? "–"}) was at or below target ${targetRpe}. Increase next set to ${suggestedWeight} ${unitLabel}.`,
+        reason: `This felt easy. A small increase is reasonable — try ${suggestedWeight} ${unitLabel} next set.`,
         multiplier,
         fatiguedBase,
         exercise,
@@ -81,15 +82,15 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       });
     }
     if (rpeDelta > 0 && rpeDelta < 2) {
-      // Easy but slightly above target RPE → conflicting feedback, maintain
+      // Easy feel but slightly above target RPE — keep load steady
       return buildMaintain({
-        reason: `You rated this set Easy but actual RPE (${loggedSet.actualRpe ?? "–"}) was slightly above target ${targetRpe}. Maintain ${currentWeight} ${unitLabel}.`,
+        reason: `This felt easy, but RPE was slightly above target. Keep the same load.`,
         fatiguedBase, exercise, user, loggedSet, fatigueFactor,
       });
     }
     // rpeDelta >= 2 but still rated 5 — rare, trust feel rating → maintain
     return buildMaintain({
-      reason: `You rated this set Easy despite elevated RPE. Maintain ${currentWeight} ${unitLabel} and reassess.`,
+      reason: `This felt easy despite higher RPE. Keep the same load and reassess next set.`,
       fatiguedBase, exercise, user, loggedSet, fatigueFactor,
     });
   }
@@ -101,7 +102,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 1.0125, exercise, unitLabel);
       if (suggestedWeight <= currentWeight) {
         return buildMaintain({
-          reason: `Set felt slightly easy and RPE came in ${Math.abs(rpeDelta).toFixed(1)} below target, but after rounding the next practical jump is not available. Maintain ${currentWeight} ${unitLabel}.`,
+          reason: `This felt a bit easy. No practical increase available after rounding — keep the same load.`,
           fatiguedBase, exercise, user, loggedSet, fatigueFactor,
         });
       }
@@ -109,7 +110,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
         type: "load-change",
         priority: "low",
         title: "Small increase available",
-        reason: `Set felt slightly easy (4/5) and actual RPE (${loggedSet.actualRpe ?? "–"}) came in ${Math.abs(rpeDelta).toFixed(1)} below target ${targetRpe}. Increase next set to ${suggestedWeight} ${unitLabel}.`,
+        reason: `This felt a bit easy and RPE was below target. A small increase to ${suggestedWeight} ${unitLabel} is reasonable.`,
         multiplier: 1.0125,
         fatiguedBase,
         exercise,
@@ -121,7 +122,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     }
     // rpeDelta >= 0: at or above target RPE — never decrease when feel is 4
     return buildMaintain({
-      reason: `Set felt slightly easy (4/5) but actual RPE (${loggedSet.actualRpe ?? "–"}) matched or exceeded target ${targetRpe}. Maintain ${currentWeight} ${unitLabel}.`,
+      reason: `This felt a bit easy, but RPE was at or above target. Keep the same load.`,
       fatiguedBase, exercise, user, loggedSet, fatigueFactor,
     });
   }
@@ -131,13 +132,13 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     if (rpeDelta >= 2) {
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.95, exercise, unitLabel);
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `Actual RPE exceeded the target by ${rpeDelta.toFixed(1)} but after rounding no practical reduction is available. Maintain ${currentWeight} ${unitLabel}.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `This felt on target, but RPE ran high. No practical reduction available — keep ${currentWeight} ${unitLabel}.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
       }
       return buildRec({
         type: "load-change",
         priority: "medium",
         title: "Reduce next set",
-        reason: `Actual RPE exceeded the target by ${rpeDelta.toFixed(1)}. Reduce next set to ${suggestedWeight} ${unitLabel}.`,
+        reason: `This felt on target, but RPE ran higher than planned. Reduce slightly to ${suggestedWeight} ${unitLabel}.`,
         multiplier: 0.95,
         fatiguedBase,
         exercise,
@@ -150,13 +151,13 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     if (rpeDelta >= 1 && missedReps) {
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.975, exercise, unitLabel);
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `Reps were below plan but RPE was manageable. After rounding, hold ${currentWeight} ${unitLabel} and check setup.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `Reps were below plan. Keep ${currentWeight} ${unitLabel} and check your setup.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
       }
       return buildRec({
         type: "load-change",
         priority: "low",
         title: "Slight reduction or hold",
-        reason: `Reps were below plan and RPE was slightly above target. Reduce next set to ${suggestedWeight} ${unitLabel} or hold and check execution.`,
+        reason: `Reps were below plan. A small reduction to ${suggestedWeight} ${unitLabel} may help next set.`,
         multiplier: 0.975,
         fatiguedBase,
         exercise,
@@ -169,13 +170,13 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     if (formPoor) {
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.975, exercise, unitLabel);
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `Form quality was poor. Hold ${currentWeight} ${unitLabel} and prioritize movement pattern.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `Form was poor. Keep ${currentWeight} ${unitLabel} and prioritize technique.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
       }
       return buildRec({
         type: "load-change",
         priority: "medium",
         title: "Protect technique",
-        reason: `Form quality was poor. Reduce next set to ${suggestedWeight} ${unitLabel} — prioritize movement pattern over load.`,
+        reason: `Form was poor. Reduce to ${suggestedWeight} ${unitLabel} and prioritize movement quality over load.`,
         multiplier: 0.975,
         fatiguedBase,
         exercise,
@@ -198,13 +199,13 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
     if (rpeDelta >= 2 || (missedReps && rpeDelta >= 1)) {
       const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.95, exercise, unitLabel);
       if (suggestedWeight >= currentWeight) {
-        return buildMaintain({ reason: `Set was hard and RPE exceeded target by ${rpeDelta.toFixed(1)}. After rounding, hold ${currentWeight} ${unitLabel}.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+        return buildMaintain({ reason: `This felt harder than planned. Keep ${currentWeight} ${unitLabel} — no practical reduction available after rounding.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
       }
       return buildRec({
         type: "load-change",
         priority: "medium",
         title: "Reduce next set",
-        reason: `Actual RPE exceeded the target by ${rpeDelta.toFixed(1)}. Reduce next set to ${suggestedWeight} ${unitLabel}.`,
+        reason: `This felt harder than planned. Reduce the next set slightly to ${suggestedWeight} ${unitLabel}.`,
         multiplier: 0.95,
         fatiguedBase,
         exercise,
@@ -215,7 +216,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       });
     }
     return buildMaintain({
-      reason: `Set was hard (2/5) but RPE was near target. Maintain ${currentWeight} ${unitLabel}.`,
+      reason: `This felt harder than planned, but RPE was near target. Keep the same load.`,
       fatiguedBase, exercise, user, loggedSet, fatigueFactor,
     });
   }
@@ -224,13 +225,13 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
   if (setFeel <= 1) {
     const suggestedWeight = roundToExerciseIncrement(fatiguedBase * 0.90, exercise, unitLabel);
     if (suggestedWeight >= currentWeight) {
-      return buildMaintain({ reason: `Set was very hard (1/5). After rounding, hold ${currentWeight} ${unitLabel}.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
+      return buildMaintain({ reason: `This felt much harder than planned. Keep ${currentWeight} ${unitLabel} — no practical reduction available after rounding.`, fatiguedBase, exercise, user, loggedSet, fatigueFactor });
     }
     return buildRec({
       type: "load-change",
       priority: "high",
       title: "Reduce next set",
-      reason: `Set feel was 1/5${missedReps ? " and reps were missed" : ""}. Reduce next set to ${suggestedWeight} ${unitLabel}.`,
+      reason: `This felt much harder than planned${missedReps ? " and reps were missed" : ""}. Reduce the next set to ${suggestedWeight} ${unitLabel}.`,
       multiplier: 0.90,
       fatiguedBase,
       exercise,
@@ -247,7 +248,7 @@ export function recommendNextSetAdjustment(input: SetAdjustmentInput): SetAdjust
       type: "cue",
       priority: "low",
       title: "Improve stimulus",
-      reason: "Muscle feel was poor on an accessory. Try slower tempo, better mind-muscle connection, or a substitute.",
+      reason: "Muscle feel was poor on this accessory. Try a slower tempo or better mind-muscle connection.",
       multiplier: 1,
       fatiguedBase,
       exercise,
