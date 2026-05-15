@@ -65,7 +65,6 @@ import {
   isSbdExercise,
   sessionFatigueScore
 } from "./lib/programmingLogic";
-import { recommendNextSetAdjustment as algNextSetAdjustment } from "./lib/algorithms";
 import {
   buildFatigueBudget,
   getExerciseIncrement,
@@ -79,6 +78,10 @@ import {
   mapTrainingGoal,
   recommendWeightForExercise,
   scoreExerciseForSlot,
+  calculateObservedE1RMResult,
+  prescribeLoadFromObservedE1RM,
+  deriveActualRpeFromFeel,
+  adjustTargetRpeForReadiness,
 } from "./lib/trainingIntelligence";
 import {
   calculateMuscleVolume,
@@ -1735,7 +1738,9 @@ function LiveLogger({
         sourceExerciseIndex: activeExerciseIndex,
         targetExerciseIndex: activeExerciseIndex,
         nextPlannedSet: currentPlannedSet,
-        setsCompletedThisExercise: countCompletedThroughIndex(liveExerciseLog.sets, sourceSetIndex)
+        setsCompletedThisExercise: countCompletedThroughIndex(liveExerciseLog.sets, sourceSetIndex),
+        readiness: liveSession.readiness,
+        unit: exerciseUnit,
       })
     : undefined;
   const lastSetWasSkipped = lastSet?.skipped === true;
@@ -1869,7 +1874,9 @@ function LiveLogger({
         setsCompletedThisExercise: countCompletedThroughIndex(
           liveExerciseLog.sets.map((set, index) => index === editingActualIndex ? updatedSet : set),
           editingActualIndex
-        )
+        ),
+        readiness: liveSession.readiness,
+        unit: exerciseUnit,
       });
       void updateDb((draft) => {
         const target = draft.sessions.find((item) => item.id === liveSession.id);
@@ -1925,7 +1932,9 @@ function LiveLogger({
       sourceExerciseIndex: activeExerciseIndex,
       targetExerciseIndex: activeExerciseIndex,
       nextPlannedSet: targetPlannedSet,
-      setsCompletedThisExercise: liveExerciseLog.sets.filter((s) => !s.skipped).length + 1
+      setsCompletedThisExercise: liveExerciseLog.sets.filter((s) => !s.skipped).length + 1,
+      readiness: liveSession.readiness,
+      unit: exerciseUnit,
     });
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
@@ -7430,17 +7439,7 @@ function getOffProgramStartingWeight({
   return lastLog?.weight && lastLog.weight > 0 ? lastLog.weight : undefined;
 }
 
-function buildSetRecommendation({
-  user,
-  exercise,
-  sourceSet,
-  sourceSetIndex,
-  targetSetIndex,
-  sourceExerciseIndex,
-  targetExerciseIndex,
-  nextPlannedSet,
-  setsCompletedThisExercise
-}: {
+function buildSetRecommendation(params: {
   user: UserProfile;
   exercise: Exercise;
   sourceSet: LoggedSet;
@@ -7449,24 +7448,124 @@ function buildSetRecommendation({
   sourceExerciseIndex: number;
   targetExerciseIndex: number;
   nextPlannedSet?: PlannedSet;
-  setsCompletedThisExercise: number;
+  setsCompletedThisExercise: number; // retained for call-site compat; not used in e1RM pipeline
+  readiness?: ReadinessCheckIn;
+  unit: UnitPreference;
 }): Recommendation | undefined {
+  const {
+    user, exercise, sourceSet, sourceSetIndex, targetSetIndex,
+    sourceExerciseIndex, targetExerciseIndex, nextPlannedSet, readiness, unit,
+  } = params;
+
   if (targetSetIndex <= sourceSetIndex || sourceSet.skipped) return undefined;
-  const recommendation = algNextSetAdjustment({
-    user,
+
+  // ── Pain: always override with a stop/substitute warning ─────────────────
+  if ((sourceSet.painRating ?? 0) >= 6) {
+    return {
+      id: createId("rec"),
+      userId: user.id,
+      type: "pain-warning",
+      priority: "high",
+      title: "Stop or substitute",
+      explanation: `Pain was high (${sourceSet.painRating}/10). Stop this movement today or switch to a pain-free substitute.`,
+      action: {
+        exerciseId: exercise.id,
+        setId: sourceSet.id,
+        targetSetNumber: targetSetIndex + 1,
+        targetPlannedSetId: nextPlannedSet?.id,
+        sourceExerciseIndex,
+        sourceSetIndex,
+        targetExerciseIndex,
+        targetSetIndex,
+      },
+      createdAt: nowIso(),
+    };
+  }
+
+  // ── Guard: bodyweight sets with no added load, or missing weight/reps ────
+  const bodyweightMovement = isBodyweightExercise(exercise);
+  if (bodyweightMovement && sourceSet.actualWeight <= 0) return undefined;
+  if (sourceSet.actualWeight <= 0 || sourceSet.actualReps <= 0) return undefined;
+
+  // ── Step 1: derive actual RPE from feel or explicit entry ─────────────────
+  const sourceTargetRpe = sourceSet.targetRpe ?? nextPlannedSet?.targetRpe ?? 8;
+  const rpeResult = deriveActualRpeFromFeel({
+    targetRpe: sourceTargetRpe,
+    feelRating: sourceSet.setRating,
+    explicitActualRpe: sourceSet.actualRpe,
+  });
+
+  // ── Step 2: calculate observed e1RM via RPE-aware Epley ───────────────────
+  const e1rmResult = calculateObservedE1RMResult({
+    weight: sourceSet.actualWeight,
+    reps: sourceSet.actualReps,
+    rpe: rpeResult.actualRpe,
+  });
+  if (!e1rmResult) return undefined;
+
+  // ── Step 3: adjust target RPE for today's readiness ──────────────────────
+  const baseTargetRpe = nextPlannedSet?.targetRpe ?? sourceTargetRpe;
+  const targetRpeResult = adjustTargetRpeForReadiness({
+    targetRpe: baseTargetRpe,
+    readinessScore: readiness?.readinessScore,
+  });
+
+  // ── Step 4: reverse-prescribe target load ────────────────────────────────
+  const targetReps = nextPlannedSet?.targetReps ?? sourceSet.actualReps;
+  const prescription = prescribeLoadFromObservedE1RM({
+    observedE1RM: e1rmResult.e1rm,
+    targetReps,
+    targetRpe: targetRpeResult.adjustedTargetRpe,
     exercise,
-    loggedSet: sourceSet,
-    nextPlannedSet,
-    setsCompletedThisExercise
-  }).recommendation;
-  if (!recommendation?.action) return recommendation;
-  recommendation.action.targetSetNumber = targetSetIndex + 1;
-  recommendation.action.targetPlannedSetId = nextPlannedSet?.id;
-  recommendation.action.sourceExerciseIndex = sourceExerciseIndex;
-  recommendation.action.sourceSetIndex = sourceSetIndex;
-  recommendation.action.targetExerciseIndex = targetExerciseIndex;
-  recommendation.action.targetSetIndex = targetSetIndex;
-  return recommendation;
+    unit,
+    recentActualWeight: sourceSet.actualWeight,
+  });
+
+  if (prescription.roundedWeight <= 0) return undefined;
+
+  // ── Step 5: build concise suggestion copy ────────────────────────────────
+  const feel = sourceSet.setRating ?? 3;
+  let title: string;
+  let explanation: string;
+  const wt = `${prescription.roundedWeight} ${unit}`;
+  const e1rmLabel = `${Math.round(e1rmResult.e1rm)} ${unit}`;
+
+  if (feel <= 2) {
+    title = "Reduce load";
+    explanation = `This felt harder than planned. Reduce the next set to ${wt} for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe} (observed e1RM ${e1rmLabel}).`;
+  } else if (feel >= 4) {
+    title = "Increase load";
+    explanation = `This felt easy. Based on your observed e1RM (${e1rmLabel}), ${wt} is a reasonable target for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe}.`;
+  } else {
+    title = "Hold load";
+    explanation = `Based on your observed e1RM (${e1rmLabel}), ${wt} is a conservative target for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe}.`;
+  }
+
+  if (prescription.wasRounded) {
+    const inc = getExerciseIncrement(exercise, unit);
+    explanation += ` Rounded to nearest ${inc} ${unit}.`;
+  }
+
+  return {
+    id: createId("rec"),
+    userId: user.id,
+    type: "load-change",
+    priority: feel <= 2 ? "medium" : "low",
+    title,
+    explanation,
+    action: {
+      exerciseId: exercise.id,
+      setId: sourceSet.id,
+      suggestedWeight: prescription.roundedWeight,
+      targetSetNumber: targetSetIndex + 1,
+      targetPlannedSetId: nextPlannedSet?.id,
+      sourceExerciseIndex,
+      sourceSetIndex,
+      targetExerciseIndex,
+      targetSetIndex,
+    },
+    createdAt: nowIso(),
+  };
 }
 
 function recommendationIdentityMatches(a: Recommendation, b: Recommendation): boolean {

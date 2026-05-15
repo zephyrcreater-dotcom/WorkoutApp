@@ -1,5 +1,5 @@
 import type { Exercise, ExerciseUnit, LoggedSet, ReadinessCheckIn, UnitPreference, WorkoutSession } from "../../types/domain";
-import { calculateObservedE1RM } from "./e1rm";
+import { calculateObservedE1RM, type ObservedE1RMResult } from "./e1rm";
 import {
   calculateNormalizedE1RM,
   calculateReadinessAdjustment,
@@ -279,3 +279,178 @@ export function recommendWeightForExercise(input: ExerciseRecommendationInput): 
     warningFlags,
   };
 }
+
+// ─── Phase 1: Observed e1RM prescription pipeline ────────────────────────────
+//
+// These functions form the live logger recommendation pipeline:
+//   actual set → deriveActualRpeFromFeel → calculateObservedE1RMResult
+//     → adjustTargetRpeForReadiness → prescribeLoadFromObservedE1RM
+//
+// TODO — Nominal e1RM (Phase 2) will sit between the observed e1RM and
+// prescription steps. It will normalise observed e1RM for readiness,
+// workout score, fatigue, trend, and exercise variation before computing
+// the target weight. For now, observed e1RM is used directly.
+
+/**
+ * Convert a subjective feel rating (1–5 scale) into an actual RPE estimate.
+ *
+ * The feel rating is interpreted relative to the target RPE for the completed
+ * set. If the user also entered an explicit actualRpe, that wins.
+ *
+ *   feel 1 (much harder than planned) → targetRpe + 1.0
+ *   feel 2 (a bit hard)               → targetRpe + 0.5
+ *   feel 3 (as planned)               → targetRpe
+ *   feel 4 (a bit easy)               → targetRpe − 0.5
+ *   feel 5 (very easy)                → targetRpe − 1.0
+ */
+export function deriveActualRpeFromFeel(input: {
+  targetRpe: number;
+  feelRating?: number;
+  explicitActualRpe?: number;
+}): {
+  actualRpe: number;
+  source: "explicit_rpe" | "feel_adjusted" | "target_fallback";
+  adjustment: number;
+} {
+  if (input.explicitActualRpe !== undefined) {
+    const clamped = Math.max(5, Math.min(10, input.explicitActualRpe));
+    return { actualRpe: clamped, source: "explicit_rpe", adjustment: input.explicitActualRpe - input.targetRpe };
+  }
+
+  const feelMap: Record<number, number> = { 1: 1.0, 2: 0.5, 3: 0, 4: -0.5, 5: -1.0 };
+  if (input.feelRating === undefined) {
+    return { actualRpe: Math.max(5, Math.min(10, input.targetRpe)), source: "target_fallback", adjustment: 0 };
+  }
+
+  const feel = Math.round(Math.max(1, Math.min(5, input.feelRating)));
+  const adjustment = feelMap[feel] ?? 0;
+  return {
+    actualRpe: Math.max(5, Math.min(10, input.targetRpe + adjustment)),
+    source: "feel_adjusted",
+    adjustment,
+  };
+}
+
+/**
+ * Apply a small readiness-based modifier to today's target RPE.
+ *
+ * Readiness 70 = baseline (no change).
+ * Higher readiness → slightly higher tolerated target RPE.
+ * Lower readiness  → slightly lower target RPE.
+ *
+ * This is NOT used to inflate weight directly. It shifts the RPE target
+ * used in the reverse Epley prescription so the prescribed load changes
+ * proportionally. Clamped to [6, 9.5].
+ */
+export function adjustTargetRpeForReadiness(input: {
+  targetRpe: number;
+  readinessScore?: number;
+}): {
+  adjustedTargetRpe: number;
+  modifier: number;
+  reason: string;
+} {
+  const score = input.readinessScore ?? 70;
+  let modifier: number;
+  let reason: string;
+
+  if (score >= 90)      { modifier =  0.75; reason = "High readiness — slightly higher RPE target tolerated."; }
+  else if (score >= 80) { modifier =  0.5;  reason = "Good readiness — small increase in target RPE."; }
+  else if (score >= 70) { modifier =  0;    reason = "Baseline readiness — run as planned."; }
+  else if (score >= 60) { modifier = -0.25; reason = "Slightly low readiness — modest RPE reduction."; }
+  else if (score >= 50) { modifier = -0.5;  reason = "Low readiness — conservative RPE target."; }
+  else                  { modifier = -0.75; reason = "Very low readiness — reduced RPE target today."; }
+
+  return {
+    adjustedTargetRpe: Math.max(6, Math.min(9.5, input.targetRpe + modifier)),
+    modifier,
+    reason,
+  };
+}
+
+export interface PrescriptionResult {
+  prescribedWeight: number;
+  roundedWeight: number;
+  unit: UnitPreference;
+  observedE1RM: number;
+  confidence: "high" | "medium" | "low";
+  reason: string;
+  guardrailsApplied: string[];
+  wasRounded: boolean;
+}
+
+/**
+ * Prescribe a target load from an observed e1RM using reverse Epley.
+ *
+ * Formula:
+ *   targetRIR           = 10 − targetRpe  (clamped 0–5)
+ *   targetEffectiveReps = targetReps + targetRIR
+ *   targetWeight        = observedE1RM / (1 + targetEffectiveReps / 30)
+ *
+ * Guardrails applied in order:
+ *   A. prescribedWeight must be < observedE1RM
+ *   B. prescribedWeight must not exceed recentActualWeight × 1.25
+ *
+ * Note: the "more reps at lower/equal RPE → lower weight" invariant is
+ * mathematically guaranteed by the Epley formula and does not need a
+ * separate guardrail here.
+ */
+export function prescribeLoadFromObservedE1RM(input: {
+  observedE1RM: number;
+  targetReps: number;
+  targetRpe: number;
+  exercise: Pick<Exercise, "category" | "trackPerSide" | "defaultIncrement" | "customIncrement">;
+  unit: UnitPreference;
+  recentActualWeight?: number;
+}): PrescriptionResult {
+  const { observedE1RM, exercise, unit, recentActualWeight } = input;
+  const guardrailsApplied: string[] = [];
+
+  const targetReps = Math.max(1, input.targetReps);
+  const targetRpe  = Math.max(5, Math.min(10, input.targetRpe));
+  const targetRir  = Math.max(0, Math.min(5, 10 - targetRpe));
+  const targetEffectiveReps = targetReps + targetRir;
+
+  // Reverse Epley
+  let prescribedWeight = observedE1RM / (1 + targetEffectiveReps / 30);
+
+  // Guardrail A: must be below observed e1RM
+  if (prescribedWeight >= observedE1RM) {
+    prescribedWeight = observedE1RM * 0.95;
+    guardrailsApplied.push("capped_below_e1rm");
+  }
+
+  // Guardrail B: cap absurd jumps above recent actual load
+  if (recentActualWeight && recentActualWeight > 0 && prescribedWeight > recentActualWeight * 1.25) {
+    prescribedWeight = recentActualWeight * 1.10;
+    guardrailsApplied.push("absurd_jump_capped");
+  }
+
+  if (prescribedWeight <= 0) {
+    return {
+      prescribedWeight: 0, roundedWeight: 0, unit, observedE1RM,
+      confidence: "low",
+      reason: "No valid weight computed — enter starting weight manually.",
+      guardrailsApplied: ["invalid_weight"],
+      wasRounded: false,
+    };
+  }
+
+  const increment = getExerciseIncrement(exercise, unit);
+  const roundedWeight = roundToIncrement(prescribedWeight, increment);
+  const wasRounded = Math.abs(roundedWeight - prescribedWeight) > 0.01;
+
+  return {
+    prescribedWeight,
+    roundedWeight,
+    unit,
+    observedE1RM,
+    confidence: guardrailsApplied.length > 0 ? "medium" : "high",
+    reason: `e1RM ${Math.round(observedE1RM)} ${unit}; reverse Epley for ${targetReps} reps @ RPE ${targetRpe}.`,
+    guardrailsApplied,
+    wasRounded,
+  };
+}
+
+// Re-export ObservedE1RMResult so consumers can import from weightPrescription
+export type { ObservedE1RMResult };
