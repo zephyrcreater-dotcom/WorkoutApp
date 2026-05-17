@@ -362,10 +362,10 @@ function resolveWorkoutResumeState(
 ): ResumeWorkoutState {
   const session = sessionId
     ? db.sessions.find((candidate) => candidate.id === sessionId && candidate.userId === userId)
-    : db.sessions.find((candidate) => candidate.userId === userId && candidate.status === "in-progress");
+    : db.sessions.find((candidate) => candidate.userId === userId && (candidate.status === "in-progress" || candidate.status === "review"));
 
   if (!session) return { kind: "missing", reason: "session-missing" };
-  if (session.status !== "in-progress") return { kind: "invalid", session, reason: "session-not-in-progress" };
+  if (session.status !== "in-progress" && session.status !== "review") return { kind: "invalid", session, reason: "session-not-in-progress" };
   if (!session.loggedExercises.length) return { kind: "no-exercises", session };
 
   const hasExerciseDefinition = (log?: LoggedExercise) => !!log && db.exercises.some((exercise) => exercise.id === log.exerciseId);
@@ -737,7 +737,7 @@ function App() {
     );
   }
 
-  const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && session.status === "in-progress");
+  const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && (session.status === "in-progress" || session.status === "review"));
   const activeSession = activeSessionId ? db.sessions.find((session) => session.id === activeSessionId) || persistedActiveSession : persistedActiveSession;
   const appDb = db;
   const currentUserId = currentUser.id;
@@ -839,7 +839,7 @@ function App() {
           )}
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
-          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} />}
+          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
@@ -893,12 +893,12 @@ function TodayScreen({
   const selectedDay = todayPlan?.day;
   const activeBlock = activeProgram?.blocks[0];
   const selectedDaySession = selectedDay
-    ? db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId === selectedDay.id)
+    ? db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === selectedDay.id)
     : undefined;
   const resumableSelectedDaySession = isSessionResumableOnTodayCard(db, user.id, selectedDaySession) ? selectedDaySession : undefined;
   const otherInProgressSession = selectedDay
     ? db.sessions.find((session) => {
-        if (session.userId !== user.id || session.status !== "in-progress" || session.workoutDayId === selectedDay.id) return false;
+        if (session.userId !== user.id || (session.status !== "in-progress" && session.status !== "review") || session.workoutDayId === selectedDay.id) return false;
         return isSessionResumableOnTodayCard(db, user.id, session);
       })
     : undefined;
@@ -916,13 +916,13 @@ function TodayScreen({
 
   function startWorkout(day?: WorkoutDay) {
     if (!day) return;
-    const sameDaySession = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId === day.id);
+    const sameDaySession = db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === day.id);
     if (sameDaySession) {
       void onResumeWorkout(sameDaySession.id);
       return;
     }
-    // Check for any other in-progress session (different day) and confirm before archiving it
-    const otherInProgress = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId !== day.id);
+    // Check for any other in-progress/review session (different day) and confirm before archiving it
+    const otherInProgress = db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId !== day.id);
     if (otherInProgress) {
       const completedCount = otherInProgress.loggedExercises.flatMap((e) => e.sets).filter((s) => !s.skipped).length;
       if (!confirm(`Starting a new workout will archive the current in-progress session (${completedCount} completed set${completedCount !== 1 ? "s" : ""} saved). Continue?`)) return;
@@ -978,7 +978,7 @@ function TodayScreen({
           if (
             skippedWorkoutDayId &&
             session.userId === user.id &&
-            session.status === "in-progress" &&
+            (session.status === "in-progress" || session.status === "review") &&
             session.workoutDayId === skippedWorkoutDayId
           ) {
             session.status = "abandoned";
@@ -1044,7 +1044,7 @@ function TodayScreen({
 
   function startOffProgramSession() {
     // Archive any existing in-progress session
-    const otherInProgress = db.sessions.find((s) => s.userId === user.id && s.status === "in-progress");
+    const otherInProgress = db.sessions.find((s) => s.userId === user.id && (s.status === "in-progress" || s.status === "review"));
     if (otherInProgress) {
       const completedCount = otherInProgress.loggedExercises.flatMap((e) => e.sets).filter((s) => !s.skipped).length;
       if (!confirm(`Starting a new workout will archive the current in-progress session (${completedCount} completed set${completedCount !== 1 ? "s" : ""} saved). Continue?`)) return;
@@ -1284,7 +1284,7 @@ function TodayScreen({
             ) : selectedDay.exercises.length ? (
               <button className="btn-primary w-full md:w-auto" onClick={() => startWorkout(selectedDay)}>
                 <Timer className="h-4 w-4" />
-                {resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
+                {resumableSelectedDaySession?.status === "review" ? "Review Workout" : resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
               </button>
             ) : (
               <button className="btn-primary w-full md:w-auto" onClick={() => onPlanWeek(currentWeekNumber)}>
@@ -2051,7 +2051,10 @@ function LiveLogger({
       if (target && rec) upsertRecommendation(target.recommendations, rec);
       if (rec) upsertRecommendation(draft.recommendations, rec);
       if (target && afterAction === "finish-workout") {
-        finishWorkoutInDraft(draft, user, target);
+        // Move to review state — actual finalization (scores, perf logs, block progression)
+        // only happens when user explicitly confirms "Finish Workout" in the review summary.
+        if (target.status === "in-progress") target.status = "review";
+        target.updatedAt = nowIso();
       }
       return draft;
     });
@@ -2066,7 +2069,19 @@ function LiveLogger({
     if (afterAction === "next-exercise") {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
       const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
-      if (nextLog) setActiveExerciseId(nextLog.id);
+      if (nextLog) {
+        setActiveExerciseId(nextLog.id);
+      } else {
+        // No more incomplete exercises after this save — present the review screen.
+        void updateDb((draft) => {
+          const target = draft.sessions.find((s) => s.id === liveSession.id);
+          if (target && target.status === "in-progress") { target.status = "review"; target.updatedAt = nowIso(); }
+          return draft;
+        });
+        const summary = buildCompletionSummary(liveSession);
+        setCompletionSummary(summary);
+        setShowCompletionSummary(true);
+      }
     }
     if (afterAction === "finish-workout") {
       const summary = buildCompletionSummary(liveSession);
@@ -2242,7 +2257,12 @@ function LiveLogger({
     }
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
-    navigateToNextExercise();
+    if (!hasMoreExercises) {
+      // All exercises covered — present review screen instead of dead-ending on last exercise.
+      finishWorkout();
+    } else {
+      navigateToNextExercise();
+    }
   }
 
   function abandonWorkout() {
@@ -2298,7 +2318,11 @@ function LiveLogger({
   function finishWorkout() {
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
-      if (target) finishWorkoutInDraft(draft, user, target);
+      // Move to review — actual finalization happens when user confirms in the summary overlay.
+      if (target && target.status === "in-progress") {
+        target.status = "review";
+        target.updatedAt = nowIso();
+      }
       return draft;
     });
     const summary = buildCompletionSummary(liveSession);
@@ -2410,7 +2434,7 @@ function LiveLogger({
             <div className="text-center">
               <p className="text-4xl font-black text-volt">{completionSummary.score}</p>
               <p className="text-lg font-bold capitalize text-iron-200">{completionSummary.status}</p>
-              <p className="text-sm text-iron-400">Workout Score</p>
+              <p className="text-sm text-iron-400">Workout Review</p>
             </div>
             <div className="grid grid-cols-3 gap-3 rounded-lg bg-white/[0.05] p-3">
               <div className="text-center">
@@ -2429,17 +2453,50 @@ function LiveLogger({
             {completionSummary.suggestions.slice(0, 2).map((s, i) => (
               <p key={i} className="text-xs text-iron-400">{s}</p>
             ))}
-            <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-2">
               <button
-                className="btn-secondary"
+                className="btn-primary w-full"
                 onClick={() => {
-                  setShowCompletionSummary(false);
-                  // Re-open as in-progress so the user can add exercises or edit sets.
+                  // Real finalization: compute scores, create perf logs, advance block.
                   void updateDb((draft) => {
                     const target = draft.sessions.find((item) => item.id === liveSession.id);
-                    if (target && target.status === "completed") {
+                    if (target) finishWorkoutInDraft(draft, user, target);
+                    return draft;
+                  });
+                  setShowCompletionSummary(false);
+                  setActiveSessionId(undefined);
+                  setScreen("today");
+                }}
+              >
+                Finish Workout
+              </button>
+              <button
+                className="btn-secondary w-full"
+                onClick={() => {
+                  setShowCompletionSummary(false);
+                  // Back to in-progress so the exercise picker and set logging work normally.
+                  void updateDb((draft) => {
+                    const target = draft.sessions.find((item) => item.id === liveSession.id);
+                    if (target && target.status === "review") {
                       target.status = "in-progress";
-                      target.completedAt = undefined;
+                      target.updatedAt = nowIso();
+                    }
+                    return draft;
+                  });
+                  setShowAddExercisePicker(true);
+                }}
+              >
+                Add Exercise
+              </button>
+              <button
+                className="btn-ghost w-full"
+                onClick={() => {
+                  setShowCompletionSummary(false);
+                  // Return to logger for set editing — keep as in-progress.
+                  void updateDb((draft) => {
+                    const target = draft.sessions.find((item) => item.id === liveSession.id);
+                    if (target && target.status === "review") {
+                      target.status = "in-progress";
                       target.updatedAt = nowIso();
                     }
                     return draft;
@@ -2447,16 +2504,6 @@ function LiveLogger({
                 }}
               >
                 Back to Workout
-              </button>
-              <button
-                className="btn-primary"
-                onClick={() => {
-                  setShowCompletionSummary(false);
-                  setActiveSessionId(undefined);
-                  setScreen("week");
-                }}
-              >
-                Done
               </button>
             </div>
           </div>
@@ -3061,9 +3108,9 @@ function BuilderScreen({
     if (!program) return;
     if (activeProgram && activeProgram.id !== program.id && !confirm("Replace the current active block for this user? The old active block will move to history.")) return;
     void updateDb((draft) => {
-      // Archive any in-progress workout sessions so Today starts clean
+      // Archive any in-progress/review workout sessions so Today starts clean
       draft.sessions.forEach((session) => {
-        if (session.userId === user.id && session.status === "in-progress") {
+        if (session.userId === user.id && (session.status === "in-progress" || session.status === "review")) {
           session.status = "abandoned";
           session.updatedAt = nowIso();
         }
@@ -6099,7 +6146,7 @@ function WeekEditor({
 }
 
 function WeekProgressScreen({
-  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb
+  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -6109,6 +6156,7 @@ function WeekProgressScreen({
   editingWeekNumber?: number;
   onEditingWeekNumberChange?: (n: number | undefined) => void;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  onResumeWorkout?: (sessionId?: string) => Promise<void> | void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
@@ -6318,8 +6366,17 @@ function WeekProgressScreen({
                             Review
                           </button>
                         )}
-                        <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "completed" ? "bg-volt text-iron-950" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
-                          {session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
+                        {session?.status === "review" && onResumeWorkout && (
+                          <button
+                            className="btn-ghost text-xs text-steel"
+                            onClick={() => void onResumeWorkout(session.id)}
+                          >
+                            <Timer className="h-3.5 w-3.5" />
+                            Resume
+                          </button>
+                        )}
+                        <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "completed" ? "bg-volt text-iron-950" : session?.status === "review" ? "bg-steel/20 text-steel" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
+                          {session?.status === "review" ? "in review" : session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
                         </span>
                       </div>
                     </div>
