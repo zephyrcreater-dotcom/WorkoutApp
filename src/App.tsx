@@ -1796,11 +1796,20 @@ function LiveLogger({
   const allPlannedSetsCovered = uncoveredPlannedSets.length === 0;
   // True if any exercise other than the current one is still incomplete
   const hasMoreExercises = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex) !== undefined;
+  // Whether the current on-screen planned set has not yet been logged (pending/incomplete)
+  const currentPendingSetIsUncovered = !!currentPlannedSet && !loggedPlannedSetIds.has(currentPlannedSet.id);
+  // Draft is considered valid/saveable if it has weight (or reps on bodyweight) and the set is pending
+  const draftWeight = Number(setDraft.actualWeight) || 0;
+  const draftReps = Number(setDraft.actualReps) || 0;
+  const hasDraftValidValues = !isEditingLoggedSet && !isPastLastPlannedSet && currentPendingSetIsUncovered
+    && (draftWeight > 0 || (liveExercise.category === "bodyweight" && draftReps > 0));
   // Primary action: if current set is the last planned AND all others are already covered → finish; else next-set
   const isEffectivelyLastSet = isCurrentSetLastPlannedSet && (uncoveredPlannedSets.length <= 1);
   const primaryAction = isEffectivelyLastSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
   const primaryActionLabel = isEditingLoggedSet
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
+    // If current pending set has valid values, it must be saved before finishing — show Save Set
+    : hasDraftValidValues ? "Save Set"
     : primaryAction === "finish-workout" ? "Finish Workout"
     : primaryAction === "finish-exercise" ? "Finish Exercise"
     // Out-of-order: user jumped to a pending set that isn't the natural next set — call it "Save Set"
@@ -2210,14 +2219,20 @@ function LiveLogger({
   }
 
   function finishExercise() {
-    // If the current unsaved set has valid values, save it first before deciding.
+    // Hard guard: if the current on-screen pending set has valid draft values, save it first.
+    // This fires whether the user clicked the primary button OR the secondary "Finish Exercise" button.
     const currentDraftWeight = Number(setDraft.actualWeight) || 0;
     const currentDraftReps = Number(setDraft.actualReps) || 0;
     const hasValidUnsavedValues = !isEditingLoggedSet && !isPastLastPlannedSet
+      && currentPendingSetIsUncovered
       && (currentDraftWeight > 0 || (!liveExercise.bestTrackedBy.includes("time") && currentDraftReps > 0));
     if (hasValidUnsavedValues) {
-      // Save the current set, then re-evaluate (the save triggers a re-render that re-runs finishExercise if needed)
-      logSet(setDraft.setRating, allPlannedSetsCovered && uncoveredPlannedSets.length <= 1 ? (hasMoreExercises ? "next-exercise" : "finish-workout") : "stay");
+      // If this is the last uncovered set, save-and-navigate in one action.
+      // Otherwise save-and-stay so user can deal with remaining uncovered sets.
+      const afterSave = uncoveredPlannedSets.length <= 1
+        ? (hasMoreExercises ? "next-exercise" : "finish-workout")
+        : "stay";
+      logSet(setDraft.setRating, afterSave);
       return;
     }
     // If any planned sets are still uncovered (no logged set matched), confirm skip.
@@ -2776,6 +2791,12 @@ function LiveLogger({
                     if (isPastLastPlannedSet) {
                       if (hasMoreExercises) finishExercise();
                       else finishWorkout();
+                      return;
+                    }
+                    // Current pending set has valid unsaved values — always save it first (stay to re-evaluate).
+                    // Only advance/finish after the set is actually logged.
+                    if (hasDraftValidValues) {
+                      logSet(setDraft.setRating, "stay");
                       return;
                     }
                     logSet(setDraft.setRating, primaryAction === "finish-workout" ? "finish-workout" : primaryAction === "finish-exercise" ? "next-exercise" : "stay");
