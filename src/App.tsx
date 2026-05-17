@@ -1394,6 +1394,7 @@ function LiveLogger({
     ? `edit:${editingLineupItem.actualSet.id}`
     : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
   const [setDraft, setSetDraft] = useState(() => emptySetDraft(currentPlannedSet, undefined, draftKey));
+  const [draftDirty, setDraftDirty] = useState(false);
   const [restRemaining, setRestRemaining] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
@@ -1451,6 +1452,8 @@ function LiveLogger({
   }, []);
 
   useEffect(() => {
+    // draftDirty: user has started typing — never overwrite their values until they save/cancel.
+    if (draftDirty) return;
     setSetDraft((current) => {
       if (editingLineupItem?.actualSet) {
         // Guard: if we're already editing this exact set, don't reset user-typed values.
@@ -1479,12 +1482,13 @@ function LiveLogger({
         draftKey
       );
     });
-  }, [activeExerciseLog, adjustedWeight, currentPlannedSet, draftKey, editingLineupItem, previousCompletedSet, selectedLoggingIndex]);
+  }, [activeExerciseLog, adjustedWeight, currentPlannedSet, draftDirty, draftKey, editingLineupItem, previousCompletedSet, selectedLoggingIndex]);
 
   useEffect(() => {
     // Reset set navigation and UI state when switching exercises
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
+    setDraftDirty(false);
     setPendingDeleteTarget(null);
     setSuggestionApplied(false);
     setShowSetNotes(false);
@@ -1498,6 +1502,7 @@ function LiveLogger({
     setPendingDeleteTarget(null);
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
+    setDraftDirty(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
     setSwipeDrag(null);
@@ -1959,11 +1964,20 @@ function LiveLogger({
         return draft;
       });
       setEditingSetId(null);
-      // After saving an edited completed set, scroll the next pending/current set into view.
-      setTimeout(() => {
-        const el = setLineupRef.current?.querySelector<HTMLElement>('[data-is-current-set="true"]');
-        el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }, 80);
+      setDraftDirty(false);
+      // After saving an edit, re-anchor to the first planned set not yet covered.
+      // loggedPlannedSetIds reflects pre-save state; editing an existing set doesn't change coverage.
+      const firstUncoveredIdx = plannedSets.findIndex((ps) => !loggedPlannedSetIds.has(ps.id));
+      if (firstUncoveredIdx >= 0) {
+        setSelectedLoggingIndex(firstUncoveredIdx);
+        setTimeout(() => {
+          const el = setLineupRef.current?.querySelector<HTMLElement>('[data-is-current-set="true"]');
+          el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }, 80);
+      } else {
+        // All sets covered — navigate to next exercise (exercise is done).
+        setTimeout(() => navigateToNextExercise(), 50);
+      }
       return;
     }
 
@@ -2034,9 +2048,12 @@ function LiveLogger({
     });
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
+    setDraftDirty(false);
     setRestRemaining(planned?.restSeconds || user.settings.defaultRestSeconds);
-    const nextDraftIndex = effectiveSetIndex + 1;
-    setSetDraft(emptySetDraft(plannedSets[nextDraftIndex], loggedSet, `${liveExerciseLog.id}:${nextDraftIndex}`));
+    // Coverage-based: pre-compute where getResumeSetIndex will land after this set is pushed,
+    // so the draft key matches the effect's expected key and avoids a stale intermediate render.
+    const nextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, loggedSet] }, plannedSets);
+    setSetDraft(emptySetDraft(plannedSets[nextUncoveredIndex] ?? null, loggedSet, `${liveExerciseLog.id}:${nextUncoveredIndex}`));
     if (afterAction === "next-exercise") {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
       const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
@@ -2660,9 +2677,9 @@ function LiveLogger({
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualWeight: value }))} placeholder={bodyweightMovement ? "BW" : undefined} />
-              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualReps: value }))} />
-              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualRpe: value }))} step="0.5" />
+              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualWeight: value })); }} placeholder={bodyweightMovement ? "BW" : undefined} />
+              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualReps: value })); }} />
+              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualRpe: value })); }} step="0.5" />
             </div>
             <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
@@ -2672,7 +2689,7 @@ function LiveLogger({
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
                 const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nA bit hard", 3: "3\nAs planned", 4: "4\nA bit easy", 5: "5\nEasy" };
                 return (
-                  <button key={rating} className={`min-h-12 rounded-lg text-[0.65rem] font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => setSetDraft((draft) => ({ ...draft, setRating: rating }))}>
+                  <button key={rating} className={`min-h-12 rounded-lg text-[0.65rem] font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
                     {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-sm" : "block opacity-70"}>{line}</span>)}
                   </button>
                 );
@@ -2697,7 +2714,7 @@ function LiveLogger({
                         className="field min-h-14"
                         placeholder="Optional set notes..."
                         value={setDraft.notes}
-                        onChange={(event) => setSetDraft((draft) => ({ ...draft, notes: event.target.value }))}
+                        onChange={(event) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, notes: event.target.value })); }}
                       />
                     )}
                   </div>
@@ -7323,7 +7340,9 @@ function isLoggedExerciseComplete(log: LoggedExercise, db: TrainingDatabase, ses
   const plannedEx = findPlannedExercise(db, session, log);
   const visiblePlannedSets = getLoggedExercisePlannedSets(log, plannedEx);
   if (visiblePlannedSets.length) {
-    return log.sets.length >= visiblePlannedSets.length;
+    // ID-coverage check: every planned set must have a matching logged set (supports out-of-order completion).
+    const loggedIds = new Set(log.sets.map((s) => s.plannedSetId).filter(Boolean));
+    return visiblePlannedSets.every((ps) => loggedIds.has(ps.id));
   }
   // No planned sets: complete if at least one non-skipped set exists
   return log.sets.filter((s) => !s.skipped).length > 0;
