@@ -362,10 +362,10 @@ function resolveWorkoutResumeState(
 ): ResumeWorkoutState {
   const session = sessionId
     ? db.sessions.find((candidate) => candidate.id === sessionId && candidate.userId === userId)
-    : db.sessions.find((candidate) => candidate.userId === userId && candidate.status === "in-progress");
+    : db.sessions.find((candidate) => candidate.userId === userId && (candidate.status === "in-progress" || candidate.status === "review"));
 
   if (!session) return { kind: "missing", reason: "session-missing" };
-  if (session.status !== "in-progress") return { kind: "invalid", session, reason: "session-not-in-progress" };
+  if (session.status !== "in-progress" && session.status !== "review") return { kind: "invalid", session, reason: "session-not-in-progress" };
   if (!session.loggedExercises.length) return { kind: "no-exercises", session };
 
   const hasExerciseDefinition = (log?: LoggedExercise) => !!log && db.exercises.some((exercise) => exercise.id === log.exerciseId);
@@ -737,7 +737,7 @@ function App() {
     );
   }
 
-  const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && session.status === "in-progress");
+  const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && (session.status === "in-progress" || session.status === "review"));
   const activeSession = activeSessionId ? db.sessions.find((session) => session.id === activeSessionId) || persistedActiveSession : persistedActiveSession;
   const appDb = db;
   const currentUserId = currentUser.id;
@@ -839,7 +839,7 @@ function App() {
           )}
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
-          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} />}
+          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
@@ -893,12 +893,12 @@ function TodayScreen({
   const selectedDay = todayPlan?.day;
   const activeBlock = activeProgram?.blocks[0];
   const selectedDaySession = selectedDay
-    ? db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId === selectedDay.id)
+    ? db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === selectedDay.id)
     : undefined;
   const resumableSelectedDaySession = isSessionResumableOnTodayCard(db, user.id, selectedDaySession) ? selectedDaySession : undefined;
   const otherInProgressSession = selectedDay
     ? db.sessions.find((session) => {
-        if (session.userId !== user.id || session.status !== "in-progress" || session.workoutDayId === selectedDay.id) return false;
+        if (session.userId !== user.id || (session.status !== "in-progress" && session.status !== "review") || session.workoutDayId === selectedDay.id) return false;
         return isSessionResumableOnTodayCard(db, user.id, session);
       })
     : undefined;
@@ -916,13 +916,13 @@ function TodayScreen({
 
   function startWorkout(day?: WorkoutDay) {
     if (!day) return;
-    const sameDaySession = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId === day.id);
+    const sameDaySession = db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === day.id);
     if (sameDaySession) {
       void onResumeWorkout(sameDaySession.id);
       return;
     }
-    // Check for any other in-progress session (different day) and confirm before archiving it
-    const otherInProgress = db.sessions.find((session) => session.userId === user.id && session.status === "in-progress" && session.workoutDayId !== day.id);
+    // Check for any other in-progress/review session (different day) and confirm before archiving it
+    const otherInProgress = db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId !== day.id);
     if (otherInProgress) {
       const completedCount = otherInProgress.loggedExercises.flatMap((e) => e.sets).filter((s) => !s.skipped).length;
       if (!confirm(`Starting a new workout will archive the current in-progress session (${completedCount} completed set${completedCount !== 1 ? "s" : ""} saved). Continue?`)) return;
@@ -978,7 +978,7 @@ function TodayScreen({
           if (
             skippedWorkoutDayId &&
             session.userId === user.id &&
-            session.status === "in-progress" &&
+            (session.status === "in-progress" || session.status === "review") &&
             session.workoutDayId === skippedWorkoutDayId
           ) {
             session.status = "abandoned";
@@ -1044,7 +1044,7 @@ function TodayScreen({
 
   function startOffProgramSession() {
     // Archive any existing in-progress session
-    const otherInProgress = db.sessions.find((s) => s.userId === user.id && s.status === "in-progress");
+    const otherInProgress = db.sessions.find((s) => s.userId === user.id && (s.status === "in-progress" || s.status === "review"));
     if (otherInProgress) {
       const completedCount = otherInProgress.loggedExercises.flatMap((e) => e.sets).filter((s) => !s.skipped).length;
       if (!confirm(`Starting a new workout will archive the current in-progress session (${completedCount} completed set${completedCount !== 1 ? "s" : ""} saved). Continue?`)) return;
@@ -1284,7 +1284,7 @@ function TodayScreen({
             ) : selectedDay.exercises.length ? (
               <button className="btn-primary w-full md:w-auto" onClick={() => startWorkout(selectedDay)}>
                 <Timer className="h-4 w-4" />
-                {resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
+                {resumableSelectedDaySession?.status === "review" ? "Review Workout" : resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
               </button>
             ) : (
               <button className="btn-primary w-full md:w-auto" onClick={() => onPlanWeek(currentWeekNumber)}>
@@ -1394,6 +1394,7 @@ function LiveLogger({
     ? `edit:${editingLineupItem.actualSet.id}`
     : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
   const [setDraft, setSetDraft] = useState(() => emptySetDraft(currentPlannedSet, undefined, draftKey));
+  const [draftDirty, setDraftDirty] = useState(false);
   const [restRemaining, setRestRemaining] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
@@ -1451,8 +1452,14 @@ function LiveLogger({
   }, []);
 
   useEffect(() => {
+    // draftDirty: user has started typing — never overwrite their values until they save/cancel.
+    if (draftDirty) return;
     setSetDraft((current) => {
       if (editingLineupItem?.actualSet) {
+        // Guard: if we're already editing this exact set, don't reset user-typed values.
+        // Without this, reference changes in lineupItems (e.g. from plannedSets recomputing)
+        // would re-run this effect and wipe the user's in-progress edits.
+        if (current.draftKey === draftKey) return current;
         return draftFromSetOrPlan(
           editingLineupItem.actualSet,
           editingLineupItem.plannedSet,
@@ -1461,6 +1468,7 @@ function LiveLogger({
         );
       }
       if (selectedLoggingIndex !== null) {
+        if (current.draftKey === draftKey) return current;
         return emptySetDraft(currentPlannedSet, previousCompletedSet, draftKey);
       }
       if (current.draftKey === draftKey && current.actualWeight) return current;
@@ -1474,12 +1482,13 @@ function LiveLogger({
         draftKey
       );
     });
-  }, [activeExerciseLog, adjustedWeight, currentPlannedSet, draftKey, editingLineupItem, previousCompletedSet, selectedLoggingIndex]);
+  }, [activeExerciseLog, adjustedWeight, currentPlannedSet, draftDirty, draftKey, editingLineupItem, previousCompletedSet, selectedLoggingIndex]);
 
   useEffect(() => {
     // Reset set navigation and UI state when switching exercises
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
+    setDraftDirty(false);
     setPendingDeleteTarget(null);
     setSuggestionApplied(false);
     setShowSetNotes(false);
@@ -1493,6 +1502,7 @@ function LiveLogger({
     setPendingDeleteTarget(null);
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
+    setDraftDirty(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
     setSwipeDrag(null);
@@ -1583,10 +1593,34 @@ function LiveLogger({
 
   if (resumeState.kind === "missing" || resumeState.kind === "invalid") {
     const recoverableSession = resumeState.kind === "invalid" ? resumeState.session : undefined;
+    const isCompletedToday = recoverableSession?.status === "completed"
+      && (recoverableSession.completedAt || recoverableSession.updatedAt || "").startsWith(todayIso());
     return (
-      <Panel title="Workout could not be resumed" icon={ShieldAlert}>
-        <p className="text-sm text-iron-300">The saved workout state was incomplete or stale.</p>
+      <Panel title={isCompletedToday ? "Workout complete" : "Workout could not be resumed"} icon={ShieldAlert}>
+        <p className="text-sm text-iron-300">
+          {isCompletedToday
+            ? "This workout was completed. You can go back to add exercises or edit sets."
+            : "The saved workout state was incomplete or stale."}
+        </p>
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {isCompletedToday && (
+            <button
+              className="btn-primary col-span-2"
+              onClick={() => {
+                void updateDb((draft) => {
+                  const target = draft.sessions.find((item) => item.id === recoverableSession!.id);
+                  if (target) {
+                    target.status = "in-progress";
+                    target.completedAt = undefined;
+                    target.updatedAt = nowIso();
+                  }
+                  return draft;
+                });
+              }}
+            >
+              Edit / Resume Workout
+            </button>
+          )}
           <button
             className="btn-secondary"
             onClick={() => {
@@ -1756,12 +1790,31 @@ function LiveLogger({
     : undefined;
   const isCurrentSetLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex === plannedSets.length - 1;
   const isPastLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex >= plannedSets.length;
+  // Planned sets that have no logged set yet (supports out-of-order completion)
+  const loggedPlannedSetIds = new Set(liveExerciseLog.sets.map((s) => s.plannedSetId).filter(Boolean));
+  const uncoveredPlannedSets = plannedSets.filter((ps) => !loggedPlannedSetIds.has(ps.id));
+  const allPlannedSetsCovered = uncoveredPlannedSets.length === 0;
   // True if any exercise other than the current one is still incomplete
   const hasMoreExercises = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex) !== undefined;
-  const primaryAction = isCurrentSetLastPlannedSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
+  // Whether the current on-screen planned set has not yet been logged (pending/incomplete)
+  const currentPendingSetIsUncovered = !!currentPlannedSet && !loggedPlannedSetIds.has(currentPlannedSet.id);
+  // Draft is considered valid/saveable if it has weight (or reps on bodyweight) and the set is pending
+  const draftWeight = Number(setDraft.actualWeight) || 0;
+  const draftReps = Number(setDraft.actualReps) || 0;
+  const hasDraftValidValues = !isEditingLoggedSet && !isPastLastPlannedSet && currentPendingSetIsUncovered
+    && (draftWeight > 0 || (liveExercise.category === "bodyweight" && draftReps > 0));
+  // Primary action: if current set is the last planned AND all others are already covered → finish; else next-set
+  const isEffectivelyLastSet = isCurrentSetLastPlannedSet && (uncoveredPlannedSets.length <= 1);
+  const primaryAction = isEffectivelyLastSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
   const primaryActionLabel = isEditingLoggedSet
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
-    : primaryAction === "finish-workout" ? "Finish Workout" : primaryAction === "finish-exercise" ? "Finish Exercise" : "Next Set";
+    // If current pending set has valid values, it must be saved before finishing — show Save Set
+    : hasDraftValidValues ? "Save Set"
+    : primaryAction === "finish-workout" ? "Finish Workout"
+    : primaryAction === "finish-exercise" ? "Finish Exercise"
+    // Out-of-order: user jumped to a pending set that isn't the natural next set — call it "Save Set"
+    : selectedLoggingIndex !== null && selectedLoggingIndex !== currentSetIndex ? "Save Set"
+    : "Next Set";
   const plannedLineupItems = lineupItems.filter((item) => !item.isExtra);
   const completedPlannedCount = plannedLineupItems.filter((item) => !!item.actualSet).length;
   const totalPlannedCount = plannedLineupItems.length;
@@ -1920,11 +1973,20 @@ function LiveLogger({
         return draft;
       });
       setEditingSetId(null);
-      // After saving an edited completed set, scroll the next pending/current set into view.
-      setTimeout(() => {
-        const el = setLineupRef.current?.querySelector<HTMLElement>('[data-is-current-set="true"]');
-        el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }, 80);
+      setDraftDirty(false);
+      // After saving an edit, re-anchor to the first planned set not yet covered.
+      // loggedPlannedSetIds reflects pre-save state; editing an existing set doesn't change coverage.
+      const firstUncoveredIdx = plannedSets.findIndex((ps) => !loggedPlannedSetIds.has(ps.id));
+      if (firstUncoveredIdx >= 0) {
+        setSelectedLoggingIndex(firstUncoveredIdx);
+        setTimeout(() => {
+          const el = setLineupRef.current?.querySelector<HTMLElement>('[data-is-current-set="true"]');
+          el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }, 80);
+      } else {
+        // All sets covered — navigate to next exercise (exercise is done).
+        setTimeout(() => navigateToNextExercise(), 50);
+      }
       return;
     }
 
@@ -1989,19 +2051,37 @@ function LiveLogger({
       if (target && rec) upsertRecommendation(target.recommendations, rec);
       if (rec) upsertRecommendation(draft.recommendations, rec);
       if (target && afterAction === "finish-workout") {
-        finishWorkoutInDraft(draft, user, target);
+        // Move to review state — actual finalization (scores, perf logs, block progression)
+        // only happens when user explicitly confirms "Finish Workout" in the review summary.
+        if (target.status === "in-progress") target.status = "review";
+        target.updatedAt = nowIso();
       }
       return draft;
     });
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
+    setDraftDirty(false);
     setRestRemaining(planned?.restSeconds || user.settings.defaultRestSeconds);
-    const nextDraftIndex = effectiveSetIndex + 1;
-    setSetDraft(emptySetDraft(plannedSets[nextDraftIndex], loggedSet, `${liveExerciseLog.id}:${nextDraftIndex}`));
+    // Coverage-based: pre-compute where getResumeSetIndex will land after this set is pushed,
+    // so the draft key matches the effect's expected key and avoids a stale intermediate render.
+    const nextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, loggedSet] }, plannedSets);
+    setSetDraft(emptySetDraft(plannedSets[nextUncoveredIndex] ?? null, loggedSet, `${liveExerciseLog.id}:${nextUncoveredIndex}`));
     if (afterAction === "next-exercise") {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
       const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
-      if (nextLog) setActiveExerciseId(nextLog.id);
+      if (nextLog) {
+        setActiveExerciseId(nextLog.id);
+      } else {
+        // No more incomplete exercises after this save — present the review screen.
+        void updateDb((draft) => {
+          const target = draft.sessions.find((s) => s.id === liveSession.id);
+          if (target && target.status === "in-progress") { target.status = "review"; target.updatedAt = nowIso(); }
+          return draft;
+        });
+        const summary = buildCompletionSummary(liveSession);
+        setCompletionSummary(summary);
+        setShowCompletionSummary(true);
+      }
     }
     if (afterAction === "finish-workout") {
       const summary = buildCompletionSummary(liveSession);
@@ -2118,7 +2198,9 @@ function LiveLogger({
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
       if (log && plannedSets.length) {
-        const setsToSkip = plannedSets.slice(log.sets.length);
+        // Skip only planned sets that have no logged set yet (supports out-of-order completion).
+        const loggedPlannedSetIds = new Set(log.sets.map((s) => s.plannedSetId).filter(Boolean));
+        const setsToSkip = plannedSets.filter((ps) => !loggedPlannedSetIds.has(ps.id));
         for (const ps of setsToSkip) {
           log.sets.push({
             id: createId("set"),
@@ -2152,13 +2234,35 @@ function LiveLogger({
   }
 
   function finishExercise() {
-    if (!isPastLastPlannedSet && currentSetIndex < plannedSets.length) {
+    // Hard guard: if the current on-screen pending set has valid draft values, save it first.
+    // This fires whether the user clicked the primary button OR the secondary "Finish Exercise" button.
+    const currentDraftWeight = Number(setDraft.actualWeight) || 0;
+    const currentDraftReps = Number(setDraft.actualReps) || 0;
+    const hasValidUnsavedValues = !isEditingLoggedSet && !isPastLastPlannedSet
+      && currentPendingSetIsUncovered
+      && (currentDraftWeight > 0 || (!liveExercise.bestTrackedBy.includes("time") && currentDraftReps > 0));
+    if (hasValidUnsavedValues) {
+      // If this is the last uncovered set, save-and-navigate in one action.
+      // Otherwise save-and-stay so user can deal with remaining uncovered sets.
+      const afterSave = uncoveredPlannedSets.length <= 1
+        ? (hasMoreExercises ? "next-exercise" : "finish-workout")
+        : "stay";
+      logSet(setDraft.setRating, afterSave);
+      return;
+    }
+    // If any planned sets are still uncovered (no logged set matched), confirm skip.
+    if (!allPlannedSetsCovered) {
       setShowFinishConfirm(true);
       return;
     }
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
-    navigateToNextExercise();
+    if (!hasMoreExercises) {
+      // All exercises covered — present review screen instead of dead-ending on last exercise.
+      finishWorkout();
+    } else {
+      navigateToNextExercise();
+    }
   }
 
   function abandonWorkout() {
@@ -2214,7 +2318,11 @@ function LiveLogger({
   function finishWorkout() {
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
-      if (target) finishWorkoutInDraft(draft, user, target);
+      // Move to review — actual finalization happens when user confirms in the summary overlay.
+      if (target && target.status === "in-progress") {
+        target.status = "review";
+        target.updatedAt = nowIso();
+      }
       return draft;
     });
     const summary = buildCompletionSummary(liveSession);
@@ -2256,7 +2364,7 @@ function LiveLogger({
           <div className="panel w-full max-w-sm space-y-4 p-6">
             <h3 className="text-xl font-black">Finish exercise early?</h3>
             <p className="text-sm text-iron-300">
-              {plannedSets.length - currentSetIndex} set{plannedSets.length - currentSetIndex !== 1 ? "s" : ""} remaining will be marked as skipped.
+              {uncoveredPlannedSets.length} set{uncoveredPlannedSets.length !== 1 ? "s" : ""} remaining will be marked as skipped.
             </p>
             <div className="grid grid-cols-2 gap-3">
               <button className="btn-secondary" onClick={() => setShowFinishConfirm(false)}>Cancel</button>
@@ -2326,7 +2434,7 @@ function LiveLogger({
             <div className="text-center">
               <p className="text-4xl font-black text-volt">{completionSummary.score}</p>
               <p className="text-lg font-bold capitalize text-iron-200">{completionSummary.status}</p>
-              <p className="text-sm text-iron-400">Workout Score</p>
+              <p className="text-sm text-iron-400">Workout Review</p>
             </div>
             <div className="grid grid-cols-3 gap-3 rounded-lg bg-white/[0.05] p-3">
               <div className="text-center">
@@ -2345,16 +2453,59 @@ function LiveLogger({
             {completionSummary.suggestions.slice(0, 2).map((s, i) => (
               <p key={i} className="text-xs text-iron-400">{s}</p>
             ))}
-            <button
-              className="btn-primary w-full"
-              onClick={() => {
-                setShowCompletionSummary(false);
-                setActiveSessionId(undefined);
-                setScreen("week");
-              }}
-            >
-              Done
-            </button>
+            <div className="space-y-2">
+              <button
+                className="btn-primary w-full"
+                onClick={() => {
+                  // Real finalization: compute scores, create perf logs, advance block.
+                  void updateDb((draft) => {
+                    const target = draft.sessions.find((item) => item.id === liveSession.id);
+                    if (target) finishWorkoutInDraft(draft, user, target);
+                    return draft;
+                  });
+                  setShowCompletionSummary(false);
+                  setActiveSessionId(undefined);
+                  setScreen("today");
+                }}
+              >
+                Finish Workout
+              </button>
+              <button
+                className="btn-secondary w-full"
+                onClick={() => {
+                  setShowCompletionSummary(false);
+                  // Back to in-progress so the exercise picker and set logging work normally.
+                  void updateDb((draft) => {
+                    const target = draft.sessions.find((item) => item.id === liveSession.id);
+                    if (target && target.status === "review") {
+                      target.status = "in-progress";
+                      target.updatedAt = nowIso();
+                    }
+                    return draft;
+                  });
+                  setShowAddExercisePicker(true);
+                }}
+              >
+                Add Exercise
+              </button>
+              <button
+                className="btn-ghost w-full"
+                onClick={() => {
+                  setShowCompletionSummary(false);
+                  // Return to logger for set editing — keep as in-progress.
+                  void updateDb((draft) => {
+                    const target = draft.sessions.find((item) => item.id === liveSession.id);
+                    if (target && target.status === "review") {
+                      target.status = "in-progress";
+                      target.updatedAt = nowIso();
+                    }
+                    return draft;
+                  });
+                }}
+              >
+                Back to Workout
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -2588,9 +2739,9 @@ function LiveLogger({
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualWeight: value }))} placeholder={bodyweightMovement ? "BW" : undefined} />
-              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualReps: value }))} />
-              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => setSetDraft((draft) => ({ ...draft, actualRpe: value }))} step="0.5" />
+              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualWeight: value })); }} placeholder={bodyweightMovement ? "BW" : undefined} />
+              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualReps: value })); }} />
+              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualRpe: value })); }} step="0.5" />
             </div>
             <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
@@ -2600,7 +2751,7 @@ function LiveLogger({
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
                 const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nA bit hard", 3: "3\nAs planned", 4: "4\nA bit easy", 5: "5\nEasy" };
                 return (
-                  <button key={rating} className={`min-h-12 rounded-lg text-[0.65rem] font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => setSetDraft((draft) => ({ ...draft, setRating: rating }))}>
+                  <button key={rating} className={`min-h-12 rounded-lg text-[0.65rem] font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
                     {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-sm" : "block opacity-70"}>{line}</span>)}
                   </button>
                 );
@@ -2625,7 +2776,7 @@ function LiveLogger({
                         className="field min-h-14"
                         placeholder="Optional set notes..."
                         value={setDraft.notes}
-                        onChange={(event) => setSetDraft((draft) => ({ ...draft, notes: event.target.value }))}
+                        onChange={(event) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, notes: event.target.value })); }}
                       />
                     )}
                   </div>
@@ -2689,6 +2840,12 @@ function LiveLogger({
                       else finishWorkout();
                       return;
                     }
+                    // Current pending set has valid unsaved values — always save it first (stay to re-evaluate).
+                    // Only advance/finish after the set is actually logged.
+                    if (hasDraftValidValues) {
+                      logSet(setDraft.setRating, "stay");
+                      return;
+                    }
                     logSet(setDraft.setRating, primaryAction === "finish-workout" ? "finish-workout" : primaryAction === "finish-exercise" ? "next-exercise" : "stay");
                   }}
                 >
@@ -2716,17 +2873,26 @@ function LiveLogger({
                 </div>
               );
             }
+            const suggestedWeight = recommendation.action?.suggestedWeight;
+            const currentDraftWeightNum = Number(setDraft.actualWeight) || 0;
+            // Suppress "Apply" when the current draft already matches the suggested weight
+            // within half an increment — showing it would be redundant and confusing.
+            const suggestionMatchesDraft = !!suggestedWeight && currentDraftWeightNum > 0
+              && Math.abs(currentDraftWeightNum - suggestedWeight) < exerciseIncrement / 2;
             const sourceSetNum = sourceSet?.setNumber;
             return (
               <section className="panel border-volt/30 p-4">
                 <p className="label">Suggestion from Set {sourceSetNum}</p>
                 <h3 className="mt-1 text-xl font-black">
-                  {recommendation.action?.suggestedWeight
-                    ? `Use ${formatExerciseLoadText({ exercise: liveExercise, user, weight: recommendation.action.suggestedWeight, unit: exerciseUnit })} for this set`
+                  {suggestedWeight
+                    ? `Use ${formatExerciseLoadText({ exercise: liveExercise, user, weight: suggestedWeight, unit: exerciseUnit })} for this set`
                     : recommendation.title}
                 </h3>
                 <p className="mt-2 text-sm text-iron-200">{recommendation.explanation}</p>
-                {recommendation.action?.suggestedWeight && (
+                {suggestionMatchesDraft && (
+                  <p className="mt-2 text-xs text-iron-500">Current set already matches the recommendation.</p>
+                )}
+                {suggestedWeight && !suggestionMatchesDraft && (
                   <button className="btn-secondary mt-3" onClick={applySuggestion}>
                     Apply to Current Set
                   </button>
@@ -2942,9 +3108,9 @@ function BuilderScreen({
     if (!program) return;
     if (activeProgram && activeProgram.id !== program.id && !confirm("Replace the current active block for this user? The old active block will move to history.")) return;
     void updateDb((draft) => {
-      // Archive any in-progress workout sessions so Today starts clean
+      // Archive any in-progress/review workout sessions so Today starts clean
       draft.sessions.forEach((session) => {
-        if (session.userId === user.id && session.status === "in-progress") {
+        if (session.userId === user.id && (session.status === "in-progress" || session.status === "review")) {
           session.status = "abandoned";
           session.updatedAt = nowIso();
         }
@@ -5980,7 +6146,7 @@ function WeekEditor({
 }
 
 function WeekProgressScreen({
-  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb
+  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -5990,6 +6156,7 @@ function WeekProgressScreen({
   editingWeekNumber?: number;
   onEditingWeekNumberChange?: (n: number | undefined) => void;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  onResumeWorkout?: (sessionId?: string) => Promise<void> | void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
@@ -6199,8 +6366,17 @@ function WeekProgressScreen({
                             Review
                           </button>
                         )}
-                        <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "completed" ? "bg-volt text-iron-950" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
-                          {session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
+                        {session?.status === "review" && onResumeWorkout && (
+                          <button
+                            className="btn-ghost text-xs text-steel"
+                            onClick={() => void onResumeWorkout(session.id)}
+                          >
+                            <Timer className="h-3.5 w-3.5" />
+                            Resume
+                          </button>
+                        )}
+                        <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "completed" ? "bg-volt text-iron-950" : session?.status === "review" ? "bg-steel/20 text-steel" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
+                          {session?.status === "review" ? "in review" : session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
                         </span>
                       </div>
                     </div>
@@ -7242,7 +7418,9 @@ function isLoggedExerciseComplete(log: LoggedExercise, db: TrainingDatabase, ses
   const plannedEx = findPlannedExercise(db, session, log);
   const visiblePlannedSets = getLoggedExercisePlannedSets(log, plannedEx);
   if (visiblePlannedSets.length) {
-    return log.sets.length >= visiblePlannedSets.length;
+    // ID-coverage check: every planned set must have a matching logged set (supports out-of-order completion).
+    const loggedIds = new Set(log.sets.map((s) => s.plannedSetId).filter(Boolean));
+    return visiblePlannedSets.every((ps) => loggedIds.has(ps.id));
   }
   // No planned sets: complete if at least one non-skipped set exists
   return log.sets.filter((s) => !s.skipped).length > 0;
@@ -7479,6 +7657,21 @@ function getOffProgramStartingWeight({
   return lastLog?.weight && lastLog.weight > 0 ? lastLog.weight : undefined;
 }
 
+/**
+ * Classify an exercise into e1RM prescription confidence tiers.
+ * "high"   → primary compound / competition lift — e1RM reliable.
+ * "medium" → accessory compound — blend e1RM + feel.
+ * "low"    → isolation / cable / machine — feel dominates; e1RM less accurate.
+ */
+function getPrescriptionConfidenceByExercise(exercise: Pick<Exercise, "kind" | "category">): "high" | "medium" | "low" {
+  if (exercise.category === "cable" || exercise.category === "machine") return "low";
+  const kinds = exercise.kind ?? [];
+  if (kinds.includes("isolation")) return "low";
+  if (kinds.includes("accessory")) return "medium";
+  if (kinds.includes("competition-lift") || kinds.includes("compound")) return "high";
+  return "medium";
+}
+
 function buildSetRecommendation(params: {
   user: UserProfile;
   exercise: Exercise;
@@ -7563,11 +7756,31 @@ function buildSetRecommendation(params: {
 
   if (prescription.roundedWeight <= 0) return undefined;
 
-  // ── Step 5: build concise suggestion copy ────────────────────────────────
+  // ── Step 5: feel-direction enforcement (survives rounding) ───────────────
+  // For isolation/cable/machine exercises, the e1RM model is less accurate and
+  // rounding can erase the intended direction from a feel rating.  When feel
+  // clearly says "harder" (1–2) or "easy" (4–5), we guarantee at least one
+  // increment of movement in that direction regardless of what Epley computes.
   const feel = sourceSet.setRating ?? 3;
+  const inc = getExerciseIncrement(exercise, unit);
+  const isIsolationCategory = getPrescriptionConfidenceByExercise(exercise) === "low";
+  let suggestedWeight = prescription.roundedWeight;
+
+  if (feel <= 2 && suggestedWeight >= sourceSet.actualWeight) {
+    // e1RM rounded back to same or higher — force at least one increment down.
+    suggestedWeight = Math.max(0, sourceSet.actualWeight - inc);
+  } else if (feel >= 4 && suggestedWeight <= sourceSet.actualWeight) {
+    // e1RM rounded back to same or lower — for easy sets, nudge up by one increment.
+    // For isolation exercises, be more assertive with the increase.
+    const safeMax = sourceSet.actualWeight * (isIsolationCategory ? 1.20 : 1.10);
+    const candidate = sourceSet.actualWeight + inc;
+    if (candidate <= safeMax) suggestedWeight = candidate;
+  }
+
+  // ── Step 6: build concise suggestion copy ────────────────────────────────
   let title: string;
   let explanation: string;
-  const wt = `${prescription.roundedWeight} ${unit}`;
+  const wt = `${suggestedWeight} ${unit}`;
   const e1rmLabel = `${Math.round(e1rmResult.e1rm)} ${unit}`;
 
   if (feel <= 2) {
@@ -7581,8 +7794,10 @@ function buildSetRecommendation(params: {
     explanation = `Based on your observed e1RM (${e1rmLabel}), ${wt} is a conservative target for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe}.`;
   }
 
-  if (prescription.wasRounded) {
-    const inc = getExerciseIncrement(exercise, unit);
+  if (suggestedWeight !== prescription.roundedWeight) {
+    explanation += ` (Adjusted by feel rating.)`;
+  }
+  if (prescription.wasRounded && suggestedWeight === prescription.roundedWeight) {
     explanation += ` Rounded to nearest ${inc} ${unit}.`;
   }
 
@@ -7596,7 +7811,7 @@ function buildSetRecommendation(params: {
     action: {
       exerciseId: exercise.id,
       setId: sourceSet.id,
-      suggestedWeight: prescription.roundedWeight,
+      suggestedWeight,
       targetSetNumber: targetSetIndex + 1,
       targetPlannedSetId: nextPlannedSet?.id,
       sourceExerciseIndex,

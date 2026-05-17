@@ -577,7 +577,7 @@ export interface WorkoutSession {
   templateId?: ID;
   workoutDayId?: ID;
   name: string;
-  status: "planned" | "in-progress" | "completed" | "abandoned";
+  status: "planned" | "in-progress" | "review" | "completed" | "abandoned";
   startedAt: string;
   updatedAt?: string;
   completedAt?: string;
