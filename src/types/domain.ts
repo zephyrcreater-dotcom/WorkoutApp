@@ -348,6 +348,7 @@ export interface Exercise {
   isArchived?: boolean;
   hasVariations?: boolean;
   variationType?: string;
+  loadingProfileId?: ID;
   createdAt?: string;
   updatedAt?: string;
   // Algorithm classification fields (V2 Iteration 1)
@@ -780,6 +781,25 @@ export interface DashboardMetric {
   context?: string;
 }
 
+export type LoadingProfileEquipmentType =
+  | "dumbbell"
+  | "barbell"
+  | "cable_stack"
+  | "selectorized_machine"
+  | "plate_loaded"
+  | "bodyweight"
+  | "other";
+
+export interface LoadingProfile {
+  id: ID;
+  name: string;
+  unit: ExerciseUnit;
+  increment: number;
+  equipmentType: LoadingProfileEquipmentType;
+  notes?: string;
+  isDefault?: boolean;
+}
+
 export interface TrainingDatabase {
   version: number;
   updatedAt?: string;
@@ -794,6 +814,7 @@ export interface TrainingDatabase {
   exercisePerformanceLogs?: ExercisePerformanceLog[];
   exerciseBaselines?: ExerciseBaseline[];
   gymExerciseVariants?: GymExerciseVariant[];
+  loadingProfiles?: LoadingProfile[];
   readiness: ReadinessCheckIn[];
   prs: PR[];
   weakPoints: WeakPoint[];
