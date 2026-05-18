@@ -82,6 +82,8 @@ import {
   prescribeLoadFromObservedE1RM,
   deriveActualRpeFromFeel,
   adjustTargetRpeForReadiness,
+  getSetRecommendationProfile,
+  isMeaningfulWeightChange,
 } from "./lib/trainingIntelligence";
 import {
   calculateMuscleVolume,
@@ -177,11 +179,23 @@ import type {
 type Screen =
   | "today"
   | "logger"
+  | "completed-review"
   | "programs"
   | "library"
   | "week"
   | "progress"
   | "settings";
+
+type CompletedReviewState = {
+  sessionId: string;
+  returnScreen: "today" | "week";
+};
+
+type LoggerNavigationState = {
+  previousScreen: "today" | "week" | "programs" | "library" | "progress" | "settings";
+  completedReviewState?: CompletedReviewState;
+  loggerMode?: "active-logger" | "completed-edit";
+};
 
 const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "today", label: "Today", icon: Dumbbell },
@@ -358,14 +372,17 @@ function resolveWorkoutResumeState(
   db: TrainingDatabase,
   userId: string,
   sessionId?: string,
-  preferredExerciseId?: string
+  preferredExerciseId?: string,
+  allowCompleted = false
 ): ResumeWorkoutState {
   const session = sessionId
     ? db.sessions.find((candidate) => candidate.id === sessionId && candidate.userId === userId)
     : db.sessions.find((candidate) => candidate.userId === userId && (candidate.status === "in-progress" || candidate.status === "review"));
 
   if (!session) return { kind: "missing", reason: "session-missing" };
-  if (session.status !== "in-progress" && session.status !== "review") return { kind: "invalid", session, reason: "session-not-in-progress" };
+  if (session.status !== "in-progress" && session.status !== "review" && (!allowCompleted || session.status !== "completed")) {
+    return { kind: "invalid", session, reason: "session-not-in-progress" };
+  }
   if (!session.loggedExercises.length) return { kind: "no-exercises", session };
 
   const hasExerciseDefinition = (log?: LoggedExercise) => !!log && db.exercises.some((exercise) => exercise.id === log.exerciseId);
@@ -665,6 +682,8 @@ function App() {
   const [screen, setScreen] = useState<Screen>("today");
   const [activeSessionId, setActiveSessionId] = useState<string | undefined>();
   const [resumeMessage, setResumeMessage] = useState<string | undefined>();
+  const [completedReviewState, setCompletedReviewState] = useState<CompletedReviewState | undefined>();
+  const [loggerNavigation, setLoggerNavigation] = useState<LoggerNavigationState>({ previousScreen: "today" });
   const [planWeekRequest, setPlanWeekRequest] = useState<number | undefined>();
   // Persists the Week Editor open state across tab navigation so editing is not lost on screen switch.
   const [editingWeekNumber, setEditingWeekNumber] = useState<number | undefined>();
@@ -742,7 +761,55 @@ function App() {
   const appDb = db;
   const currentUserId = currentUser.id;
 
-  async function resumeWorkoutSession(requestedSessionId?: string) {
+  function openCompletedSessionReview(sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) {
+    setCompletedReviewState({ sessionId, returnScreen });
+    setResumeMessage(undefined);
+    setScreen("completed-review");
+  }
+
+  function openLoggerSession(
+    sessionId: string,
+    options?: {
+      previousScreen?: LoggerNavigationState["previousScreen"];
+      completedReviewState?: CompletedReviewState;
+      loggerMode?: LoggerNavigationState["loggerMode"];
+    }
+  ) {
+    setLoggerNavigation({
+      previousScreen: options?.previousScreen || (screen === "week" ? "week" : "today"),
+      completedReviewState: options?.completedReviewState,
+      loggerMode: options?.loggerMode || "active-logger",
+    });
+    setResumeMessage(undefined);
+    setActiveSessionId(sessionId);
+    setScreen("logger");
+  }
+
+  async function resumeWorkoutSession(
+    requestedSessionId?: string,
+    options?: {
+      previousScreen?: LoggerNavigationState["previousScreen"];
+      completedReviewState?: CompletedReviewState;
+      loggerMode?: LoggerNavigationState["loggerMode"];
+    }
+  ) {
+    const requestedSession = requestedSessionId
+      ? appDb.sessions.find((candidate) => candidate.id === requestedSessionId && candidate.userId === currentUserId)
+      : undefined;
+    const navigationState: LoggerNavigationState = {
+      previousScreen: options?.previousScreen || (screen === "week" ? "week" : "today"),
+      completedReviewState: options?.completedReviewState,
+      loggerMode: options?.loggerMode || "active-logger",
+    };
+    setLoggerNavigation(navigationState);
+
+    if (requestedSession?.status === "completed") {
+      setResumeMessage(undefined);
+      setActiveSessionId(requestedSession.id);
+      setScreen("logger");
+      return;
+    }
+
     const resumeState = resolveWorkoutResumeState(appDb, currentUserId, requestedSessionId);
     if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") {
       setResumeMessage(undefined);
@@ -826,20 +893,57 @@ function App() {
               user={currentUser}
               updateDb={updateDb}
               setScreen={setScreen}
-              setActiveSessionId={setActiveSessionId}
               editingWeekNumber={editingWeekNumber}
               onPlanWeek={(n) => { setPlanWeekRequest(n); setScreen("week"); }}
               onResumeWorkout={resumeWorkoutSession}
+              onOpenLoggerSession={openLoggerSession}
+              onOpenCompletedSessionReview={openCompletedSessionReview}
               resumeMessage={resumeMessage}
               clearResumeMessage={() => setResumeMessage(undefined)}
             />
           )}
           {screen === "logger" && (
-            <LiveLogger db={db} user={currentUser} updateDb={updateDb} sessionId={activeSession?.id} setActiveSessionId={setActiveSessionId} setScreen={setScreen} />
+            <LiveLogger
+              db={db}
+              user={currentUser}
+              updateDb={updateDb}
+              sessionId={activeSession?.id}
+              setActiveSessionId={setActiveSessionId}
+              setScreen={setScreen}
+              navigation={loggerNavigation}
+              onOpenCompletedSessionReview={openCompletedSessionReview}
+            />
           )}
+          {screen === "completed-review" && completedReviewState && (() => {
+            const reviewSession = db.sessions.find((session) => session.id === completedReviewState.sessionId && session.userId === currentUser.id);
+            if (!reviewSession) {
+              return (
+                <Panel title="Workout not found" icon={ShieldAlert}>
+                  <EmptyState title="That workout could not be opened" detail="The session may have been deleted or changed." />
+                  <button className="btn-secondary mt-4 w-full" onClick={() => setScreen(completedReviewState.returnScreen)}>
+                    {completedReviewState.returnScreen === "week" ? "Back to Week" : "Back to Today"}
+                  </button>
+                </Panel>
+              );
+            }
+            return (
+              <CompletedWorkoutReview
+                db={db}
+                user={currentUser}
+                session={reviewSession}
+                onBack={() => setScreen(completedReviewState.returnScreen)}
+                onEditWorkout={() => void resumeWorkoutSession(completedReviewState.sessionId, {
+                  previousScreen: completedReviewState.returnScreen,
+                  completedReviewState,
+                  loggerMode: "completed-edit",
+                })}
+                backLabel={completedReviewState.returnScreen === "week" ? "Back to Week" : "Back to Today"}
+              />
+            );
+          })()}
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
-          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} />}
+          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
@@ -870,10 +974,11 @@ function TodayScreen({
   user,
   updateDb,
   setScreen,
-  setActiveSessionId,
   editingWeekNumber,
   onPlanWeek,
   onResumeWorkout,
+  onOpenLoggerSession,
+  onOpenCompletedSessionReview,
   resumeMessage,
   clearResumeMessage
 }: {
@@ -881,10 +986,25 @@ function TodayScreen({
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   setScreen: (screen: Screen) => void;
-  setActiveSessionId: (id: string | undefined) => void;
   editingWeekNumber?: number;
   onPlanWeek: (weekNumber: number) => void;
-  onResumeWorkout: (sessionId?: string) => Promise<void> | void;
+  onResumeWorkout: (
+    sessionId?: string,
+    options?: {
+      previousScreen?: LoggerNavigationState["previousScreen"];
+      completedReviewState?: CompletedReviewState;
+      loggerMode?: LoggerNavigationState["loggerMode"];
+    }
+  ) => Promise<void> | void;
+  onOpenLoggerSession: (
+    sessionId: string,
+    options?: {
+      previousScreen?: LoggerNavigationState["previousScreen"];
+      completedReviewState?: CompletedReviewState;
+      loggerMode?: LoggerNavigationState["loggerMode"];
+    }
+  ) => void;
+  onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
   resumeMessage?: string;
   clearResumeMessage: () => void;
 }) {
@@ -895,6 +1015,10 @@ function TodayScreen({
   const selectedDaySession = selectedDay
     ? db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === selectedDay.id)
     : undefined;
+  const recentCompletedSessions = db.sessions
+    .filter((session) => session.userId === user.id && session.status === "completed" && (session.completedAt || session.updatedAt || "").startsWith(todayIso()))
+    .sort((a, b) => (b.completedAt || b.updatedAt || b.startedAt).localeCompare(a.completedAt || a.updatedAt || a.startedAt))
+    .slice(0, 3);
   const resumableSelectedDaySession = isSessionResumableOnTodayCard(db, user.id, selectedDaySession) ? selectedDaySession : undefined;
   const otherInProgressSession = selectedDay
     ? db.sessions.find((session) => {
@@ -903,6 +1027,32 @@ function TodayScreen({
       })
     : undefined;
   const [showEditDay, setShowEditDay] = useState(false);
+
+  function getGoBackCompletedSession(): WorkoutSession | undefined {
+    if (!activeBlock || !selectedDay) return undefined;
+    const orderedWorkoutDays = activeBlock.weeks
+      .flatMap((week) => week.workouts)
+      .filter((day) => day.status !== "rest");
+    const currentIndex = orderedWorkoutDays.findIndex((day) => day.id === selectedDay.id);
+    const priorWorkoutDayIds = new Set(
+      orderedWorkoutDays
+        .slice(0, currentIndex >= 0 ? currentIndex : orderedWorkoutDays.length)
+        .map((day) => day.id)
+    );
+    const completedSessionsInBlock = db.sessions
+      .filter((session) => session.userId === user.id && session.status === "completed" && session.blockId === activeBlock.id);
+
+    const sameDayPriorSessions = completedSessionsInBlock
+      .filter((session) => !!session.workoutDayId && priorWorkoutDayIds.has(session.workoutDayId))
+      .filter((session) => (session.completedAt || session.updatedAt || "").startsWith(todayIso()))
+      .sort((a, b) => (b.completedAt || b.updatedAt || b.startedAt).localeCompare(a.completedAt || a.updatedAt || a.startedAt));
+    if (sameDayPriorSessions.length > 0) return sameDayPriorSessions[0];
+
+    const priorSessions = completedSessionsInBlock
+      .filter((session) => !!session.workoutDayId && priorWorkoutDayIds.has(session.workoutDayId))
+      .sort((a, b) => (b.completedAt || b.updatedAt || b.startedAt).localeCompare(a.completedAt || a.updatedAt || a.startedAt));
+    return priorSessions[0];
+  }
 
   // Week-lock: Today is trainable only when the current week is saved/planned.
   const currentWeekNumber = selectedDay?.weekNumber ?? todayPlan?.week?.weekNumber ?? 1;
@@ -960,13 +1110,19 @@ function TodayScreen({
       draft.sessions.unshift(session);
       return draft;
     });
-    setActiveSessionId(session.id);
-    setScreen("logger");
+    onOpenLoggerSession(session.id, { previousScreen: "today" });
   }
 
   function updateActiveBlockProgress(action: "skip" | "rest-complete" | "next" | "previous") {
     if (!activeBlock) return;
     if (action === "skip" && selectedDay && !confirm(`Skip "${selectedDay.name}" and move to the next block day?`)) return;
+    if (action === "previous") {
+      const previousCompletedSession = getGoBackCompletedSession();
+      if (previousCompletedSession) {
+        onOpenCompletedSessionReview(previousCompletedSession.id, "today");
+        return;
+      }
+    }
     void updateDb((draft) => {
       const targetProgram = draft.programs.find((program) => program.id === activeProgram?.id);
       const targetBlock = targetProgram?.blocks.find((block) => block.id === activeBlock.id) || targetProgram?.blocks[0];
@@ -1087,8 +1243,7 @@ function TodayScreen({
       return draft;
     });
     setOffProgramBuilder({ active: false, exercises: [] });
-    setActiveSessionId(session.id);
-    setScreen("logger");
+    onOpenLoggerSession(session.id, { previousScreen: "today" });
   }
 
   if (offProgramBuilder.active) {
@@ -1189,8 +1344,7 @@ function TodayScreen({
                 };
                 void updateDb((draft) => { draft.sessions.unshift(session); return draft; });
                 setOffProgramBuilder({ active: false, exercises: [] });
-                setActiveSessionId(session.id);
-                setScreen("logger");
+                onOpenLoggerSession(session.id, { previousScreen: "today" });
               }}
             >
               Start Empty Session
@@ -1294,7 +1448,7 @@ function TodayScreen({
             )}
           </div>
           {otherInProgressSession && (
-            <button className="btn-secondary mt-4 w-full" onClick={() => void onResumeWorkout(otherInProgressSession.id)}>
+            <button className="btn-secondary mt-4 w-full" onClick={() => void onResumeWorkout(otherInProgressSession.id, { previousScreen: "today" })}>
               Resume Other In-Progress
             </button>
           )}
@@ -1320,6 +1474,44 @@ function TodayScreen({
           )}
         </section>
       )}
+      {recentCompletedSessions.length > 0 && (
+        <Panel title="Completed today" icon={CheckCircle2}>
+          <div className="space-y-3">
+            {recentCompletedSessions.map((session) => (
+              <div key={session.id} className="rounded-lg border border-white/10 bg-white/[0.05] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-black">{session.name}</p>
+                    <p className="mt-1 text-xs text-iron-400">
+                      {(session.completedAt || session.updatedAt) ? formatDateTime(session.completedAt || session.updatedAt || session.startedAt) : "Completed today"} · {countSessionCompletedSets(session)} sets
+                    </p>
+                  </div>
+                  <button
+                    className="rounded-full bg-volt px-3 py-1 text-xs font-black text-iron-950"
+                    onClick={() => onOpenCompletedSessionReview(session.id, "today")}
+                    aria-label={`View completed workout summary for ${session.name}`}
+                  >
+                    completed
+                  </button>
+                </div>
+                <div className="mt-3">
+                  <button
+                    className="btn-primary w-full"
+                    onClick={() => void onResumeWorkout(session.id, {
+                      previousScreen: "today",
+                      completedReviewState: { sessionId: session.id, returnScreen: "today" },
+                      loggerMode: "completed-edit",
+                    })}
+                  >
+                    <Pencil className="h-4 w-4" />
+                    Edit Workout
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
       {showEditDay && selectedDay && activeProgram && !weekLocked && (
         <section className="panel p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -1344,7 +1536,9 @@ function LiveLogger({
   updateDb,
   sessionId,
   setActiveSessionId,
-  setScreen
+  setScreen,
+  navigation,
+  onOpenCompletedSessionReview
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -1352,14 +1546,37 @@ function LiveLogger({
   sessionId?: string;
   setActiveSessionId: (id: string | undefined) => void;
   setScreen: (screen: Screen) => void;
+  navigation: LoggerNavigationState;
+  onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
 }) {
   const sessionRecord = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
   const [activeExerciseId, setActiveExerciseId] = useState(sessionRecord?.loggedExercises[sessionRecord.currentExerciseIndex || 0]?.id || sessionRecord?.loggedExercises[0]?.id);
   const resumeState = useMemo(
-    () => resolveWorkoutResumeState(db, user.id, sessionId, activeExerciseId),
+    () => resolveWorkoutResumeState(db, user.id, sessionId, activeExerciseId, true),
     [activeExerciseId, db, sessionId, user.id]
   );
   const session = resumeState.kind === "ready" || resumeState.kind === "no-exercises" ? resumeState.session : sessionRecord;
+  const editingCompletedWorkout = navigation.loggerMode === "completed-edit";
+  const preserveCompletedStatus = (target?: WorkoutSession) => editingCompletedWorkout && target?.status === "completed";
+  const finishWorkoutLabel = editingCompletedWorkout ? "Save Workout" : "Finish Workout";
+  const confirmLeaveCompletedEdit = () => {
+    if (!editingCompletedWorkout || !draftDirty) return true;
+    return confirm("Leave editing? Unsaved changes may be lost.");
+  };
+  const backToToday = () => {
+    if (!confirmLeaveCompletedEdit()) return;
+    setActiveSessionId(undefined);
+    setScreen("today");
+  };
+  const backToSummary = () => {
+    if (!confirmLeaveCompletedEdit()) return;
+    if (navigation.completedReviewState && sessionId) {
+      onOpenCompletedSessionReview(sessionId, navigation.completedReviewState.returnScreen);
+      return;
+    }
+    setActiveSessionId(undefined);
+    setScreen(navigation.previousScreen);
+  };
   const activeExerciseLog = resumeState.kind === "ready"
     ? session?.loggedExercises[resumeState.activeExerciseIndex]
     : session?.loggedExercises.find((item) => item.id === activeExerciseId) || session?.loggedExercises[session.currentExerciseIndex || 0] || session?.loggedExercises[0];
@@ -1393,12 +1610,17 @@ function LiveLogger({
   const draftKey = editingLineupItem?.actualSet
     ? `edit:${editingLineupItem.actualSet.id}`
     : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
-  const [setDraft, setSetDraft] = useState(() => emptySetDraft(currentPlannedSet, undefined, draftKey));
+  const [setDraft, setSetDraft] = useState(() => buildDraftFromSet({
+    actualSet: editingLineupItem?.actualSet,
+    plannedSet: currentPlannedSet,
+    previousCompletedSet,
+    draftKey,
+  }));
   const [draftDirty, setDraftDirty] = useState(false);
   const [restRemaining, setRestRemaining] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
-  const [showSkipReason, setShowSkipReason] = useState(false);
+  const [showSkipExerciseConfirm, setShowSkipExerciseConfirm] = useState(false);
   const [showMachineSelector, setShowMachineSelector] = useState(false);
   const [showSetNotes, setShowSetNotes] = useState(false);
   const [showCompletionSummary, setShowCompletionSummary] = useState(false);
@@ -1422,9 +1644,11 @@ function LiveLogger({
     mode: "undecided" | "horizontal" | "vertical";
     currentOffsetX: number;
   } | null>(null);
-  const [suggestionApplied, setSuggestionApplied] = useState(false);
   const [pendingOffProgramExercise, setPendingOffProgramExercise] = useState<Exercise | undefined>();
+  const [recentlyAppliedRecommendationKey, setRecentlyAppliedRecommendationKey] = useState<string | null>(null);
   const setLineupRef = useRef<HTMLDivElement | null>(null);
+  const skipSetHoldTimerRef = useRef<number | null>(null);
+  const skipSetLongPressTriggeredRef = useRef(false);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
 
@@ -1441,6 +1665,13 @@ function LiveLogger({
     gymId: session?.gymId,
   });
   const adjustedWeight = weightRec?.recommendedWeight ?? undefined;
+  const selectionDraftSeed = useMemo(() => buildDraftFromSet({
+    actualSet: editingLineupItem?.actualSet,
+    plannedSet: currentPlannedSet,
+    previousCompletedSet,
+    draftKey,
+    recommendedWeight: adjustedWeight,
+  }), [adjustedWeight, currentPlannedSet, draftKey, editingLineupItem?.actualSet, previousCompletedSet]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -1452,37 +1683,22 @@ function LiveLogger({
   }, []);
 
   useEffect(() => {
-    // draftDirty: user has started typing — never overwrite their values until they save/cancel.
     if (draftDirty) return;
-    setSetDraft((current) => {
-      if (editingLineupItem?.actualSet) {
-        // Guard: if we're already editing this exact set, don't reset user-typed values.
-        // Without this, reference changes in lineupItems (e.g. from plannedSets recomputing)
-        // would re-run this effect and wipe the user's in-progress edits.
-        if (current.draftKey === draftKey) return current;
-        return draftFromSetOrPlan(
-          editingLineupItem.actualSet,
-          editingLineupItem.plannedSet,
-          activeExerciseLog?.sets[(editingLineupItem.actualIndex ?? 0) - 1],
-          draftKey
-        );
+    setSetDraft(selectionDraftSeed);
+    setShowSetNotes(false);
+  }, [draftDirty, selectionDraftSeed]);
+
+  useEffect(() => {
+    return () => {
+      if (skipSetHoldTimerRef.current !== null) {
+        window.clearTimeout(skipSetHoldTimerRef.current);
       }
-      if (selectedLoggingIndex !== null) {
-        if (current.draftKey === draftKey) return current;
-        return emptySetDraft(currentPlannedSet, previousCompletedSet, draftKey);
-      }
-      if (current.draftKey === draftKey && current.actualWeight) return current;
-      const shouldUseAdjustedFallback = !previousCompletedSet && !!adjustedWeight && !!currentPlannedSet && currentPlannedSet.plannedWeight === undefined;
-      const plannedForDraft = shouldUseAdjustedFallback
-        ? { ...currentPlannedSet, plannedWeight: adjustedWeight }
-        : currentPlannedSet;
-      return emptySetDraft(
-        plannedForDraft,
-        previousCompletedSet,
-        draftKey
-      );
-    });
-  }, [activeExerciseLog, adjustedWeight, currentPlannedSet, draftDirty, draftKey, editingLineupItem, previousCompletedSet, selectedLoggingIndex]);
+    };
+  }, []);
+
+  useEffect(() => {
+    setRecentlyAppliedRecommendationKey(null);
+  }, [draftKey]);
 
   useEffect(() => {
     // Reset set navigation and UI state when switching exercises
@@ -1490,9 +1706,9 @@ function LiveLogger({
     setEditingSetId(null);
     setDraftDirty(false);
     setPendingDeleteTarget(null);
-    setSuggestionApplied(false);
     setShowSetNotes(false);
     setShowMachineSelector(false);
+    setShowSkipExerciseConfirm(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
     setSwipeDrag(null);
@@ -1503,6 +1719,7 @@ function LiveLogger({
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
     setDraftDirty(false);
+    setShowSkipExerciseConfirm(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
     setSwipeDrag(null);
@@ -1514,10 +1731,6 @@ function LiveLogger({
     swipeGestureRef.current = null;
     setSwipeDrag(null);
   }, [isSwipeEnabled]);
-
-  useEffect(() => {
-    setSuggestionApplied(false);
-  }, [lastSet?.id]);
 
   useEffect(() => {
     if (resumeState.kind === "ready" && activeExerciseId !== resumeState.activeExerciseId) {
@@ -1607,18 +1820,11 @@ function LiveLogger({
             <button
               className="btn-primary col-span-2"
               onClick={() => {
-                void updateDb((draft) => {
-                  const target = draft.sessions.find((item) => item.id === recoverableSession!.id);
-                  if (target) {
-                    target.status = "in-progress";
-                    target.completedAt = undefined;
-                    target.updatedAt = nowIso();
-                  }
-                  return draft;
-                });
+                setActiveSessionId(recoverableSession!.id);
+                setScreen("logger");
               }}
             >
-              Edit / Resume Workout
+              Edit Workout
             </button>
           )}
           <button
@@ -1677,8 +1883,8 @@ function LiveLogger({
           </Panel>
         )}
         <div className="grid gap-2 sm:grid-cols-2">
-          <button className="btn-secondary" onClick={() => { setActiveSessionId(undefined); setScreen("today"); }}>
-            Return to Today
+          <button className="btn-secondary" onClick={backToToday}>
+            Back to Today
           </button>
           <button className="btn-primary" onClick={() => setShowAddExercisePicker(true)}>
             <Plus className="h-4 w-4" /> Add Exercise
@@ -1784,11 +1990,28 @@ function LiveLogger({
         unit: exerciseUnit,
       })
     : undefined;
+  const recommendationKey = recommendation
+    ? `${recommendation.action?.setId ?? "none"}:${recommendation.action?.targetExerciseIndex ?? -1}:${recommendation.action?.targetSetIndex ?? -1}:${recommendation.action?.suggestedWeight ?? "none"}:${recommendation.action?.suggestedReps ?? "none"}:${recommendation.action?.suggestedRpe ?? "none"}`
+    : null;
+  const recommendationApplied = draftMatchesRecommendation({
+    draft: setDraft,
+    recommendation,
+    increment: exerciseIncrement,
+  });
+  const recentlyAppliedForCurrentRecommendation =
+    !!recommendationKey
+    && recentlyAppliedRecommendationKey === recommendationKey
+    && recommendationApplied;
+  const showRecommendationCard = shouldRenderSuggestionCard({
+    recommendation,
+    draftMatches: recommendationApplied,
+  });
+  const recommendationFeedbackText = recommendationApplied
+    ? recentlyAppliedForCurrentRecommendation
+      ? "Applied to current set."
+      : "Current set already matches the recommendation."
+    : null;
   const lastSetWasSkipped = lastSet?.skipped === true;
-  const persistedAppliedRec = recommendation
-    ? liveSession.recommendations.find((r) => recommendationIdentityMatches(r, recommendation) && r.applied === true)
-    : undefined;
-  const isCurrentSetLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex === plannedSets.length - 1;
   const isPastLastPlannedSet = plannedSets.length > 0 && effectiveSetIndex >= plannedSets.length;
   // Planned sets that have no logged set yet (supports out-of-order completion)
   const loggedPlannedSetIds = new Set(liveExerciseLog.sets.map((s) => s.plannedSetId).filter(Boolean));
@@ -1803,15 +2026,19 @@ function LiveLogger({
   const draftReps = Number(setDraft.actualReps) || 0;
   const hasDraftValidValues = !isEditingLoggedSet && !isPastLastPlannedSet && currentPendingSetIsUncovered
     && (draftWeight > 0 || (liveExercise.category === "bodyweight" && draftReps > 0));
-  // Primary action: if current set is the last planned AND all others are already covered → finish; else next-set
-  const isEffectivelyLastSet = isCurrentSetLastPlannedSet && (uncoveredPlannedSets.length <= 1);
-  const primaryAction = isEffectivelyLastSet ? (hasMoreExercises ? "finish-exercise" : "finish-workout") : "next-set";
+  const currentSetWouldCompleteExercise = currentPendingSetIsUncovered && uncoveredPlannedSets.length <= 1;
+  const currentSetWouldCompleteWorkout = currentSetWouldCompleteExercise && !hasMoreExercises;
+  const primaryAction = currentSetWouldCompleteWorkout
+    ? "finish-workout"
+    : currentSetWouldCompleteExercise
+      ? "finish-exercise"
+      : "next-set";
   const primaryActionLabel = isEditingLoggedSet
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
-    // If current pending set has valid values, it must be saved before finishing — show Save Set
-    : hasDraftValidValues ? "Save Set"
     : primaryAction === "finish-workout" ? "Finish Workout"
     : primaryAction === "finish-exercise" ? "Finish Exercise"
+    // If current pending set has valid values, it must be saved before finishing — show Save Set
+    : hasDraftValidValues ? "Save Set"
     // Out-of-order: user jumped to a pending set that isn't the natural next set — call it "Save Set"
     : selectedLoggingIndex !== null && selectedLoggingIndex !== currentSetIndex ? "Save Set"
     : "Next Set";
@@ -1904,6 +2131,44 @@ function LiveLogger({
     }
   }
 
+  function buildSessionPreviewForSummary(updatedLoggedExercises: LoggedExercise[]) {
+    return {
+      ...liveSession,
+      loggedExercises: updatedLoggedExercises,
+    };
+  }
+
+  function clearSkipSetHold() {
+    if (skipSetHoldTimerRef.current !== null) {
+      window.clearTimeout(skipSetHoldTimerRef.current);
+      skipSetHoldTimerRef.current = null;
+    }
+  }
+
+  function startSkipSetHold() {
+    if (isPastLastPlannedSet || isEditingLoggedSet) return;
+    clearSkipSetHold();
+    skipSetLongPressTriggeredRef.current = false;
+    skipSetHoldTimerRef.current = window.setTimeout(() => {
+      skipSetLongPressTriggeredRef.current = true;
+      skipSetHoldTimerRef.current = null;
+      setShowSkipExerciseConfirm(true);
+      setShowFinishConfirm(false);
+    }, 600);
+  }
+
+  function cancelSkipSetHold() {
+    clearSkipSetHold();
+  }
+
+  function handleSkipSetPress() {
+    if (skipSetLongPressTriggeredRef.current) {
+      skipSetLongPressTriggeredRef.current = false;
+      return;
+    }
+    skipSet();
+  }
+
   function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-exercise" | "finish-workout" = "stay") {
     const actualWeight = Number(setDraft.actualWeight) || 0;
     const actualReps = Number(setDraft.actualReps) || 0;
@@ -1966,6 +2231,7 @@ function LiveLogger({
           log.weakPointTags = detectWeakPointTags(log);
         }
         if (target) {
+          if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
           target.updatedAt = nowIso();
           if (rec) upsertRecommendation(target.recommendations, rec);
         }
@@ -2038,6 +2304,7 @@ function LiveLogger({
         log.weakPointTags = detectWeakPointTags(log);
       }
       if (target) {
+        if (!preserveCompletedStatus(target) && target.status === "completed") target.status = "in-progress";
         if (afterAction === "next-exercise" && hasMoreExercises) {
           target.currentExerciseIndex = activeExerciseIndex + 1;
           target.currentSetIndex = 0;
@@ -2072,19 +2339,33 @@ function LiveLogger({
       if (nextLog) {
         setActiveExerciseId(nextLog.id);
       } else {
+        const summarySession = buildSessionPreviewForSummary(
+          liveSession.loggedExercises.map((logged) => (
+            logged.id === liveExerciseLog.id
+              ? { ...logged, sets: [...logged.sets, loggedSet] }
+              : logged
+          ))
+        );
         // No more incomplete exercises after this save — present the review screen.
         void updateDb((draft) => {
           const target = draft.sessions.find((s) => s.id === liveSession.id);
           if (target && target.status === "in-progress") { target.status = "review"; target.updatedAt = nowIso(); }
           return draft;
         });
-        const summary = buildCompletionSummary(liveSession);
+        const summary = buildCompletionSummary(summarySession);
         setCompletionSummary(summary);
         setShowCompletionSummary(true);
       }
     }
     if (afterAction === "finish-workout") {
-      const summary = buildCompletionSummary(liveSession);
+      const summarySession = buildSessionPreviewForSummary(
+        liveSession.loggedExercises.map((logged) => (
+          logged.id === liveExerciseLog.id
+            ? { ...logged, sets: [...logged.sets, loggedSet] }
+            : logged
+        ))
+      );
+      const summary = buildCompletionSummary(summarySession);
       setCompletionSummary(summary);
       setShowCompletionSummary(true);
     }
@@ -2092,9 +2373,8 @@ function LiveLogger({
 
   function skipSet() {
     if (isPastLastPlannedSet) return;
-    const wasLastSet = isCurrentSetLastPlannedSet;
-    const shouldAdvanceExercise = wasLastSet && hasMoreExercises;
-    const shouldFinishWorkout = wasLastSet && !hasMoreExercises;
+    const shouldAdvanceExercise = currentSetWouldCompleteExercise && hasMoreExercises;
+    const shouldFinishWorkout = currentSetWouldCompleteWorkout;
     const skippedSet: LoggedSet = {
       id: createId("set"),
       kind: currentPlannedSet?.kind || "working",
@@ -2119,6 +2399,7 @@ function LiveLogger({
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
       if (log) log.sets.push(skippedSet);
       if (target) {
+        if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
         if (shouldAdvanceExercise) {
           target.currentExerciseIndex = activeExerciseIndex + 1;
           target.currentSetIndex = 0;
@@ -2133,14 +2414,22 @@ function LiveLogger({
     });
     setSelectedLoggingIndex(null);
     setEditingSetId(null);
-    setSetDraft(emptySetDraft(plannedSets[currentSetIndex + 1], skippedSet, `${liveExerciseLog.id}:${currentSetIndex + 1}`));
+    const nextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, skippedSet] }, plannedSets);
+    setSetDraft(emptySetDraft(plannedSets[nextUncoveredIndex] ?? null, skippedSet, `${liveExerciseLog.id}:${nextUncoveredIndex}`));
     if (shouldAdvanceExercise) {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
       const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
       if (nextLog) setActiveExerciseId(nextLog.id);
     }
     if (shouldFinishWorkout) {
-      const summary = buildCompletionSummary(liveSession);
+      const summarySession = buildSessionPreviewForSummary(
+        liveSession.loggedExercises.map((logged) => (
+          logged.id === liveExerciseLog.id
+            ? { ...logged, sets: [...logged.sets, skippedSet] }
+            : logged
+        ))
+      );
+      const summary = buildCompletionSummary(summarySession);
       setCompletionSummary(summary);
       setShowCompletionSummary(true);
     }
@@ -2161,7 +2450,14 @@ function LiveLogger({
       const targetPlanned = targetProgram?.blocks.flatMap((block) => block.weeks).flatMap((week) => week.workouts).flatMap((day) => day.exercises).find((item) => item.id === liveExerciseLog.plannedExerciseId);
       if (targetPlanned) targetPlanned.plannedSets.push(extra);
       const target = draft.sessions.find((item) => item.id === liveSession.id);
-      if (target) target.updatedAt = nowIso();
+      if (target) {
+        if (editingCompletedWorkout && target.status === "completed") {
+          target.status = "in-progress";
+        } else if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) {
+          target.status = "in-progress";
+        }
+        target.updatedAt = nowIso();
+      }
       return draft;
     });
   }
@@ -2170,8 +2466,8 @@ function LiveLogger({
     const targetIndex = Math.max(0, effectiveSetIndex - 1);
     setEditingSetId(null);
     setSelectedLoggingIndex(targetIndex);
-    const targetLineupItem = lineupItems.find((item) => item.plannedIndex === targetIndex);
-    setSetDraft(draftFromSetOrPlan(targetLineupItem?.actualSet, targetLineupItem?.plannedSet, previousCompletedSet, `${liveExerciseLog.id}:${targetIndex}`));
+    setDraftDirty(false);
+    setShowSetNotes(false);
   }
 
   function navigateToNextExercise() {
@@ -2233,9 +2529,87 @@ function LiveLogger({
     if (targetLog) setActiveExerciseId(targetLog.id);
   }
 
+  function skipEntireExercise() {
+    const setsToSkip = plannedSets.filter((ps) => !loggedPlannedSetIds.has(ps.id));
+    const skippedSets = setsToSkip.map((plannedSet, index) => {
+      const skippedSet: LoggedSet = {
+        id: createId("set"),
+        kind: plannedSet.kind || "working",
+        setNumber: liveExerciseLog.sets.length + index + 1,
+        plannedSetId: plannedSet.id,
+        plannedWeight: plannedSet.plannedWeight,
+        plannedReps: plannedSet.targetReps,
+        actualWeight: 0,
+        unit: exerciseUnit,
+        actualReps: 0,
+        targetRpe: plannedSet.targetRpe,
+        setRating: 1 as SetRating,
+        skipped: true,
+        notes: "Skipped exercise.",
+        completedAt: nowIso()
+      };
+      const performance = calculateSetPerformanceScore(plannedSet, skippedSet);
+      skippedSet.performanceScore = performance.score;
+      skippedSet.performanceStatus = performance.status;
+      return skippedSet;
+    });
+    const shouldAdvanceExercise = hasMoreExercises;
+    const shouldFinishWorkout = !hasMoreExercises;
+
+    void updateDb((draft) => {
+      const target = draft.sessions.find((item) => item.id === liveSession.id);
+      const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
+      if (log && skippedSets.length) {
+        log.sets.push(...skippedSets);
+      }
+      if (target) {
+        if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
+        if (shouldAdvanceExercise) {
+          target.currentExerciseIndex = activeExerciseIndex + 1;
+          target.currentSetIndex = 0;
+        } else {
+          target.currentExerciseIndex = activeExerciseIndex;
+          target.currentSetIndex = log ? getResumeSetIndex(log, plannedSets) : 0;
+        }
+        target.updatedAt = nowIso();
+        if (shouldFinishWorkout) finishWorkoutInDraft(draft, user, target);
+      }
+      return draft;
+    });
+
+    setShowSkipExerciseConfirm(false);
+    setShowFinishConfirm(false);
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
+    setDraftDirty(false);
+    skipSetLongPressTriggeredRef.current = false;
+
+    if (shouldAdvanceExercise) {
+      const targetIndex = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
+      const targetLog = targetIndex !== undefined ? liveSession.loggedExercises[targetIndex] : undefined;
+      if (targetLog) {
+        setActiveExerciseId(targetLog.id);
+      }
+      return;
+    }
+
+    if (shouldFinishWorkout) {
+      const summarySession = buildSessionPreviewForSummary(
+        liveSession.loggedExercises.map((logged) => (
+          logged.id === liveExerciseLog.id
+            ? { ...logged, sets: [...logged.sets, ...skippedSets] }
+            : logged
+        ))
+      );
+      const summary = buildCompletionSummary(summarySession);
+      setCompletionSummary(summary);
+      setShowCompletionSummary(true);
+    }
+  }
+
   function finishExercise() {
     // Hard guard: if the current on-screen pending set has valid draft values, save it first.
-    // This fires whether the user clicked the primary button OR the secondary "Finish Exercise" button.
+    // This fires from the smart primary action and from past-the-end navigation.
     const currentDraftWeight = Number(setDraft.actualWeight) || 0;
     const currentDraftReps = Number(setDraft.actualReps) || 0;
     const hasValidUnsavedValues = !isEditingLoggedSet && !isPastLastPlannedSet
@@ -2279,26 +2653,24 @@ function LiveLogger({
     setScreen("today");
   }
 
-  function applySuggestion() {
-    if (!recommendation?.action?.suggestedWeight) return;
-    const suggestedWeight = recommendation.action.suggestedWeight;
-    setSetDraft((current) => ({ ...current, actualWeight: String(suggestedWeight) }));
-    setSuggestionApplied(true);
-    const targetId = recommendation.action.targetPlannedSetId ?? currentPlannedSet?.id;
+  function applySuggestion(nextRecommendation?: Recommendation) {
+    if (!nextRecommendation?.action?.suggestedWeight) return;
+    const suggestedWeight = nextRecommendation.action.suggestedWeight;
+    setSetDraft((current) => applyRecommendationToCurrentDraft(current, nextRecommendation, currentPlannedSet));
+    setDraftDirty(true);
+    setRecentlyAppliedRecommendationKey(
+      `${nextRecommendation.action?.setId ?? "none"}:${nextRecommendation.action?.targetExerciseIndex ?? -1}:${nextRecommendation.action?.targetSetIndex ?? -1}:${nextRecommendation.action?.suggestedWeight ?? "none"}:${nextRecommendation.action?.suggestedReps ?? "none"}:${nextRecommendation.action?.suggestedRpe ?? "none"}`
+    );
+    const targetId = nextRecommendation.action.targetPlannedSetId ?? currentPlannedSet?.id;
     void updateDb((draft) => {
-      // Mark recommendation as applied in session
       const sessionTarget = draft.sessions.find((s) => s.id === liveSession.id);
       if (sessionTarget) {
-        upsertRecommendation(sessionTarget.recommendations, { ...recommendation, applied: true });
-        const recInSession = sessionTarget.recommendations.find((r) => recommendationIdentityMatches(r, recommendation));
-        if (recInSession) recInSession.applied = true;
+        upsertRecommendation(sessionTarget.recommendations, nextRecommendation);
         sessionTarget.loggedExercises
           .flatMap((logged) => logged.offProgramPlannedSets || [])
           .forEach((set) => { if (set.id === targetId) set.plannedWeight = suggestedWeight; });
       }
-      upsertRecommendation(draft.recommendations, { ...recommendation, applied: true });
-      const recInGlobal = draft.recommendations.find((r) => recommendationIdentityMatches(r, recommendation));
-      if (recInGlobal) recInGlobal.applied = true;
+      upsertRecommendation(draft.recommendations, nextRecommendation);
       // Update the planned weight for the target set
       if (targetId && liveSession.programId) {
         const program = draft.programs.find((p) => p.id === liveSession.programId);
@@ -2331,12 +2703,13 @@ function LiveLogger({
   }
 
   function confirmAddOffProgramExercise(exercise: Exercise) {
+    const newLogId = createId("logex");
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       if (!target) return draft;
       const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise, targetReps: 8, targetRpe: 7 });
       target.loggedExercises.push({
-        id: createId("logex"),
+        id: newLogId,
         exerciseId: exercise.id,
         plannedExerciseId: undefined,
         order: target.loggedExercises.length + 1,
@@ -2345,16 +2718,16 @@ function LiveLogger({
         offProgram: true,
         offProgramPlannedSets: buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
       });
+      if (editingCompletedWorkout && target.status === "completed") {
+        target.status = "in-progress";
+      } else if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) {
+        target.status = "in-progress";
+      }
       target.updatedAt = nowIso();
       return draft;
     });
-    const nextExIndex = liveSession.loggedExercises.length;
     setPendingOffProgramExercise(undefined);
-    // Navigate to the newly added exercise after the db update propagates
-    setTimeout(() => {
-      const updated = liveSession.loggedExercises[nextExIndex];
-      if (updated) setActiveExerciseId(updated.id);
-    }, 50);
+    setActiveExerciseId(newLogId);
   }
 
   return (
@@ -2369,6 +2742,20 @@ function LiveLogger({
             <div className="grid grid-cols-2 gap-3">
               <button className="btn-secondary" onClick={() => setShowFinishConfirm(false)}>Cancel</button>
               <button className="btn-primary" onClick={skipRemainingAndNavigate}>Skip & Finish</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showSkipExerciseConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+          <div className="panel w-full max-w-sm space-y-4 p-6">
+            <h3 className="text-xl font-black">Skip entire exercise?</h3>
+            <p className="text-sm text-iron-300">
+              This will mark every set in this exercise as skipped. Use this if you are not doing this movement today.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <button className="btn-secondary" onClick={() => setShowSkipExerciseConfirm(false)}>Cancel</button>
+              <button className="btn-primary" onClick={skipEntireExercise}>Skip Exercise</button>
             </div>
           </div>
         </div>
@@ -2405,6 +2792,7 @@ function LiveLogger({
                       log.weakPointTags = detectWeakPointTags(log);
                     }
                     if (target) {
+                      if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
                       const logIndex = target.loggedExercises.findIndex((item) => item.id === liveExerciseLog.id);
                       if (logIndex >= 0 && target.currentExerciseIndex === logIndex && log) {
                         const updatedPlanned = findPlannedExercise(draft, target, log);
@@ -2434,7 +2822,7 @@ function LiveLogger({
             <div className="text-center">
               <p className="text-4xl font-black text-volt">{completionSummary.score}</p>
               <p className="text-lg font-bold capitalize text-iron-200">{completionSummary.status}</p>
-              <p className="text-sm text-iron-400">Workout Review</p>
+              <p className="text-sm text-iron-400">Workout complete</p>
             </div>
             <div className="grid grid-cols-3 gap-3 rounded-lg bg-white/[0.05] p-3">
               <div className="text-center">
@@ -2465,24 +2853,19 @@ function LiveLogger({
                   });
                   setShowCompletionSummary(false);
                   setActiveSessionId(undefined);
-                  setScreen("today");
+                  if (editingCompletedWorkout) {
+                    backToSummary();
+                  } else {
+                    setScreen("today");
+                  }
                 }}
               >
-                Finish Workout
+                {finishWorkoutLabel}
               </button>
               <button
                 className="btn-secondary w-full"
                 onClick={() => {
                   setShowCompletionSummary(false);
-                  // Back to in-progress so the exercise picker and set logging work normally.
-                  void updateDb((draft) => {
-                    const target = draft.sessions.find((item) => item.id === liveSession.id);
-                    if (target && target.status === "review") {
-                      target.status = "in-progress";
-                      target.updatedAt = nowIso();
-                    }
-                    return draft;
-                  });
                   setShowAddExercisePicker(true);
                 }}
               >
@@ -2492,24 +2875,35 @@ function LiveLogger({
                 className="btn-ghost w-full"
                 onClick={() => {
                   setShowCompletionSummary(false);
-                  // Return to logger for set editing — keep as in-progress.
-                  void updateDb((draft) => {
-                    const target = draft.sessions.find((item) => item.id === liveSession.id);
-                    if (target && target.status === "review") {
-                      target.status = "in-progress";
-                      target.updatedAt = nowIso();
-                    }
-                    return draft;
-                  });
                 }}
               >
-                Back to Workout
+                Continue Editing
               </button>
             </div>
           </div>
         </div>
       )}
       <PageTitle eyebrow="Live Logger" title={session.name} />
+      {editingCompletedWorkout && (
+        <section className="rounded-lg border border-volt/30 bg-volt/10 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="label text-volt">Editing completed workout</p>
+              <p className="mt-1 text-sm text-iron-200">Edit sets, add exercises, then save the workout again.</p>
+            </div>
+            <div className="flex w-full flex-wrap gap-2 sm:w-auto">
+              {navigation.completedReviewState && (
+                <button className="btn-secondary w-full sm:w-auto" onClick={backToSummary}>
+                  Back to Summary
+                </button>
+              )}
+              <button className="btn-secondary w-full sm:w-auto" onClick={backToToday}>
+                Back to Today
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
       {!session.readiness && <ReadinessCard onSubmit={addReadiness} user={user} />}
       {session.readiness && (
         <div className="panel p-4">
@@ -2739,9 +3133,9 @@ function LiveLogger({
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualWeight: value })); }} placeholder={bodyweightMovement ? "BW" : undefined} />
-              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualReps: value })); }} />
-              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, actualRpe: value })); }} step="0.5" />
+              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualWeight: value })); }} placeholder={bodyweightMovement ? "BW" : undefined} />
+              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualReps: value })); }} />
+              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualRpe: value })); }} step="0.5" />
             </div>
             <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
@@ -2751,7 +3145,7 @@ function LiveLogger({
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
                 const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nA bit hard", 3: "3\nAs planned", 4: "4\nA bit easy", 5: "5\nEasy" };
                 return (
-                  <button key={rating} className={`min-h-12 rounded-lg text-[0.65rem] font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
+                  <button key={rating} className={`min-h-12 rounded-lg text-[0.65rem] font-black leading-tight ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/10 text-white"}`} onClick={() => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
                     {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-sm" : "block opacity-70"}>{line}</span>)}
                   </button>
                 );
@@ -2776,47 +3170,15 @@ function LiveLogger({
                         className="field min-h-14"
                         placeholder="Optional set notes..."
                         value={setDraft.notes}
-                        onChange={(event) => { setDraftDirty(true); setSetDraft((draft) => ({ ...draft, notes: event.target.value })); }}
+                        onChange={(event) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, notes: event.target.value })); }}
                       />
                     )}
                   </div>
                 )
               }
             </div>
-            {showSkipReason && (
-              <div className="mt-4 rounded-lg border border-ember/30 bg-ember/5 p-3">
-                <p className="label mb-2 text-orange-300">Skip reason (optional)</p>
-                <div className="flex flex-wrap gap-2">
-                  {["Fatigue", "Pain", "Poor form", "Time", "Other"].map((reason) => (
-                    <button
-                      key={reason}
-                      className="rounded-lg border border-ember/30 bg-white/[0.05] px-3 py-1.5 text-xs font-bold text-orange-200 transition hover:bg-ember/20"
-                      onClick={() => {
-                        setSetDraft((d) => ({ ...d, notes: reason }));
-                        setShowSkipReason(false);
-                        skipSet();
-                      }}
-                    >
-                      {reason}
-                    </button>
-                  ))}
-                  <button
-                    className="rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-bold text-iron-400 transition hover:bg-white/10"
-                    onClick={() => { setShowSkipReason(false); skipSet(); }}
-                  >
-                    Skip without reason
-                  </button>
-                  <button
-                    className="rounded-lg border border-white/10 bg-white/[0.05] px-3 py-1.5 text-xs font-bold text-iron-500 transition hover:bg-white/10"
-                    onClick={() => setShowSkipReason(false)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
             <div className="safe-bottom sticky bottom-0 z-10 -mx-3 mt-4 border-t border-white/10 bg-iron-950/95 px-3 py-3 backdrop-blur sm:-mx-4 sm:px-4">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 {isEditingLoggedSet
                   ? <button className="btn-secondary" onClick={() => setEditingSetId(null)}>Cancel</button>
                   : <button className="btn-secondary" onClick={previousSet} disabled={!liveExerciseLog.sets.length}>Back</button>
@@ -2824,7 +3186,12 @@ function LiveLogger({
                 <button
                   className="btn-secondary border-ember/40 text-orange-100"
                   disabled={isPastLastPlannedSet || isEditingLoggedSet}
-                  onClick={() => setShowSkipReason((v) => !v)}
+                  onPointerDown={startSkipSetHold}
+                  onPointerMove={cancelSkipSetHold}
+                  onPointerUp={cancelSkipSetHold}
+                  onPointerLeave={cancelSkipSetHold}
+                  onPointerCancel={cancelSkipSetHold}
+                  onClick={handleSkipSetPress}
                 >
                   Skip Set
                 </button>
@@ -2840,19 +3207,28 @@ function LiveLogger({
                       else finishWorkout();
                       return;
                     }
-                    // Current pending set has valid unsaved values — always save it first (stay to re-evaluate).
-                    // Only advance/finish after the set is actually logged.
-                    if (hasDraftValidValues) {
-                      logSet(setDraft.setRating, "stay");
+                    if (primaryAction === "finish-workout") {
+                      if (hasDraftValidValues) {
+                        logSet(setDraft.setRating, "finish-workout");
+                      } else {
+                        finishExercise();
+                      }
                       return;
                     }
-                    logSet(setDraft.setRating, primaryAction === "finish-workout" ? "finish-workout" : primaryAction === "finish-exercise" ? "next-exercise" : "stay");
+                    if (primaryAction === "finish-exercise") {
+                      if (hasDraftValidValues) {
+                        logSet(setDraft.setRating, "next-exercise");
+                      } else {
+                        finishExercise();
+                      }
+                      return;
+                    }
+                    logSet(setDraft.setRating, "stay");
                   }}
                 >
-                  <Check className="h-5 w-5" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : "Finish Workout") : primaryActionLabel}
+                  <Check className="h-5 w-5" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : finishWorkoutLabel) : primaryActionLabel}
                 </button>
                 <button className="btn-secondary" onClick={addSet}>Add Set</button>
-                <button className="btn-secondary" onClick={hasMoreExercises ? finishExercise : finishWorkout}>{hasMoreExercises ? "Finish Exercise" : "Finish Workout"}</button>
               </div>
             </div>
           </section>
@@ -2863,22 +3239,13 @@ function LiveLogger({
               <p className="mt-1 text-sm text-iron-400">Set skipped — no recommendation.</p>
             </section>
           )}
-          {recommendation && !selectedActualSet && (() => {
-            const isApplied = suggestionApplied || !!persistedAppliedRec;
-            if (isApplied) {
-              return (
-                <div className="flex items-center gap-2 rounded-lg bg-volt/10 px-3 py-2 text-sm font-bold text-volt">
-                  <Check className="h-4 w-4 shrink-0" />
-                  Applied to this set
-                </div>
-              );
-            }
+          {!showRecommendationCard && !selectedActualSet && recommendationFeedbackText && (
+            <div className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-iron-300">
+              {recommendationFeedbackText}
+            </div>
+          )}
+          {showRecommendationCard && !selectedActualSet && recommendation && (() => {
             const suggestedWeight = recommendation.action?.suggestedWeight;
-            const currentDraftWeightNum = Number(setDraft.actualWeight) || 0;
-            // Suppress "Apply" when the current draft already matches the suggested weight
-            // within half an increment — showing it would be redundant and confusing.
-            const suggestionMatchesDraft = !!suggestedWeight && currentDraftWeightNum > 0
-              && Math.abs(currentDraftWeightNum - suggestedWeight) < exerciseIncrement / 2;
             const sourceSetNum = sourceSet?.setNumber;
             return (
               <section className="panel border-volt/30 p-4">
@@ -2889,11 +3256,13 @@ function LiveLogger({
                     : recommendation.title}
                 </h3>
                 <p className="mt-2 text-sm text-iron-200">{recommendation.explanation}</p>
-                {suggestionMatchesDraft && (
-                  <p className="mt-2 text-xs text-iron-500">Current set already matches the recommendation.</p>
+                {recommendation.action?.suggestedRpe !== undefined && currentPlannedSet?.targetRpe !== undefined && Math.abs(recommendation.action.suggestedRpe - currentPlannedSet.targetRpe) > 0.01 && (
+                  <p className="mt-2 text-xs text-iron-500">
+                    Rounded to the nearest practical load, so this may land slightly under the exact RPE target.
+                  </p>
                 )}
-                {suggestedWeight && !suggestionMatchesDraft && (
-                  <button className="btn-secondary mt-3" onClick={applySuggestion}>
+                {suggestedWeight && (
+                  <button className="btn-secondary mt-3" onClick={() => applySuggestion(recommendation)}>
                     Apply to Current Set
                   </button>
                 )}
@@ -2919,7 +3288,7 @@ function LiveLogger({
           <div className="grid gap-2 sm:grid-cols-3">
             <button className="btn-secondary" onClick={() => setShowAddExercisePicker(true)}>+ Add Exercise</button>
             <button className="btn-secondary border-ember/40 text-orange-100" onClick={abandonWorkout}>Abandon Workout</button>
-            <button className="btn-primary" onClick={finishWorkout} disabled={!allExercisesComplete}>Finish Workout</button>
+            <button className="btn-primary" onClick={finishWorkout} disabled={!allExercisesComplete}>{finishWorkoutLabel}</button>
           </div>
           {showAddExercisePicker && (
             <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
@@ -5945,7 +6314,7 @@ function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: {
 }
 
 function WeekEditor({
-  db, user, program, block, weekNumber, updateDb, onClose
+  db, user, program, block, weekNumber, updateDb, onClose, onResumeWorkout
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -5954,6 +6323,14 @@ function WeekEditor({
   weekNumber: number;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   onClose: () => void;
+  onResumeWorkout?: (
+    sessionId?: string,
+    options?: {
+      previousScreen?: LoggerNavigationState["previousScreen"];
+      completedReviewState?: CompletedReviewState;
+      loggerMode?: LoggerNavigationState["loggerMode"];
+    }
+  ) => Promise<void> | void;
 }) {
   const week = block.weeks.find((w) => w.weekNumber === weekNumber);
   const prevWeek = block.weeks.find((w) => w.weekNumber === weekNumber - 1);
@@ -6065,7 +6442,20 @@ function WeekEditor({
     prevDayForSelected.splitDayId !== selectedDay.splitDayId;
 
   if (reviewSession) {
-    return <CompletedWorkoutReview db={db} user={user} session={reviewSession} updateDb={updateDb} onBack={() => setReviewSessionId(undefined)} />;
+    return (
+      <CompletedWorkoutReview
+        db={db}
+        user={user}
+        session={reviewSession}
+        onBack={() => setReviewSessionId(undefined)}
+        onEditWorkout={onResumeWorkout ? () => void onResumeWorkout(reviewSession.id, {
+          previousScreen: "week",
+          completedReviewState: { sessionId: reviewSession.id, returnScreen: "week" },
+          loggerMode: "completed-edit",
+        }) : undefined}
+        backLabel="Back to Week"
+      />
+    );
   }
 
   return (
@@ -6117,9 +6507,21 @@ function WeekEditor({
           {selectedCompletedSession ? (
             <Panel title="Completed session is locked from plan edits" icon={CheckCircle2}>
               <p className="text-sm text-iron-300">This day already has completed workout history. Review or edit the logged session without overwriting the planned day.</p>
-              <button className="btn-primary mt-3 w-full" onClick={() => setReviewSessionId(selectedCompletedSession.id)}>
-                Edit Completed Session
-              </button>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <button className="btn-secondary w-full" onClick={() => setReviewSessionId(selectedCompletedSession.id)}>
+                  View Summary
+                </button>
+                <button
+                  className="btn-primary w-full"
+                  onClick={() => void onResumeWorkout?.(selectedCompletedSession.id, {
+                    previousScreen: "week",
+                    completedReviewState: { sessionId: selectedCompletedSession.id, returnScreen: "week" },
+                    loggerMode: "completed-edit",
+                  })}
+                >
+                  Edit Workout
+                </button>
+              </div>
             </Panel>
           ) : (
             <WorkoutDayEditor db={db} user={user} program={program} day={selectedDay} updateDb={updateDb} />
@@ -6146,7 +6548,7 @@ function WeekEditor({
 }
 
 function WeekProgressScreen({
-  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout
+  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout, onOpenCompletedSessionReview
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -6156,7 +6558,15 @@ function WeekProgressScreen({
   editingWeekNumber?: number;
   onEditingWeekNumberChange?: (n: number | undefined) => void;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
-  onResumeWorkout?: (sessionId?: string) => Promise<void> | void;
+  onResumeWorkout?: (
+    sessionId?: string,
+    options?: {
+      previousScreen?: LoggerNavigationState["previousScreen"];
+      completedReviewState?: CompletedReviewState;
+      loggerMode?: LoggerNavigationState["loggerMode"];
+    }
+  ) => Promise<void> | void;
+  onOpenCompletedSessionReview?: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
@@ -6165,7 +6575,6 @@ function WeekProgressScreen({
   const currentWeekNumber = (cursor?.week.weekNumber ?? block?.currentWeek) || 1;
   const [selectedWeekNumber, setSelectedWeekNumber] = useState(currentWeekNumber);
   const [inlineDayEditId, setInlineDayEditId] = useState<string | undefined>();
-  const [reviewSessionId, setReviewSessionId] = useState<string | undefined>();
   // Lifted to App level via editingWeekNumber / onEditingWeekNumberChange so WeekEditor
   // state survives tab navigation without remounting.
   const setPlanningWeekNumber = (n: number | undefined) => onEditingWeekNumberChange?.(n);
@@ -6182,7 +6591,6 @@ function WeekProgressScreen({
   const week = block?.weeks.find((item) => item.weekNumber === selectedWeekNumber) || block?.weeks[0];
   const weekSessions = db.sessions.filter((session) => session.userId === user.id && session.blockId === block?.id && session.weekNumber === week?.weekNumber);
   const completedSessions = weekSessions.filter((session) => session.status === "completed");
-  const reviewSession = db.sessions.find((session) => session.id === reviewSessionId && session.userId === user.id);
   const offProgramCompletedSessions = db.sessions
     .filter((session) => session.userId === user.id && session.status === "completed" && session.offProgram)
     .sort((a, b) => (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt))
@@ -6252,18 +6660,7 @@ function WeekProgressScreen({
         weekNumber={planningWeekNumber}
         updateDb={updateDb}
         onClose={() => setPlanningWeekNumber(undefined)}
-      />
-    );
-  }
-
-  if (reviewSession) {
-    return (
-      <CompletedWorkoutReview
-        db={db}
-        user={user}
-        session={reviewSession}
-        updateDb={updateDb}
-        onBack={() => setReviewSessionId(undefined)}
+        onResumeWorkout={onResumeWorkout}
       />
     );
   }
@@ -6357,15 +6754,6 @@ function WeekProgressScreen({
                             {isInlineEditing ? "Done" : "Edit"}
                           </button>
                         )}
-                        {session?.status === "completed" && (
-                          <button
-                            className="btn-ghost text-xs text-volt"
-                            onClick={() => setReviewSessionId(session.id)}
-                          >
-                            <Eye className="h-3.5 w-3.5" />
-                            Review
-                          </button>
-                        )}
                         {session?.status === "review" && onResumeWorkout && (
                           <button
                             className="btn-ghost text-xs text-steel"
@@ -6375,9 +6763,19 @@ function WeekProgressScreen({
                             Resume
                           </button>
                         )}
-                        <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "completed" ? "bg-volt text-iron-950" : session?.status === "review" ? "bg-steel/20 text-steel" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
-                          {session?.status === "review" ? "in review" : session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
-                        </span>
+                        {session?.status === "completed" ? (
+                          <button
+                            className="rounded-full bg-volt px-3 py-1 text-xs font-black text-iron-950"
+                            onClick={() => onOpenCompletedSessionReview?.(session.id, "week")}
+                            aria-label={`View completed workout summary for ${day.name}`}
+                          >
+                            completed
+                          </button>
+                        ) : (
+                          <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "review" ? "bg-steel/20 text-steel" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
+                            {session?.status === "review" ? "in review" : session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
+                          </span>
+                        )}
                       </div>
                     </div>
                     {session ? (
@@ -6397,9 +6795,16 @@ function WeekProgressScreen({
                         {session.progressionSuggestions.slice(0, 2).map((item) => <p key={item} className="text-sm text-iron-300">{item}</p>)}
                       </div>
                     ) : null}
-                    {session?.status === "completed" && (
-                      <button className="btn-secondary mt-3 w-full" onClick={() => setReviewSessionId(session.id)}>
-                        Edit Completed Session
+                    {session?.status === "completed" && onResumeWorkout && (
+                      <button
+                        className="btn-secondary mt-3 w-full"
+                        onClick={() => void onResumeWorkout(session.id, {
+                          previousScreen: "week",
+                          completedReviewState: { sessionId: session.id, returnScreen: "week" },
+                          loggerMode: "completed-edit",
+                        })}
+                      >
+                        Edit Workout
                       </button>
                     )}
                     {isInlineEditing && activeProgram && (
@@ -6417,7 +6822,7 @@ function WeekProgressScreen({
             <Panel title="Off-Program History" icon={Dumbbell}>
               <div className="space-y-2">
                 {offProgramCompletedSessions.map((session) => (
-                  <button key={session.id} className="flex w-full items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.05] p-3 text-left" onClick={() => setReviewSessionId(session.id)}>
+                  <button key={session.id} className="flex w-full items-center justify-between gap-3 rounded-lg border border-white/10 bg-white/[0.05] p-3 text-left" onClick={() => onOpenCompletedSessionReview?.(session.id, "week")}>
                     <span>
                       <span className="block font-black">{session.name}</span>
                       <span className="text-xs text-iron-400">{new Date(session.completedAt || session.startedAt).toLocaleDateString()} · {countSessionCompletedSets(session)} sets</span>
@@ -6438,97 +6843,26 @@ function CompletedWorkoutReview({
   db,
   user,
   session,
-  updateDb,
-  onBack
+  onBack,
+  onEditWorkout,
+  backLabel = "Back"
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   session: WorkoutSession;
-  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   onBack: () => void;
+  onEditWorkout?: () => void;
+  backLabel?: string;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [localSession, setLocalSession] = useState<WorkoutSession>(() => structuredClone(session));
-  const score = calculateWorkoutScore(localSession);
-  const totalSets = countSessionCompletedSets(localSession);
-  const skippedSets = localSession.loggedExercises.flatMap((exercise) => exercise.sets).filter((set) => set.skipped).length;
-
-  useEffect(() => {
-    setLocalSession(structuredClone(session));
-  }, [session]);
-
-  function updateLocalSet(logIndex: number, setIndex: number, mutator: (set: LoggedSet) => void) {
-    setLocalSession((current) => {
-      const next = structuredClone(current);
-      const set = next.loggedExercises[logIndex]?.sets[setIndex];
-      if (set) {
-        mutator(set);
-        const planned = findPlannedExercise(db, next, next.loggedExercises[logIndex])?.plannedSets[setIndex];
-        const perf = calculateSetPerformanceScore(planned, set);
-        set.performanceScore = perf.score;
-        set.performanceStatus = perf.status;
-      }
-      return next;
-    });
-  }
-
-  function saveReview() {
-    void updateDb((draft) => {
-      const target = draft.sessions.find((item) => item.id === session.id);
-      if (!target) return draft;
-      const nextScore = calculateWorkoutScore(localSession);
-      Object.assign(target, {
-        ...localSession,
-        workoutScore: nextScore.score,
-        workoutScoreStatus: nextScore.status,
-        progressionSuggestions: recommendNextWorkoutAdjustments(localSession, draft.programs.find((program) => program.id === localSession.programId)?.blocks.find((block) => block.id === localSession.blockId)),
-        updatedAt: nowIso()
-      });
-      draft.exercisePerformanceLogs = (draft.exercisePerformanceLogs || []).filter((log) => log.sessionId !== target.id);
-      target.loggedExercises.forEach((logged) => {
-        const validSets = logged.sets.filter(isCompletedValidSet);
-        if (!validSets.length) return;
-        const exercise = draft.exercises.find((item) => item.id === logged.exerciseId);
-        draft.exercisePerformanceLogs?.push({
-          id: createId("elog"),
-          exerciseId: logged.exerciseId,
-          userId: user.id,
-          sessionId: target.id,
-          date: target.completedAt || target.startedAt,
-          gymId: target.gymId,
-          workoutDayId: target.workoutDayId,
-          blockId: target.blockId,
-          blockWeek: target.weekNumber,
-          sets: validSets.length,
-          reps: validSets.reduce((sum, set) => sum + set.actualReps, 0),
-          weight: Math.max(...validSets.map((set) => set.actualWeight)),
-          e1rm: calculateSessionExerciseE1RM(logged) || undefined,
-          averageSetRating: Number((validSets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / validSets.length).toFixed(1)),
-          unit: validSets.find((set) => isWeightUnit(set.unit))?.unit || exercise?.defaultUnit || user.unit,
-          rpe: safeAverageRpe(validSets) || undefined,
-          notes: logged.notes
-        });
-      });
-      return draft;
-    });
-    setEditing(false);
-  }
-
-  function removeSet(logIndex: number, setIndex: number) {
-    if (!confirm("Remove this logged set from the completed session?")) return;
-    setLocalSession((current) => {
-      const next = structuredClone(current);
-      next.loggedExercises[logIndex]?.sets.splice(setIndex, 1);
-      next.loggedExercises[logIndex]?.sets.forEach((set, index) => { set.setNumber = index + 1; });
-      return next;
-    });
-  }
+  const score = calculateWorkoutScore(session);
+  const totalSets = countSessionCompletedSets(session);
+  const skippedSets = session.loggedExercises.flatMap((exercise) => exercise.sets).filter((set) => set.skipped).length;
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <PageTitle eyebrow={session.offProgram ? "Off-Program Review" : "Completed Session Review"} title={localSession.name} />
-        <button className="btn-secondary" onClick={onBack}>Back to Week</button>
+        <PageTitle eyebrow={session.offProgram ? "Off-Program Review" : "Completed Session Review"} title={session.name} />
+        <button className="btn-secondary" onClick={onBack}>{backLabel}</button>
       </div>
       <section className="grid gap-3 sm:grid-cols-4">
         <Metric label="Status" value={session.offProgram ? "Off-program" : "Completed"} />
@@ -6536,21 +6870,26 @@ function CompletedWorkoutReview({
         <Metric label="Skipped" value={skippedSets} />
         <Metric label="Score" value={score.score || "-"} unit={score.score ? "/100" : undefined} />
       </section>
-      <Panel title={editing ? "Edit Completed Session" : "Completed Workout"} icon={ClipboardList}>
+      <Panel title="Completed Workout" icon={ClipboardList}>
         <div className="mb-4 flex flex-wrap gap-2">
-          {editing ? (
-            <>
-              <button className="btn-primary" onClick={saveReview}><Save className="h-4 w-4" /> Save Review</button>
-              <button className="btn-secondary" onClick={() => { setLocalSession(structuredClone(session)); setEditing(false); }}>Cancel</button>
-            </>
-          ) : (
-            <button className="btn-primary" onClick={() => setEditing(true)}><Pencil className="h-4 w-4" /> Edit Completed Workout</button>
+          {onEditWorkout && (
+            <button className="btn-primary" onClick={onEditWorkout}>
+              <Pencil className="h-4 w-4" />
+              Edit Workout
+            </button>
           )}
+          <button className="btn-secondary" onClick={onBack}>{backLabel}</button>
         </div>
-        <TextField label="Session notes" value={localSession.notes || ""} onChange={(notes) => setLocalSession((current) => ({ ...current, notes }))} disabled={!editing} />
+        {session.notes && (
+          <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
+            <p className="label mb-1">Session notes</p>
+            <p className="text-sm text-iron-200 whitespace-pre-wrap">{session.notes}</p>
+          </div>
+        )}
         <div className="mt-4 space-y-4">
-          {localSession.loggedExercises.map((logged, logIndex) => {
+          {session.loggedExercises.map((logged) => {
             const exercise = db.exercises.find((item) => item.id === logged.exerciseId);
+            const displayUnit = exercise ? getExerciseLoadUnit(exercise, user, logged.sets.find((set) => isWeightUnit(set.unit))?.unit) : user.unit;
             return (
               <div key={logged.id} className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -6559,25 +6898,11 @@ function CompletedWorkoutReview({
                     <p className="text-xs text-iron-400">{logged.offProgram || session.offProgram ? "Off-program" : "Planned"} · {logged.sets.filter(isCompletedValidSet).length} completed sets</p>
                   </div>
                 </div>
-                <div className="mt-3 space-y-2">
-                  {logged.sets.map((set, setIndex) => (
-                    <div key={set.id} className="grid gap-2 rounded-lg border border-white/10 bg-white/[0.04] p-3 md:grid-cols-[4rem_repeat(4,minmax(0,1fr))_2fr_auto]">
-                      <p className="font-black">Set {setIndex + 1}</p>
-                      <BigInput label="Weight" value={String(set.actualWeight || "")} onChange={(value) => updateLocalSet(logIndex, setIndex, (target) => { target.actualWeight = Number(value) || 0; target.skipped = false; })} disabled={!editing} />
-                      <BigInput label="Reps" value={String(set.actualReps || "")} onChange={(value) => updateLocalSet(logIndex, setIndex, (target) => { target.actualReps = Number(value) || 0; target.skipped = false; })} disabled={!editing} />
-                      <BigInput label="RPE" value={String(set.actualRpe || "")} onChange={(value) => updateLocalSet(logIndex, setIndex, (target) => { target.actualRpe = Number(value) || undefined; target.skipped = false; })} disabled={!editing} step="0.5" />
-                      <SelectField label="Feel" value={String(set.setRating)} options={["1", "2", "3", "4", "5"]} onChange={(value) => updateLocalSet(logIndex, setIndex, (target) => { target.setRating = Number(value) as SetRating; })} disabled={!editing} />
-                      <TextField label="Notes" value={set.notes || ""} onChange={(notes) => updateLocalSet(logIndex, setIndex, (target) => { target.notes = notes; })} disabled={!editing} />
-                      <div className="flex flex-col gap-2">
-                        <label className="flex items-center gap-2 text-xs font-bold text-iron-300">
-                          <input type="checkbox" checked={!!set.skipped} disabled={!editing} onChange={(event) => updateLocalSet(logIndex, setIndex, (target) => { target.skipped = event.target.checked; if (event.target.checked) { target.actualWeight = 0; target.actualReps = 0; } })} />
-                          Skipped
-                        </label>
-                        {editing && <button className="btn-ghost text-xs text-orange-100" onClick={() => removeSet(logIndex, setIndex)}>Remove</button>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                {exercise ? (
+                  <LoggedSetsTable logged={logged} exercise={exercise} user={user} displayUnit={displayUnit} />
+                ) : (
+                  <p className="mt-3 text-sm text-iron-400">Exercise details are unavailable for this logged entry.</p>
+                )}
               </div>
             );
           })}
@@ -7356,7 +7681,7 @@ function findPlannedExercise(db: TrainingDatabase, session?: WorkoutSession, log
   return db.programs.flatMap((program) => program.blocks).flatMap((block) => block.weeks).flatMap((week) => week.workouts).flatMap((day) => day.exercises).find((item) => item.id === log.plannedExerciseId);
 }
 
-function emptySetDraft(planned?: PlannedSet, last?: LoggedSet, draftKey = "") {
+function emptySetDraft(planned?: PlannedSet | null, last?: LoggedSet, draftKey = "") {
   // Weight carryover priority:
   // 1) actual performed weight from the last set (strongest signal — user just did this)
   // 2) explicit planned/recommended weight for the target set
@@ -7399,6 +7724,104 @@ function draftFromSetOrPlan(actual: LoggedSet | undefined, planned: PlannedSet |
     sorenessRating: String(actual.sorenessRating ?? 2),
     notes: actual.skipped ? actual.notes?.replace(/^Skipped set\.?$/, "") || "" : actual.notes || ""
   };
+}
+
+function buildDraftFromSet(params: {
+  actualSet?: LoggedSet;
+  plannedSet?: PlannedSet | null;
+  previousCompletedSet?: LoggedSet;
+  draftKey: string;
+  recommendedWeight?: number;
+}): ReturnType<typeof emptySetDraft> {
+  const { actualSet, plannedSet, previousCompletedSet, draftKey, recommendedWeight } = params;
+  if (actualSet) {
+    return draftFromSetOrPlan(actualSet, plannedSet ?? undefined, previousCompletedSet, draftKey);
+  }
+  const plannedForDraft = !previousCompletedSet && plannedSet && plannedSet.plannedWeight === undefined && recommendedWeight
+    ? { ...plannedSet, plannedWeight: recommendedWeight }
+    : plannedSet;
+  return emptySetDraft(plannedForDraft, previousCompletedSet, draftKey);
+}
+
+function draftMatchesRecommendation(params: {
+  draft: { actualWeight: string; actualReps: string; actualRpe: string };
+  recommendation?: Recommendation;
+  increment: number;
+}): boolean {
+  const { draft, recommendation, increment } = params;
+  if (!recommendation?.action?.suggestedWeight) return false;
+  const currentDraftWeight = Number(draft.actualWeight) || 0;
+  if (currentDraftWeight <= 0 || isMeaningfulWeightChange(currentDraftWeight, recommendation.action.suggestedWeight, increment)) {
+    return false;
+  }
+  const suggestedReps = recommendation.action.suggestedReps;
+  const suggestedRpe = recommendation.action.suggestedRpe;
+  const currentDraftReps = Number(draft.actualReps) || 0;
+  const currentDraftRpe = Number(draft.actualRpe) || 0;
+  const repsMatch = !suggestedReps || currentDraftReps > 0 && currentDraftReps === suggestedReps;
+  const rpeMatch = !suggestedRpe || currentDraftRpe > 0 && Math.abs(currentDraftRpe - suggestedRpe) < 0.26;
+  return repsMatch && rpeMatch;
+}
+
+function shouldRenderSuggestionCard(params: {
+  recommendation?: Recommendation;
+  draftMatches: boolean;
+}): boolean {
+  const { recommendation, draftMatches } = params;
+  if (!recommendation) return false;
+  if (recommendation.type === "pain-warning") return true;
+  if (recommendation.action?.suggestedWeight && draftMatches) return false;
+  return true;
+}
+
+function applyRecommendationToCurrentDraft(
+  setDraft: ReturnType<typeof emptySetDraft>,
+  recommendation?: Recommendation,
+  currentPlannedSet?: PlannedSet,
+) {
+  if (!recommendation?.action?.suggestedWeight) return setDraft;
+  const appliedRpe = recommendation.action?.suggestedRpe !== undefined
+    ? String(sanitizeRpe(recommendation.action.suggestedRpe))
+    : currentPlannedSet?.targetRpe !== undefined
+      ? String(sanitizeRpe(currentPlannedSet.targetRpe))
+      : setDraft.actualRpe;
+  return {
+    ...setDraft,
+    actualWeight: String(recommendation.action.suggestedWeight),
+    actualReps: recommendation.action?.suggestedReps
+      ? String(recommendation.action.suggestedReps)
+      : currentPlannedSet?.targetReps !== undefined
+        ? String(currentPlannedSet.targetReps)
+        : setDraft.actualReps,
+    actualRpe: appliedRpe,
+  };
+}
+
+function getMissedRepPenaltyJumps(params: {
+  repMiss: number;
+  profile: { category: "main_compound" | "secondary_compound" | "isolation_accessory" };
+  actualRpe: number;
+  targetRpe: number;
+  feel: number;
+}): number {
+  const { repMiss, profile, actualRpe, targetRpe, feel } = params;
+  if (repMiss <= 0) return 0;
+  const harderThanTarget = actualRpe >= targetRpe || feel <= 2;
+  if (repMiss === 1) {
+    return harderThanTarget ? 1 : 0;
+  }
+  if (repMiss === 2) {
+    if (profile.category === "main_compound") return harderThanTarget ? 1 : 0;
+    return 1;
+  }
+  if (repMiss >= 3 && feel === 1) {
+    if (profile.category === "main_compound") return 3;
+    return 3;
+  }
+  if (profile.category === "main_compound") {
+    return harderThanTarget ? 2 : 1;
+  }
+  return 2;
 }
 
 function isCompletedValidSet(set?: LoggedSet): set is LoggedSet {
@@ -7657,21 +8080,6 @@ function getOffProgramStartingWeight({
   return lastLog?.weight && lastLog.weight > 0 ? lastLog.weight : undefined;
 }
 
-/**
- * Classify an exercise into e1RM prescription confidence tiers.
- * "high"   → primary compound / competition lift — e1RM reliable.
- * "medium" → accessory compound — blend e1RM + feel.
- * "low"    → isolation / cable / machine — feel dominates; e1RM less accurate.
- */
-function getPrescriptionConfidenceByExercise(exercise: Pick<Exercise, "kind" | "category">): "high" | "medium" | "low" {
-  if (exercise.category === "cable" || exercise.category === "machine") return "low";
-  const kinds = exercise.kind ?? [];
-  if (kinds.includes("isolation")) return "low";
-  if (kinds.includes("accessory")) return "medium";
-  if (kinds.includes("competition-lift") || kinds.includes("compound")) return "high";
-  return "medium";
-}
-
 function buildSetRecommendation(params: {
   user: UserProfile;
   exercise: Exercise;
@@ -7722,10 +8130,13 @@ function buildSetRecommendation(params: {
 
   // ── Step 1: derive actual RPE from feel or explicit entry ─────────────────
   const sourceTargetRpe = sourceSet.targetRpe ?? nextPlannedSet?.targetRpe ?? 8;
+  const sourceTargetReps = sourceSet.plannedReps ?? sourceSet.actualReps;
   const rpeResult = deriveActualRpeFromFeel({
     targetRpe: sourceTargetRpe,
     feelRating: sourceSet.setRating,
     explicitActualRpe: sourceSet.actualRpe,
+    actualReps: sourceSet.actualReps,
+    targetReps: sourceTargetReps,
   });
 
   // ── Step 2: calculate observed e1RM via RPE-aware Epley ───────────────────
@@ -7742,13 +8153,18 @@ function buildSetRecommendation(params: {
     targetRpe: baseTargetRpe,
     readinessScore: readiness?.readinessScore,
   });
+  const loggerTargetRpe = sanitizeRpe(nextPlannedSet?.targetRpe ?? baseTargetRpe);
+  const modelTargetRpe = targetRpeResult.adjustedTargetRpe;
+  const roundedTargetRpeMismatch = Math.abs(modelTargetRpe - loggerTargetRpe) > 0.01;
 
   // ── Step 4: reverse-prescribe target load ────────────────────────────────
   const targetReps = nextPlannedSet?.targetReps ?? sourceSet.actualReps;
+  const increment = getExerciseIncrement(exercise, unit);
+  const profile = getSetRecommendationProfile(exercise, targetReps);
   const prescription = prescribeLoadFromObservedE1RM({
     observedE1RM: e1rmResult.e1rm,
     targetReps,
-    targetRpe: targetRpeResult.adjustedTargetRpe,
+    targetRpe: modelTargetRpe,
     exercise,
     unit,
     recentActualWeight: sourceSet.actualWeight,
@@ -7756,49 +8172,183 @@ function buildSetRecommendation(params: {
 
   if (prescription.roundedWeight <= 0) return undefined;
 
-  // ── Step 5: feel-direction enforcement (survives rounding) ───────────────
-  // For isolation/cable/machine exercises, the e1RM model is less accurate and
-  // rounding can erase the intended direction from a feel rating.  When feel
-  // clearly says "harder" (1–2) or "easy" (4–5), we guarantee at least one
-  // increment of movement in that direction regardless of what Epley computes.
   const feel = sourceSet.setRating ?? 3;
-  const inc = getExerciseIncrement(exercise, unit);
-  const isIsolationCategory = getPrescriptionConfidenceByExercise(exercise) === "low";
-  let suggestedWeight = prescription.roundedWeight;
+  const sameWeightAfterRounding = !isMeaningfulWeightChange(sourceSet.actualWeight, prescription.roundedWeight, increment);
+  const actualRpe = rpeResult.actualRpe;
+  const sourceRepMiss = Math.max(0, sourceTargetReps - sourceSet.actualReps);
+  const nextTargetNotEasier =
+    targetReps >= sourceTargetReps
+    && targetRpeResult.adjustedTargetRpe >= sourceTargetRpe - 0.25;
+  const meaningfulRepMiss = sourceRepMiss >= (sourceTargetReps >= 10 ? 2 : 1);
+  const underperformedForTarget =
+    sourceRepMiss > 0
+    && nextTargetNotEasier
+    && (actualRpe >= sourceTargetRpe || meaningfulRepMiss || feel <= 3);
+  const missedRepPenaltyJumps = getMissedRepPenaltyJumps({
+    repMiss: sourceRepMiss,
+    profile,
+    actualRpe,
+    targetRpe: sourceTargetRpe,
+    feel,
+  });
+  const easierTargetThanSource = targetReps > sourceSet.actualReps && targetRpeResult.adjustedTargetRpe <= actualRpe;
+  const harderTargetThanSource = targetReps < sourceSet.actualReps && targetRpeResult.adjustedTargetRpe >= actualRpe;
+  const maxJumpWeight = sourceSet.actualWeight + increment * profile.maxIncrementJumps;
+  const minJumpWeight = Math.max(0, sourceSet.actualWeight - increment * profile.maxIncrementJumps);
 
-  if (feel <= 2 && suggestedWeight >= sourceSet.actualWeight) {
-    // e1RM rounded back to same or higher — force at least one increment down.
-    suggestedWeight = Math.max(0, sourceSet.actualWeight - inc);
-  } else if (feel >= 4 && suggestedWeight <= sourceSet.actualWeight) {
-    // e1RM rounded back to same or lower — for easy sets, nudge up by one increment.
-    // For isolation exercises, be more assertive with the increase.
-    const safeMax = sourceSet.actualWeight * (isIsolationCategory ? 1.20 : 1.10);
-    const candidate = sourceSet.actualWeight + inc;
-    if (candidate <= safeMax) suggestedWeight = candidate;
+  let suggestedWeight = Math.min(maxJumpWeight, Math.max(minJumpWeight, prescription.roundedWeight));
+  let title = "Hold load";
+  let explanation = "";
+  let direction: "increase" | "decrease" | "hold" = "hold";
+  let forcedByFeel = false;
+  let forcedByUnderperformance = false;
+  let roundingBlockedDirection = false;
+
+  if (feel === 1) {
+    direction = "decrease";
+    suggestedWeight = Math.max(0, sourceSet.actualWeight - increment);
+    if (!isMeaningfulWeightChange(sourceSet.actualWeight, prescription.roundedWeight, increment)) {
+      roundingBlockedDirection = true;
+    }
+    forcedByFeel = true;
+  } else if (feel === 2) {
+    const shouldDecrease = actualRpe > sourceTargetRpe || sourceSet.actualReps < targetReps || harderTargetThanSource;
+    if (shouldDecrease) {
+      direction = "decrease";
+      suggestedWeight = Math.max(0, Math.min(suggestedWeight, sourceSet.actualWeight - increment));
+      if (!isMeaningfulWeightChange(sourceSet.actualWeight, prescription.roundedWeight, increment)) {
+        roundingBlockedDirection = true;
+      }
+      forcedByFeel = true;
+    } else {
+      direction = "hold";
+      suggestedWeight = sourceSet.actualWeight;
+    }
+  } else if (feel === 3) {
+    const strongCompoundIncrease =
+      profile.e1rmConfidence === "high"
+      && prescription.roundedWeight >= sourceSet.actualWeight + increment
+      && harderTargetThanSource;
+    const strongCompoundDecrease =
+      profile.e1rmConfidence === "high"
+      && prescription.roundedWeight <= sourceSet.actualWeight - increment
+      && easierTargetThanSource;
+    if (strongCompoundIncrease) {
+      direction = "increase";
+      suggestedWeight = Math.min(sourceSet.actualWeight + increment, suggestedWeight);
+    } else if (strongCompoundDecrease) {
+      direction = "decrease";
+      suggestedWeight = Math.max(sourceSet.actualWeight - increment, suggestedWeight);
+    } else {
+      direction = "hold";
+      suggestedWeight = sourceSet.actualWeight;
+    }
+  } else if (feel === 4 || feel === 5) {
+    direction = "increase";
+    const desiredJumps = feel === 5 && profile.maxIncrementJumps > 1 && prescription.roundedWeight >= sourceSet.actualWeight + increment * 1.5 ? 2 : 1;
+    const candidate = sourceSet.actualWeight + increment * desiredJumps;
+    if (candidate <= maxJumpWeight) {
+      suggestedWeight = Math.max(suggestedWeight, candidate);
+      forcedByFeel = true;
+    } else {
+      suggestedWeight = Math.min(maxJumpWeight, Math.max(sourceSet.actualWeight, suggestedWeight));
+    }
+    if (!isMeaningfulWeightChange(sourceSet.actualWeight, prescription.roundedWeight, increment)) {
+      roundingBlockedDirection = true;
+    }
   }
 
-  // ── Step 6: build concise suggestion copy ────────────────────────────────
-  let title: string;
-  let explanation: string;
-  const wt = `${suggestedWeight} ${unit}`;
-  const e1rmLabel = `${Math.round(e1rmResult.e1rm)} ${unit}`;
+  if (underperformedForTarget && modelTargetRpe <= actualRpe + 0.25) {
+    direction = "decrease";
+    const penaltyWeight = sourceSet.actualWeight - increment * Math.max(1, missedRepPenaltyJumps);
+    suggestedWeight = Math.max(0, Math.min(suggestedWeight, penaltyWeight));
+    forcedByUnderperformance = true;
+    if (!isMeaningfulWeightChange(sourceSet.actualWeight, prescription.roundedWeight, increment)) {
+      roundingBlockedDirection = true;
+    }
+  }
 
-  if (feel <= 2) {
+  if (easierTargetThanSource) {
+    suggestedWeight = Math.min(suggestedWeight, sourceSet.actualWeight);
+  }
+  if (feel === 1 || feel === 2) {
+    suggestedWeight = Math.min(suggestedWeight, sourceSet.actualWeight);
+  }
+  if (feel === 4 || feel === 5) {
+    suggestedWeight = Math.max(suggestedWeight, sourceSet.actualWeight);
+  }
+
+  const meaningfulChange = isMeaningfulWeightChange(sourceSet.actualWeight, suggestedWeight, increment);
+  if (!meaningfulChange) {
+    suggestedWeight = sourceSet.actualWeight;
+    direction = "hold";
+  }
+
+  const wt = `${formatWeight(suggestedWeight, unit)} ${unit}`;
+  const currentWt = `${formatWeight(sourceSet.actualWeight, unit)} ${unit}`;
+  const e1rmLabel = `${Math.round(e1rmResult.e1rm)} ${unit}`;
+  const accessoryLead = profile.category === "isolation_accessory"
+    ? "For this accessory movement, set feel is weighted more than e1RM. "
+    : "";
+
+  if (direction === "decrease") {
     title = "Reduce load";
-    explanation = `This felt harder than planned. Reduce the next set to ${wt} for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe} (observed e1RM ${e1rmLabel}).`;
-  } else if (feel >= 4) {
+    if (forcedByUnderperformance) {
+      explanation = `${accessoryLead}You missed the target reps at this load. Drop to ${wt} to make ${targetReps} reps @ RPE ${loggerTargetRpe} more realistic next set.`;
+      if (rpeResult.source === "higher_effort_conflict") {
+        explanation += ` Your feel rating suggested this was closer to RPE ${Number.isInteger(actualRpe) ? actualRpe : actualRpe.toFixed(1)}.`;
+      }
+    } else {
+      explanation = `${accessoryLead}This felt harder than planned. Drop to ${wt} for the next set.`;
+    }
+    if (roundingBlockedDirection) {
+      explanation += ` The calculated drop was smaller than the ${increment} ${unit} increment, so this moves one full increment down.`;
+    }
+  } else if (direction === "increase") {
     title = "Increase load";
-    explanation = `This felt easy. Based on your observed e1RM (${e1rmLabel}), ${wt} is a reasonable target for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe}.`;
+    if (profile.category === "isolation_accessory") {
+      explanation = `${accessoryLead}Move up to ${wt} for the next set if form stays clean.`;
+    } else {
+      explanation = `Based on your observed e1RM, ${wt} is a conservative target for ${targetReps} reps @ RPE ${loggerTargetRpe}.`;
+    }
+    if (roundingBlockedDirection) {
+      explanation += ` The calculated increase was smaller than the ${increment} ${unit} increment, so this moves one full increment up.`;
+    }
   } else {
     title = "Hold load";
-    explanation = `Based on your observed e1RM (${e1rmLabel}), ${wt} is a conservative target for ${targetReps} reps @ RPE ${targetRpeResult.adjustedTargetRpe}.`;
+    const matchedManualIncrease =
+      sourceSet.actualWeight > (sourceSet.plannedWeight ?? 0)
+      && sourceRepMiss <= 0
+      && actualRpe <= sourceTargetRpe
+      && feel >= 3
+      && !isMeaningfulWeightChange(sourceSet.actualWeight, suggestedWeight, increment);
+    if ((feel === 4 || feel === 5) && sameWeightAfterRounding) {
+      explanation = `This felt easy, but the calculated increase was smaller than the ${increment} ${unit} increment. Hold ${currentWt}.`;
+    } else if (matchedManualIncrease) {
+      explanation = `Your last set matched the target after the manual increase. Stay at ${currentWt}.`;
+    } else if ((feel === 1 || feel === 2) && sameWeightAfterRounding) {
+      explanation = `This ran a bit hard, but the calculated drop was smaller than the ${increment} ${unit} increment. Hold ${currentWt} and tighten execution before changing load.`;
+    } else if (profile.category === "isolation_accessory") {
+      explanation = `${accessoryLead}Hold ${currentWt} for the next set.`;
+    } else {
+      explanation = `Based on your observed e1RM, ${currentWt} is a conservative target for ${targetReps} reps @ RPE ${loggerTargetRpe}.`;
+    }
   }
 
-  if (suggestedWeight !== prescription.roundedWeight) {
-    explanation += ` (Adjusted by feel rating.)`;
+  if (profile.category !== "isolation_accessory" && direction !== "increase" && direction !== "decrease") {
+    explanation += ` Observed e1RM: ${e1rmLabel}.`;
   }
-  if (prescription.wasRounded && suggestedWeight === prescription.roundedWeight) {
-    explanation += ` Rounded to nearest ${inc} ${unit}.`;
+  if (roundedTargetRpeMismatch) {
+    explanation += ` Exact RPE ${loggerTargetRpe} falls between available jumps here, so this uses the closest practical load.`;
+  }
+  if (forcedByFeel && forcedByUnderperformance && direction !== "hold") {
+    explanation += " Adjusted to respect set feel and the missed target.";
+  } else if (forcedByUnderperformance && direction !== "hold") {
+    explanation += " Adjusted because the target reps were missed.";
+  } else if (forcedByFeel && direction !== "hold") {
+    explanation += " Adjusted to respect set feel.";
+  } else if (prescription.wasRounded && !roundingBlockedDirection) {
+    explanation += ` Rounded to the nearest ${increment} ${unit}.`;
   }
 
   return {
@@ -7812,6 +8362,8 @@ function buildSetRecommendation(params: {
       exerciseId: exercise.id,
       setId: sourceSet.id,
       suggestedWeight,
+      suggestedReps: targetReps,
+      suggestedRpe: loggerTargetRpe,
       targetSetNumber: targetSetIndex + 1,
       targetPlannedSetId: nextPlannedSet?.id,
       sourceExerciseIndex,

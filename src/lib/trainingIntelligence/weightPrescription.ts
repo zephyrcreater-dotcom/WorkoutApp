@@ -307,27 +307,45 @@ export function deriveActualRpeFromFeel(input: {
   targetRpe: number;
   feelRating?: number;
   explicitActualRpe?: number;
+  actualReps?: number;
+  targetReps?: number;
 }): {
   actualRpe: number;
-  source: "explicit_rpe" | "feel_adjusted" | "target_fallback";
+  source: "explicit_rpe" | "feel_adjusted" | "target_fallback" | "higher_effort_conflict";
   adjustment: number;
 } {
+  const feelMap: Record<number, number> = { 1: 1.0, 2: 0.5, 3: 0, 4: -0.5, 5: -1.0 };
+  const feel = input.feelRating !== undefined
+    ? Math.round(Math.max(1, Math.min(5, input.feelRating)))
+    : undefined;
+  const feelAdjustment = feel !== undefined ? (feelMap[feel] ?? 0) : 0;
+  const feelDerivedRpe = Math.max(5, Math.min(10, input.targetRpe + feelAdjustment));
+
   if (input.explicitActualRpe !== undefined) {
-    const clamped = Math.max(5, Math.min(10, input.explicitActualRpe));
-    return { actualRpe: clamped, source: "explicit_rpe", adjustment: input.explicitActualRpe - input.targetRpe };
+    const explicit = Math.max(5, Math.min(10, input.explicitActualRpe));
+    const missedTargetReps =
+      input.actualReps !== undefined
+      && input.targetReps !== undefined
+      && input.actualReps < input.targetReps;
+    const harderFeelConflict = feel !== undefined && feel <= 2 && feelDerivedRpe > explicit;
+    if (missedTargetReps && harderFeelConflict) {
+      return {
+        actualRpe: feelDerivedRpe,
+        source: "higher_effort_conflict",
+        adjustment: feelDerivedRpe - input.targetRpe,
+      };
+    }
+    return { actualRpe: explicit, source: "explicit_rpe", adjustment: explicit - input.targetRpe };
   }
 
-  const feelMap: Record<number, number> = { 1: 1.0, 2: 0.5, 3: 0, 4: -0.5, 5: -1.0 };
-  if (input.feelRating === undefined) {
+  if (feel === undefined) {
     return { actualRpe: Math.max(5, Math.min(10, input.targetRpe)), source: "target_fallback", adjustment: 0 };
   }
 
-  const feel = Math.round(Math.max(1, Math.min(5, input.feelRating)));
-  const adjustment = feelMap[feel] ?? 0;
   return {
-    actualRpe: Math.max(5, Math.min(10, input.targetRpe + adjustment)),
+    actualRpe: feelDerivedRpe,
     source: "feel_adjusted",
-    adjustment,
+    adjustment: feelAdjustment,
   };
 }
 
@@ -454,3 +472,66 @@ export function prescribeLoadFromObservedE1RM(input: {
 
 // Re-export ObservedE1RMResult so consumers can import from weightPrescription
 export type { ObservedE1RMResult };
+
+export interface SetRecommendationProfile {
+  category: "main_compound" | "secondary_compound" | "isolation_accessory";
+  e1rmConfidence: "high" | "medium" | "low";
+  feelWeight: number;
+  maxIncrementJumps: number;
+}
+
+export function getSetRecommendationProfile(
+  exercise: Pick<Exercise, "category" | "kind" | "exerciseCategory" | "isSBDMainLift">,
+  targetReps?: number,
+): SetRecommendationProfile {
+  const kinds = exercise.kind ?? [];
+  const isMainCompound =
+    exercise.isSBDMainLift === true
+    || exercise.exerciseCategory === "sbd"
+    || exercise.exerciseCategory === "main_compound"
+    || kinds.includes("competition-lift");
+  if (isMainCompound) {
+    return {
+      category: "main_compound",
+      e1rmConfidence: "high",
+      feelWeight: 0.35,
+      maxIncrementJumps: 1,
+    };
+  }
+
+  const isIsolationAccessory =
+    exercise.exerciseCategory === "isolation"
+    || kinds.includes("isolation")
+    || (
+      (exercise.category === "cable" || exercise.category === "machine")
+      && !kinds.includes("compound")
+      && exercise.exerciseCategory !== "secondary_compound"
+      && exercise.exerciseCategory !== "machine_compound"
+    );
+  if (isIsolationAccessory) {
+    return {
+      category: "isolation_accessory",
+      e1rmConfidence: targetReps !== undefined && targetReps >= 12 ? "low" : "medium",
+      feelWeight: 0.8,
+      maxIncrementJumps: targetReps !== undefined && targetReps >= 15 ? 2 : 1,
+    };
+  }
+
+  return {
+    category: "secondary_compound",
+    e1rmConfidence: exercise.category === "cable" && targetReps !== undefined && targetReps >= 12 ? "low" : "medium",
+    feelWeight: 0.55,
+    maxIncrementJumps: 2,
+  };
+}
+
+export function isMeaningfulWeightChange(
+  currentWeight: number | null | undefined,
+  recommendedWeight: number | null | undefined,
+  increment: number,
+): boolean {
+  if (currentWeight === null || currentWeight === undefined || recommendedWeight === null || recommendedWeight === undefined) {
+    return false;
+  }
+  return Math.abs(currentWeight - recommendedWeight) >= Math.max(0.001, increment / 2);
+}
