@@ -6404,127 +6404,13 @@ function LoadingProfilesPanel({
           <label className="label">Increment ({profileDraft.unit})</label>
           <input className="field mt-2" type="number" step="0.5" min="0.5" value={profileDraft.increment} onChange={(e) => setProfileDraft((d) => ({ ...d, increment: Number(e.target.value) || 1 }))} />
         </div>
-      </section>
-      <div className="grid gap-4 lg:grid-cols-2">
-        {gyms.map((gym) => (
-          <Panel key={gym.id} title={gym.name} icon={Warehouse}>
-            <div className="space-y-3">
-              <button
-                className={`btn-secondary w-full ${user.activeGymId === gym.id ? "border-volt/50 text-volt" : ""}`}
-                onClick={() => updateDb((draft) => {
-                  const target = draft.users.find((item) => item.id === user.id);
-                  if (target) target.activeGymId = gym.id;
-                  return draft;
-                })}
-              >
-                {user.activeGymId === gym.id ? "Active Gym" : "Set Active"}
-              </button>
-              <p className="text-sm text-iron-300">{gym.notes || "No notes yet."}</p>
-              <div>
-                <p className="label mb-2">Machines and cables</p>
-                <div className="space-y-2">
-                  {gym.machines.map((machine) => (
-                    <div key={machine.id} className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2.5">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">{machine.name}</p>
-                        <p className="text-xs text-iron-500">{machine.category} · {machine.feels} · stack {machine.stackMax || "–"} / +{machine.stackIncrement || "–"}</p>
-                        {machine.notes && <p className="mt-0.5 text-xs text-iron-500">{machine.notes}</p>}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-                <input className="field" placeholder="Cable or machine name" value={machineName} onChange={(event) => setMachineName(event.target.value)} />
-                <button className="btn-secondary" onClick={() => addMachine(gym.id)}>Add</button>
-              </div>
-              <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
-                <p className="label mb-2">Exercise weight conversions</p>
-                <p className="mb-3 text-xs text-iron-400">Machine and cable exercises stay global, but this gym can keep its own working-weight factor.</p>
-                <div className="space-y-2">
-                  {(gym.exerciseAdjustments || []).map((adjustment) => {
-                    const exercise = db.exercises.find((item) => item.id === adjustment.exerciseId);
-                    const machine = gym.machines.find((item) => item.id === adjustment.machineId);
-                    return (
-                      <div key={adjustment.id} className="rounded-lg bg-white/[0.06] p-3">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <p className="font-bold">{exercise?.name || "Exercise"}</p>
-                            <p className="text-xs text-iron-400">{machine?.name || "gym default"} - {adjustment.source} - {adjustment.sampleSize} samples - confidence {Math.round((adjustment.confidence || 0) * 100)}%</p>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <input
-                              className="field w-24"
-                              type="number"
-                              step="0.01"
-                              value={adjustment.factor}
-                              onChange={(event) => updateDb((draft) => {
-                                const target = draft.gyms.find((item) => item.id === gym.id)?.exerciseAdjustments.find((item) => item.id === adjustment.id);
-                                if (target) {
-                                  target.factor = Number(event.target.value) || 1;
-                                  target.source = "manual";
-                                  target.updatedAt = nowIso();
-                                }
-                                return draft;
-                              })}
-                            />
-                            <button className="btn-ghost" onClick={() => updateDb((draft) => {
-                              const target = draft.gyms.find((item) => item.id === gym.id)?.exerciseAdjustments.find((item) => item.id === adjustment.id);
-                              if (target) {
-                                target.userAccepted = true;
-                                target.confidence = Math.max(target.confidence || 0, 0.8);
-                                target.updatedAt = nowIso();
-                              }
-                              return draft;
-                            })}>Accept</button>
-                            <button className="btn-ghost" onClick={() => updateDb((draft) => {
-                              const target = draft.gyms.find((item) => item.id === gym.id)?.exerciseAdjustments.find((item) => item.id === adjustment.id);
-                              if (target) {
-                                target.factor = 1;
-                                target.source = "manual";
-                                target.userAccepted = true;
-                                target.confidence = 1;
-                                target.notes = "Marked equivalent by user.";
-                                target.updatedAt = nowIso();
-                              }
-                              return draft;
-                            })}>Equivalent</button>
-                            <button className="btn-ghost" onClick={() => updateDb((draft) => {
-                              const targetGym = draft.gyms.find((item) => item.id === gym.id);
-                              if (targetGym) targetGym.exerciseAdjustments = targetGym.exerciseAdjustments.filter((item) => item.id !== adjustment.id);
-                              return draft;
-                            })}>Reset</button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                <div className="mt-3">
-                  <ExercisePicker db={db} user={user} onPick={(exercise) => updateDb((draft) => {
-                    const targetGym = draft.gyms.find((item) => item.id === gym.id);
-                    if (!targetGym) return draft;
-                    targetGym.exerciseAdjustments ||= [];
-                    if (!targetGym.exerciseAdjustments.some((item) => item.exerciseId === exercise.id)) {
-                      targetGym.exerciseAdjustments.push({
-                        id: createId("adj"),
-                        userId: user.id,
-                        gymId: gym.id,
-                        exerciseId: exercise.id,
-                        factor: 1,
-                        source: "manual",
-                        sampleSize: 0,
-                        notes: "Manual conversion factor.",
-                        updatedAt: nowIso()
-                      });
-                    }
-                    return draft;
-                  })} />
-                </div>
-              </div>
-            </div>
-          </Panel>
-        ))}
+      </div>
+
+      <TextField label="Notes (optional)" value={profileDraft.notes} onChange={(notes) => setProfileDraft((d) => ({ ...d, notes }))} />
+
+      <div className="flex gap-2">
+        <button className="btn-primary flex-1" onClick={saveProfile} disabled={!profileDraft.name.trim()}>Save</button>
+        <button className="btn-secondary flex-1" onClick={() => setEditingId(null)}>Cancel</button>
       </div>
     </div>
   );
