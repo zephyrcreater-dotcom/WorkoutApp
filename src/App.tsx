@@ -556,7 +556,7 @@ function SnapshotSummaryCard({
       : "border-white/10 bg-white/5";
 
   return (
-    <div className={`rounded-2xl border p-4 ${toneClass}`}>
+    <div className={`rounded-md border p-4 ${toneClass}`}>
       <p className="text-sm font-black text-white">{title}</p>
       <p className="mt-1 text-xs text-iron-300">Last updated {formatDateTime(summary.updatedAt)}</p>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-iron-300">
@@ -630,37 +630,37 @@ function ModeGate({
     <main className="flex min-h-screen items-center justify-center p-6">
       <div className="panel w-full max-w-4xl p-6 lg:p-8">
         <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-          <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+          <section className="rounded-md border border-white/10 bg-white/[0.03] p-5">
             <div className="flex items-center gap-3">
-              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-volt text-iron-950">
-                <Dumbbell className="h-6 w-6" />
+              <div className="flex h-10 w-10 items-center justify-center rounded-md bg-volt text-iron-950">
+                <Dumbbell className="h-5 w-5" />
               </div>
               <div>
-                <p className="text-xs font-bold uppercase tracking-[0.18em] text-iron-400">Iron Orbit</p>
-                <h1 className="text-2xl font-black text-white">Choose how you want to train today</h1>
+                <p className="text-xs font-semibold text-iron-400">Iron Orbit</p>
+                <h1 className="text-xl font-bold text-white">Choose how you want to train</h1>
               </div>
             </div>
-            <div className="mt-5 rounded-2xl border border-volt/30 bg-volt/10 p-4">
-              <p className="text-sm font-black text-white">Continue Local Only</p>
+            <div className="mt-5 rounded-md border border-volt/30 bg-volt/10 p-4">
+              <p className="text-sm font-semibold text-white">Continue Local Only</p>
               <p className="mt-1 text-sm text-iron-200">Saved on this device only. Nothing is sent to the cloud until you intentionally sign in later.</p>
               <button className="btn-primary mt-4 w-full sm:w-auto" onClick={cloud.continueLocalOnly}>
                 <ChevronRight className="h-4 w-4" />
                 Continue Local Only
               </button>
             </div>
-            <div className="mt-4 rounded-2xl border border-white/10 bg-iron-950/50 p-4 text-sm text-iron-300">
-              <p className="font-bold text-white">Account mode</p>
+            <div className="mt-4 rounded-md border border-white/10 bg-iron-950/50 p-4 text-sm text-iron-300">
+              <p className="font-semibold text-white">Account mode</p>
               <p className="mt-1">Sign in to sync across devices. Local-only data stays separate unless you explicitly import it later.</p>
             </div>
           </section>
 
-          <section className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-            <p className="text-sm font-black text-white">Sign In / Sign Up</p>
+          <section className="rounded-md border border-white/10 bg-white/[0.03] p-5">
+            <p className="text-sm font-semibold text-white">Sign In / Sign Up</p>
             <p className="mt-1 text-sm text-iron-300">Sync across devices with your Supabase account.</p>
             <form className="mt-5 space-y-3" onSubmit={handleSignIn}>
               <TextField label="Email" type="email" value={authEmail} onChange={setAuthEmail} />
               <TextField label="Password" type="password" value={authPassword} onChange={setAuthPassword} />
-              <div className="rounded-2xl border border-white/10 bg-iron-950/50 p-3 text-xs text-iron-400">
+              <div className="rounded-md border border-white/10 bg-iron-950/50 p-3 text-xs text-iron-400">
                 <p>{cloud.message}</p>
                 {cloud.lastError && <p className="mt-2 text-orange-100">{cloud.lastError}</p>}
               </div>
@@ -880,20 +880,25 @@ function App() {
       </header>
 
       <main className="mx-auto grid w-full max-w-7xl gap-5 px-4 py-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
-        <aside className="sticky top-20 hidden h-fit rounded-xl border border-white/[0.08] bg-iron-900/50 p-2 lg:block">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              className={`mb-0.5 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition ${
-                screen === item.id
-                  ? "bg-white/[0.1] font-semibold text-volt"
-                  : "font-medium text-iron-400 hover:bg-white/[0.06] hover:text-iron-200"
-              }`}
-              onClick={() => setScreen(item.id)}
-            >
-              <item.icon className="h-4 w-4 shrink-0" />
-              {item.label}
-            </button>
+        <aside className="native-sidebar">
+          {navItems.map((item, index) => (
+            <div key={item.id}>
+              {index > 0 && <div className="native-divider" />}
+              <button
+                className={`relative flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition ${
+                  screen === item.id
+                    ? "font-semibold text-volt"
+                    : "font-medium text-iron-400 hover:bg-white/[0.05] hover:text-iron-200"
+                }`}
+                onClick={() => setScreen(item.id)}
+              >
+                {screen === item.id && (
+                  <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-volt" />
+                )}
+                <item.icon className="h-4 w-4 shrink-0" />
+                {item.label}
+              </button>
+            </div>
           ))}
         </aside>
 
@@ -1264,7 +1269,7 @@ function TodayScreen({
         <section className="panel p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="label text-volt">Selected exercises</p>
+              <p className="text-xs font-semibold text-volt">Selected exercises</p>
               <p className="text-xs text-iron-400">Tap an exercise below to add it. Weight targets come from your training history.</p>
             </div>
             <button className="btn-ghost" onClick={() => setOffProgramBuilder({ active: false, exercises: [] })}>Cancel</button>
@@ -1287,15 +1292,15 @@ function TodayScreen({
                     </div>
                     <div className="mt-3 grid grid-cols-3 gap-2">
                       <div>
-                        <p className="label text-[0.65rem]">Sets</p>
+                        <p className="text-[0.65rem] font-medium text-iron-500">Sets</p>
                         <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} value={item.targetSets} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetSets: Math.max(1, Number(e.target.value) || 1) } : ex2) }))} />
                       </div>
                       <div>
-                        <p className="label text-[0.65rem]">Reps</p>
+                        <p className="text-[0.65rem] font-medium text-iron-500">Reps</p>
                         <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} value={item.targetReps} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetReps: Math.max(1, Number(e.target.value) || 1) } : ex2) }))} />
                       </div>
                       <div>
-                        <p className="label text-[0.65rem]">RPE</p>
+                        <p className="text-[0.65rem] font-medium text-iron-500">RPE</p>
                         <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} max={10} step={0.5} value={item.targetRpe} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) } : ex2) }))} />
                       </div>
                     </div>
@@ -1411,7 +1416,7 @@ function TodayScreen({
       {/* Week locked: current week is being planned — hide workout card entirely */}
       {activeProgram && selectedDay && weekLocked && (
         <section className="panel border-amber-500/20 p-4">
-          <p className="label text-amber-400">Week {currentWeekNumber} not ready</p>
+          <p className="text-xs font-semibold text-amber-400">Week {currentWeekNumber} not ready</p>
           <h2 className="mt-1 font-semibold">{isWeekDraft(todayPlan?.week) || weekBeingEdited ? "Planning in progress" : "Plan this week before training"}</h2>
           <p className="mt-1 text-sm text-iron-400">
             Finish planning and save Week {currentWeekNumber} before starting this workout.
@@ -1428,45 +1433,49 @@ function TodayScreen({
       )}
       {/* Week ready: show normal workout card */}
       {activeProgram && selectedDay && !weekLocked && (
-        <section className="panel p-4">
-          <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_auto] md:items-start">
-            <div>
-              <p className="label">Up next</p>
-              <h2 className="mt-1 text-xl font-bold">{selectedDay.name}</h2>
-              <p className="mt-1 text-sm text-iron-400">
+        <section className="list-section">
+          <div className="flex items-center gap-3 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-iron-500">Up next</p>
+              <h2 className="mt-0.5 text-base font-bold">{selectedDay.name}</h2>
+              <p className="text-xs text-iron-400">
                 {[todayPlan?.label, selectedDay.focus, selectedDay.exercises.length ? `~${estimateWorkoutDuration(selectedDay)} min` : null].filter(Boolean).join(" · ")}
               </p>
               {!selectedDay.exercises.length && (
-                <p className="mt-2 text-sm text-iron-500">
-                  Week {currentWeekNumber} hasn&apos;t been planned yet.
-                </p>
+                <p className="mt-1 text-xs text-iron-500">Week {currentWeekNumber} hasn&apos;t been planned yet.</p>
               )}
             </div>
-            <div className="flex flex-col gap-2 md:items-end">
+            <div className="shrink-0">
               {selectedDay.status === "rest" ? (
-                <button className="btn-primary w-full md:w-auto" onClick={() => updateActiveBlockProgress("rest-complete")}>
+                <button className="btn-primary" onClick={() => updateActiveBlockProgress("rest-complete")}>
                   <CheckCircle2 className="h-4 w-4" />
                   Mark Rest Complete
                 </button>
               ) : selectedDay.exercises.length ? (
-                <button className="btn-primary w-full md:w-auto" onClick={() => startWorkout(selectedDay)}>
+                <button className="btn-primary" onClick={() => startWorkout(selectedDay)}>
                   <Timer className="h-4 w-4" />
-                  {resumableSelectedDaySession?.status === "review" ? "Review Workout" : resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
+                  {resumableSelectedDaySession?.status === "review" ? "Review" : resumableSelectedDaySession ? "Resume" : "Start"}
                 </button>
               ) : (
-                <button className="btn-primary w-full md:w-auto" onClick={() => onPlanWeek(currentWeekNumber)}>
+                <button className="btn-primary" onClick={() => onPlanWeek(currentWeekNumber)}>
                   <CalendarDays className="h-4 w-4" />
                   Plan Week {currentWeekNumber}
                 </button>
               )}
-              {otherInProgressSession && (
-                <button className="btn-secondary w-full md:w-auto" onClick={() => void onResumeWorkout(otherInProgressSession.id, { previousScreen: "today" })}>
-                  Resume Other In-Progress
-                </button>
-              )}
             </div>
           </div>
-          <div className="compact-actions">
+          {otherInProgressSession && (
+            <>
+              <div className="list-divider" />
+              <button className="list-row-tap text-iron-400" onClick={() => void onResumeWorkout(otherInProgressSession.id, { previousScreen: "today" })}>
+                <Timer className="h-4 w-4 shrink-0 text-iron-500" />
+                <span className="flex-1 text-xs">Resume other in-progress workout</span>
+                <ChevronRight className="h-4 w-4 text-iron-600" />
+              </button>
+            </>
+          )}
+          <div className="list-divider" />
+          <div className="compact-actions px-4 pb-2.5">
             <button className="btn-compact" onClick={() => updateActiveBlockProgress("previous")}>← Back</button>
             <button className="btn-compact" onClick={() => updateActiveBlockProgress("next")}>Next Day</button>
             <button className="btn-compact" onClick={() => updateActiveBlockProgress("skip")}>Skip</button>
@@ -1526,7 +1535,7 @@ function TodayScreen({
         <section className="panel p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="label text-volt">Editing this planned day</p>
+              <p className="text-xs font-semibold text-volt">Editing this planned day</p>
               <h3 className="font-black">{selectedDay.name}</h3>
               <p className="text-xs text-iron-400">Changes apply to this day and week only. Completed workout history is not affected.</p>
             </div>
@@ -3001,7 +3010,7 @@ function LiveLogger({
         <section className="rounded-lg border border-volt/30 bg-volt/10 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="label text-volt">Editing completed workout</p>
+              <p className="text-xs font-semibold text-volt">Editing completed workout</p>
               <p className="mt-1 text-sm text-iron-200">Edit sets, add exercises, then save the workout again.</p>
             </div>
             <div className="flex w-full flex-wrap gap-2 sm:w-auto">
@@ -3022,8 +3031,8 @@ function LiveLogger({
         <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] px-4 py-3">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <p className="label">Readiness</p>
-              <p className="mt-1 text-xl font-bold">{session.readiness.readinessScore}<span className="text-sm font-normal text-iron-500">/100</span></p>
+              <p className="text-xs font-medium text-iron-500">Readiness</p>
+              <p className="mt-0.5 text-xl font-bold">{session.readiness.readinessScore}<span className="text-sm font-normal text-iron-500">/100</span></p>
             </div>
             <p className="text-xs text-iron-500">{readinessAdjustment(session.readiness).explanation}</p>
           </div>
@@ -3031,21 +3040,22 @@ function LiveLogger({
       )}
 
       <section className="grid min-w-0 gap-4 xl:grid-cols-[16rem_minmax(0,1fr)]">
-        <div className="panel h-fit min-w-0 p-2.5">
-          <p className="label mb-2.5 px-1">Exercises</p>
-          <div className="space-y-0.5">
-            {session.loggedExercises.map((logged) => {
+        <div className="list-section h-fit min-w-0">
+          <p className="list-section-header">Exercises</p>
+          <div>
+            {session.loggedExercises.map((logged, loggedIndex) => {
               const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
               const isActive = activeExerciseLog.id === logged.id;
               const hardSets = logged.sets.filter(isHardSet).length;
               const skippedSets = logged.sets.filter(s => s.skipped).length;
               return (
+                <div key={logged.id}>
+                  {loggedIndex > 0 && <div className="list-divider" />}
                 <button
-                  key={logged.id}
-                  className={`flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left transition ${
+                  className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition ${
                     isActive
-                      ? "bg-white/[0.12] text-white ring-1 ring-inset ring-volt/40"
-                      : "text-iron-300 hover:bg-white/[0.06] hover:text-iron-100"
+                      ? "bg-white/[0.08] text-white"
+                      : "text-iron-300 hover:bg-white/[0.05] hover:text-iron-100"
                   }`}
                   onClick={() => {
                     setActiveExerciseId(logged.id);
@@ -3081,17 +3091,17 @@ function LiveLogger({
                   </span>
                   {isActive && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-volt/60" />}
                 </button>
+                </div>
               );
             })}
           </div>
         </div>
 
         <div className="min-w-0 space-y-4 pb-6">
-          <section className="panel min-w-0 p-3 sm:p-4">
+          <section className="min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 sm:p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
-                <p className="label">Logging</p>
-                <h3 className="mt-1 text-xl font-bold leading-tight">{exercise.name}</h3>
+                <h3 className="text-xl font-bold leading-tight">{exercise.name}</h3>
                 {exercise.setupCues.length > 0 && (
                   <p className="mt-1 text-sm text-iron-400">{exercise.setupCues.slice(0, 2).join(" · ")}</p>
                 )}
@@ -3135,11 +3145,11 @@ function LiveLogger({
             )}
             <div className="mt-4">
               <div className="mb-2 flex items-center justify-between gap-3">
-                <p className="label">Set lineup</p>
+                <p className="text-xs font-semibold text-iron-400">Set lineup</p>
                 <p className="text-xs font-medium text-iron-500">{completedPlannedCount} / {totalPlannedCount || lineupItems.length} planned</p>
               </div>
-              <div ref={setLineupRef} className="space-y-1.5">
-                {lineupItems.map((lineupItem) => {
+              <div ref={setLineupRef} className="list-section">
+                {lineupItems.map((lineupItem, lineupIndex) => {
                   const set = lineupItem.plannedSet;
                   const actual = lineupItem.actualSet;
                   const isEditingThisRow = !!actual && editingSetId === actual.id;
@@ -3168,24 +3178,27 @@ function LiveLogger({
                     ? formatExerciseLoadText({ exercise: liveExercise, user, weight: actual.actualWeight, unit: actual.unit || exerciseUnit })
                     : undefined;
                   // No active: classes — content must never become transparent on press/touch.
-                  const rowSurfaceClass = isEditingThisRow
-                    ? "border-volt/70 bg-volt/[0.09]"
+                  const rowBg = isEditingThisRow
+                    ? "bg-volt/[0.07]"
                     : isSelected
-                      ? "border-volt/50 bg-volt/[0.06]"
+                      ? "bg-volt/[0.04]"
                       : actual
-                        ? "border-white/[0.1] bg-iron-900/60"
-                        : "border-white/[0.06] bg-white/[0.02]";
+                        ? "bg-iron-900/40"
+                        : "bg-transparent";
                   const menuRowId = actual?.id ?? set?.id ?? lineupItem.key;
                   return (
                     <div
                       key={lineupItem.key}
                       data-swipe-row-id={swipeRowId}
                       data-is-current-set={isSelected && !isEditingThisRow && !actual ? "true" : undefined}
-                      className="relative overflow-hidden rounded-lg"
+                      className="relative overflow-hidden"
                     >
+                      {lineupIndex > 0 && (
+                        <div className="absolute inset-x-0 top-0 h-px bg-white/[0.05]" style={{ transform: isSwipeEnabled && translateX !== 0 ? `translateX(${translateX}px)` : undefined }} />
+                      )}
                       {showSwipeDeleteReveal && (
                         <div
-                          className="absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center rounded-lg bg-ember/90"
+                          className="absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center bg-ember/90"
                           style={{ opacity: deleteOpacity, pointerEvents: isSwipeOpen ? "auto" : "none" }}
                         >
                           <button
@@ -3200,8 +3213,11 @@ function LiveLogger({
                           </button>
                         </div>
                       )}
+                      {(isEditingThisRow || isSelected) && (
+                        <div className={`absolute inset-y-0 left-0 w-0.5 ${isEditingThisRow ? "bg-volt/80" : "bg-volt/50"}`} />
+                      )}
                       <div
-                        className={`relative z-10 rounded-lg border px-3 py-2 cursor-pointer ${rowSurfaceClass}`}
+                        className={`relative z-10 px-3 py-2.5 cursor-pointer ${rowBg}`}
                         role="button"
                         tabIndex={0}
                         style={{
@@ -3265,22 +3281,28 @@ function LiveLogger({
                               )}
                             </div>
                           </div>
-                          <button
-                            className="shrink-0 rounded-md p-1 text-iron-600 transition hover:bg-white/[0.08] hover:text-iron-300 active:scale-95"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSetContextMenuId(menuRowId);
-                            }}
-                            title="Set options"
-                          >
-                            <MoreHorizontal className="h-4 w-4" />
-                          </button>
+                          {!isSwipeEnabled && (
+                            <button
+                              className="shrink-0 rounded-md p-1 text-iron-600 transition hover:bg-white/[0.08] hover:text-iron-300 active:scale-95"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSetContextMenuId(menuRowId);
+                              }}
+                              title="Set options"
+                            >
+                              <MoreHorizontal className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
                   );
                 })}
-                {!lineupItems.length && <EmptyState title="No planned sets" detail="Add a set or pick a planned exercise before logging." />}
+                {!lineupItems.length && (
+                  <div className="px-4 py-6">
+                    <EmptyState title="No planned sets" detail="Add a set or pick a planned exercise before logging." />
+                  </div>
+                )}
               </div>
             </div>
             <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -3290,7 +3312,7 @@ function LiveLogger({
             </div>
             <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
-              <p className="label mb-2">Difficulty (1 harder · 3 as planned · 5 easy)</p>
+              <p className="mb-2 text-xs font-medium text-iron-500">Difficulty <span className="text-iron-600">· 1 harder · 3 as planned · 5 easy</span></p>
             </div>
             <div className="grid grid-cols-5 gap-1.5">
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
@@ -3386,7 +3408,7 @@ function LiveLogger({
 
           {lastSetWasSkipped && (
             <section className="panel border-white/10 p-4">
-              <p className="label">Last set</p>
+              <p className="text-xs font-medium text-iron-500">Last set</p>
               <p className="mt-1 text-sm text-iron-400">Set skipped — no recommendation.</p>
             </section>
           )}
@@ -3401,8 +3423,8 @@ function LiveLogger({
             return (
               <div className="flex items-start justify-between gap-3 rounded-lg border border-volt/10 bg-volt/[0.04] px-3 py-2.5">
                 <div className="min-w-0 flex-1">
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.09em] text-volt/50">
-                    Suggestion{sourceSetNum ? ` · Set ${sourceSetNum}` : ""}
+                  <p className="text-[0.68rem] font-medium text-volt/60">
+                    Suggestion{sourceSetNum ? ` · set ${sourceSetNum}` : ""}
                   </p>
                   <p className="mt-0.5 text-sm font-medium text-iron-100">
                     {suggestedWeight
@@ -5322,7 +5344,7 @@ function LibraryScreen({
           <section className="grid gap-4 xl:grid-cols-[1fr_24rem]">
             <div className="panel p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="label">Exercises</p>
+                <p className="text-sm font-semibold text-iron-300">Exercises</p>
                 <div className="flex items-center gap-2">
                   <button
                     className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${showVariations ? "bg-white/10 text-iron-200" : "text-iron-500 hover:bg-white/[0.07] hover:text-iron-300"}`}
@@ -6416,38 +6438,52 @@ function LoadingProfilesPanel({
   );
 
   return (
-    <section className="grid gap-4">
-      <Panel title="Loading Profiles" icon={SlidersHorizontal}>
-        <p className="mb-3 text-xs text-iron-400">Each profile defines the weight unit and increment for a piece of equipment. Exercises use these automatically based on their equipment type, or you can assign a specific profile in the exercise editor.</p>
-        <div className="space-y-2">
-          {profiles.map((profile) => (
-            <div key={profile.id} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
-              {editingId === profile.id ? editForm : (
-                <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="font-bold text-sm">{profile.name}</p>
-                    <p className="text-xs text-iron-400">
-                      <span className="mr-2 rounded px-1.5 py-0.5 bg-white/10 text-iron-300">{EQUIPMENT_TYPE_DISPLAY[profile.equipmentType] ?? profile.equipmentType}</span>
-                      {profile.increment} {profile.unit} jumps
-                    </p>
-                    {profile.notes && <p className="mt-0.5 text-xs text-iron-500">{profile.notes}</p>}
-                  </div>
-                  <div className="flex gap-1">
-                    <button className="btn-ghost" onClick={() => startEdit(profile)} title="Edit"><Pencil className="h-3.5 w-3.5" /></button>
-                    <button className="btn-ghost text-iron-500 hover:text-orange-300" onClick={() => deleteProfile(profile.id)} title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-          {!profiles.length && <p className="text-xs text-iron-500">No loading profiles yet. Add one below.</p>}
-        </div>
-        {editingId === "new" ? (
-          <div className="mt-3">{editForm}</div>
-        ) : (
-          <button className="btn-secondary mt-3 w-full" onClick={startAdd}><Plus className="h-4 w-4" /> Add Loading Profile</button>
+    <section className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold text-iron-200">Loading Profiles</h3>
+        {editingId !== "new" && (
+          <button className="btn-ghost text-xs" onClick={startAdd}><Plus className="h-3.5 w-3.5" /> Add</button>
         )}
-      </Panel>
+      </div>
+      <p className="text-xs text-iron-500">Defines the unit and increment for each equipment type. Assign in the exercise editor.</p>
+      <div className="list-section">
+        {profiles.map((profile, index) => (
+          <div key={profile.id}>
+            {index > 0 && <div className="list-divider" />}
+            {editingId === profile.id ? (
+              <div className="p-3">{editForm}</div>
+            ) : (
+              <button className="list-row-tap" onClick={() => startEdit(profile)}>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-iron-100">{profile.name}</p>
+                  <p className="mt-0.5 text-xs text-iron-500">
+                    {profile.increment} {profile.unit} jumps · {EQUIPMENT_TYPE_DISPLAY[profile.equipmentType] ?? profile.equipmentType}
+                  </p>
+                  {profile.notes && <p className="text-xs text-iron-600">{profile.notes}</p>}
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    className="rounded-md p-1.5 text-iron-600 transition hover:text-orange-400"
+                    onClick={(e) => { e.stopPropagation(); deleteProfile(profile.id); }}
+                    title="Delete"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                  <ChevronRight className="h-4 w-4 text-iron-600" />
+                </div>
+              </button>
+            )}
+          </div>
+        ))}
+        {!profiles.length && (
+          <div className="px-4 py-4">
+            <p className="text-xs text-iron-500">No loading profiles yet.</p>
+          </div>
+        )}
+        {editingId === "new" && (
+          <div className="border-t border-white/[0.07] p-3">{editForm}</div>
+        )}
+      </div>
     </section>
   );
 }
@@ -7660,13 +7696,10 @@ function ReadinessCard({ onSubmit }: { onSubmit: (input: Omit<ReadinessCheckIn, 
 function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserProfile; day?: WorkoutDay }) {
   if (!day) return <EmptyState title="No workout selected" detail="Create a program or template to start logging." />;
   return (
-    <section className="panel p-4">
-      <div className="mb-3">
-        <p className="label">Workout plan</p>
-        <h3 className="mt-1 text-lg font-semibold">{day.name}</h3>
-      </div>
-      <div className="space-y-1.5">
-        {day.exercises.map((planned) => {
+    <section className="list-section">
+      <p className="list-section-header">Workout plan</p>
+      <div>
+        {day.exercises.map((planned, index) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
           const latestHistory = getLatestExercisePerformanceLog(db, user.id, planned.exerciseId);
           const displayUnit = getExerciseDisplayUnit(
@@ -7691,15 +7724,24 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
           });
           const previewReasonParts = recommendation?.reasonParts.filter((part) => !part.startsWith("Recent:")) || [];
           return (
-            <div key={planned.id} className="rounded-lg bg-white/[0.04] px-3 py-2.5">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
+            <div key={planned.id}>
+              {index > 0 && <div className="list-divider" />}
+              <div className="flex items-start justify-between gap-3 px-4 py-2.5 transition hover:bg-white/[0.04]">
+                <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-iron-100">{exercise?.name}</p>
                   <p className="mt-0.5 text-xs text-iron-500">
-                    {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps} reps · RPE {planned.plannedSets[0]?.targetRpe}
-                    {planned.exerciseRole && <span className="ml-1.5 rounded-sm bg-white/[0.07] px-1.5 text-iron-400">{planned.exerciseRole.replaceAll("_", " ")}</span>}
-                    {planned.fatigueTag === "high" && <span className="ml-1.5 text-amber-400">high fatigue</span>}
+                    {planned.plannedSets.length} × {planned.plannedSets[0]?.targetReps} @ {planned.plannedSets[0]?.targetRpe}
+                    {planned.exerciseRole && <span className="ml-1.5 text-iron-600">{planned.exerciseRole.replaceAll("_", " ")}</span>}
+                    {planned.fatigueTag === "high" && <span className="ml-1.5 text-amber-400/70">high fatigue</span>}
                   </p>
+                  {(recentHistory?.reps || recommendation?.recommendedWeight) && (
+                    <p className="mt-0.5 text-xs text-iron-600">
+                      {recentHistory?.reps
+                        ? `Recent: ${formatExerciseLoadText({ exercise, user, weight: recentHistory.weight, unit: displayUnit, bodyweightEmptyLabel: "BW" })} × ${recentHistory.reps}${recentHistory.rpe ? ` @ ${recentHistory.rpe}` : ""}`
+                        : previewReasonParts[0] || ""}
+                    </p>
+                  )}
+                  {planned.notes && <p className="mt-0.5 text-xs text-iron-600">{planned.notes}</p>}
                 </div>
                 {badgeText && (
                   <span className="shrink-0 text-xs font-medium text-volt/80">
@@ -7707,14 +7749,6 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
                   </span>
                 )}
               </div>
-              {(recentHistory?.reps || recommendation?.recommendedWeight) && (
-                <p className="mt-1 text-xs text-iron-500">
-                  {recentHistory?.reps
-                    ? `Recent: ${formatExerciseLoadText({ exercise, user, weight: recentHistory.weight, unit: displayUnit, bodyweightEmptyLabel: "BW" })} × ${recentHistory.reps}${recentHistory.rpe ? ` @ ${recentHistory.rpe}` : ""}`
-                    : previewReasonParts[0] || ""}
-                </p>
-              )}
-              {planned.notes && <p className="mt-1 text-xs text-iron-500">{planned.notes}</p>}
             </div>
           );
         })}
@@ -8550,7 +8584,7 @@ function upsertRecommendation(list: Recommendation[], next: Recommendation) {
 function PageTitle({ eyebrow, title }: { eyebrow: string; title: string }) {
   return (
     <div>
-      <p className="label">{eyebrow}</p>
+      <p className="text-xs font-medium text-iron-500">{eyebrow}</p>
       <h2 className="mt-1 text-2xl font-bold tracking-tight md:text-2xl">{title}</h2>
     </div>
   );
@@ -8623,20 +8657,20 @@ function ActionSheet({ title, items, onDismiss }: { title?: string; items: Actio
       onClick={onDismiss}
     >
       <div
-        className="w-full max-w-sm rounded-t-2xl border border-white/[0.09] bg-iron-950 pb-safe sm:rounded-2xl"
+        className="native-sheet w-full max-w-sm rounded-t-lg pb-safe sm:rounded-lg"
         onClick={(e) => e.stopPropagation()}
       >
         {title && (
-          <p className="border-b border-white/[0.07] px-4 py-3 text-center text-xs font-semibold uppercase tracking-[0.1em] text-iron-500">
+          <p className="border-b border-white/[0.07] px-4 py-3 text-center text-xs font-semibold text-iron-500">
             {title}
           </p>
         )}
-        <div className="p-2">
+        <div className="p-1.5">
           {items.map((item, i) => (
             <button
               key={i}
               disabled={item.disabled}
-              className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition active:scale-[0.98] disabled:opacity-40 ${
+              className={`flex w-full items-center gap-3 rounded-sm px-4 py-3 text-left text-sm font-medium transition active:scale-[0.98] disabled:opacity-40 ${
                 item.destructive
                   ? "text-orange-300 hover:bg-ember/[0.1]"
                   : "text-iron-100 hover:bg-white/[0.07]"
@@ -8648,9 +8682,9 @@ function ActionSheet({ title, items, onDismiss }: { title?: string; items: Actio
             </button>
           ))}
         </div>
-        <div className="border-t border-white/[0.07] p-2">
+        <div className="border-t border-white/[0.07] p-1.5">
           <button
-            className="w-full rounded-xl px-4 py-3 text-sm font-semibold text-iron-300 transition hover:bg-white/[0.07] active:scale-[0.98]"
+            className="w-full rounded-sm px-4 py-3 text-sm font-semibold text-iron-300 transition hover:bg-white/[0.07] active:scale-[0.98]"
             onClick={onDismiss}
           >
             Cancel

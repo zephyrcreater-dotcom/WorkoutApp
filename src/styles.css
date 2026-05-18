@@ -68,80 +68,166 @@ textarea {
 }
 
 @layer components {
-  /* Surfaces — no glow shadow, calm dark surfaces */
+  /* ── Surfaces ──────────────────────────────────────────────────── */
+  /* panel: use for modals, sheets, and large contextual cards only */
   .panel {
-    @apply rounded-xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-sm;
+    @apply rounded-md border border-white/[0.06] bg-white/[0.03] backdrop-blur-sm;
   }
 
   .panel-soft {
-    @apply rounded-xl border border-white/[0.06] bg-white/[0.025] backdrop-blur-sm;
+    @apply rounded-md border border-white/[0.05] bg-white/[0.02] backdrop-blur-sm;
   }
 
-  /* Buttons */
+  /* ── Buttons ────────────────────────────────────────────────────── */
   .btn-primary {
-    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-volt px-4 py-2 text-sm font-bold text-iron-950 transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50;
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-volt px-4 py-2 text-sm font-bold text-iron-950 transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .btn-secondary {
-    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97];
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97];
   }
 
   .btn-ghost {
-    @apply tap-highlight inline-flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium text-iron-400 transition hover:bg-white/[0.07] hover:text-iron-200 active:scale-[0.97];
+    @apply tap-highlight inline-flex min-h-9 items-center justify-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-iron-400 transition hover:bg-white/[0.07] hover:text-iron-200 active:scale-[0.97];
   }
 
-  /* Forms */
+  /* ── Forms ──────────────────────────────────────────────────────── */
   .field {
-    @apply min-h-10 w-full rounded-lg border border-white/[0.1] bg-iron-950/60 px-3 py-2 text-sm text-white outline-none ring-0 transition placeholder:text-iron-500 focus:border-volt/40 focus:bg-iron-950/80;
+    @apply min-h-10 w-full rounded-md border border-white/[0.1] bg-iron-950/60 px-3 py-2 text-sm text-white outline-none ring-0 transition placeholder:text-iron-500 focus:border-volt/40 focus:bg-iron-950/80;
   }
 
-  /* Typography */
+  /* ── Typography ─────────────────────────────────────────────────── */
+  /* label: keep for true form labels only; avoid for section headers */
   .label {
-    @apply text-xs font-semibold uppercase tracking-[0.1em] text-iron-500;
+    @apply text-xs font-semibold uppercase tracking-[0.06em] text-iron-500;
   }
 
-  /* Data cards */
+  /* ── Data cards ─────────────────────────────────────────────────── */
   .metric-card {
-    @apply rounded-lg border border-white/[0.06] bg-iron-900/50 p-3;
+    @apply rounded-sm border border-white/[0.05] bg-iron-900/50 p-3;
   }
 
-  /* Compact list row — use for exercise rows, settings rows, etc. */
+  /* ── Native list system ─────────────────────────────────────────── */
+
+  /* Compact list row */
   .list-row {
-    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition hover:bg-white/[0.05];
+    @apply flex items-center gap-3 px-4 py-2.5 text-sm transition hover:bg-white/[0.05];
   }
 
-  /* Tappable list row — same as list-row but styled as an interactive target */
+  /* Tappable list row */
   .list-row-tap {
-    @apply tap-highlight flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition hover:bg-white/[0.06] active:bg-white/[0.09] cursor-pointer;
+    @apply tap-highlight flex w-full items-center gap-3 px-4 py-2.5 text-left text-sm transition hover:bg-white/[0.06] active:bg-white/[0.08] cursor-pointer;
   }
 
-  /* Grouped list section — replaces heavy panel cards for lists */
+  /* Grouped list section — flat background, no border card */
   .list-section {
-    @apply rounded-xl border border-white/[0.07] bg-white/[0.03] overflow-hidden;
+    @apply bg-iron-900/40 overflow-hidden;
   }
 
-  /* Section header inside a list-section */
+  /* Section title above a list-section */
   .list-section-header {
-    @apply px-4 pt-3 pb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-500;
+    @apply px-4 pt-3 pb-1.5 text-[0.68rem] font-semibold text-iron-500;
   }
 
-  /* Separator between list rows */
+  /* Thin row separator */
   .list-divider {
-    @apply mx-3 h-px bg-white/[0.05];
+    @apply h-px bg-white/[0.05];
   }
 
-  /* Compact secondary action row — for ghost actions below a primary card */
+  /* Compact secondary action row */
   .compact-actions {
     @apply flex flex-wrap items-center gap-0.5 border-t border-white/[0.05] pt-2.5 mt-3;
   }
 
-  /* Small ghost action button for compact-actions rows */
+  /* Small ghost action for compact-actions rows */
   .btn-compact {
-    @apply tap-highlight inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-iron-500 transition hover:bg-white/[0.07] hover:text-iron-300 active:scale-[0.97];
+    @apply tap-highlight inline-flex min-h-8 items-center justify-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium text-iron-500 transition hover:bg-white/[0.07] hover:text-iron-300 active:scale-[0.97];
   }
 
-  /* Danger/destructive action button — muted ember orange, Apollo-calm */
+  /* Danger / destructive action */
   .btn-danger {
-    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-ember/30 bg-ember/[0.07] px-4 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] hover:text-orange-200 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40;
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-ember/30 bg-ember/[0.07] px-4 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] hover:text-orange-200 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40;
+  }
+
+  /* ── Native screen system ───────────────────────────────────────── */
+
+  /* Full-width screen wrapper */
+  .native-screen {
+    @apply min-h-full;
+  }
+
+  /* Compact screen title area */
+  .native-header {
+    @apply pb-1;
+  }
+
+  /* Desktop sidebar — flat, no card border */
+  .native-sidebar {
+    @apply sticky top-20 hidden h-fit lg:block;
+  }
+
+  /* Native grouped section — flat background, no card border */
+  .native-section {
+    @apply bg-iron-900/40 overflow-hidden;
+  }
+
+  /* Section label above a native-section */
+  .native-section-title {
+    @apply px-4 pt-3 pb-1.5 text-[0.68rem] font-semibold text-iron-500;
+  }
+
+  /* List container */
+  .native-list {
+    @apply overflow-hidden;
+  }
+
+  /* Standard list row */
+  .native-row {
+    @apply flex items-center gap-3 px-4 py-2.5 text-sm transition hover:bg-white/[0.05];
+  }
+
+  /* Selected row state */
+  .native-row-selected {
+    @apply bg-volt/[0.06];
+  }
+
+  /* Row title text */
+  .native-row-title {
+    @apply text-sm font-medium text-iron-100;
+  }
+
+  /* Row subtitle text */
+  .native-row-subtitle {
+    @apply text-xs text-iron-500;
+  }
+
+  /* Row trailing meta text */
+  .native-row-meta {
+    @apply shrink-0 text-xs font-medium text-iron-500;
+  }
+
+  /* Thin row separator */
+  .native-divider {
+    @apply h-px bg-white/[0.05];
+  }
+
+  /* Primary action button — accent, one per context */
+  .native-primary-action {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-volt px-4 py-2 text-sm font-bold text-iron-950 transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Secondary action button */
+  .native-secondary-action {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97];
+  }
+
+  /* Danger action button */
+  .native-danger-action {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-ember/30 bg-ember/[0.07] px-4 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] active:scale-[0.97] disabled:opacity-40;
+  }
+
+  /* Bottom sheet / modal container */
+  .native-sheet {
+    @apply rounded-lg border border-white/[0.09] bg-iron-950;
   }
 }
