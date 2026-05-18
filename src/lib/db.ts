@@ -1,4 +1,5 @@
 import { builtInExercises, seedDatabase, splitTemplates as seedSplitTemplates } from "../data/seedData";
+import { DEFAULT_LOADING_PROFILES, EXERCISE_LOADING_PROFILE_ASSIGNMENTS } from "./loadingProfiles";
 import { syncActiveBlockProgress } from "./blockProgression";
 import { createId, nowIso } from "./ids";
 import { defaultCompoundSettings } from "./programmingLogic";
@@ -347,6 +348,16 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
   next.exercisePerformanceLogs ||= [];
   next.exerciseBaselines ||= [];
   next.gymExerciseVariants ||= [];
+
+  // Backfill loading profiles — merge any default profiles not yet in the stored db.
+  next.loadingProfiles ||= [];
+  const existingProfileIds = new Set(next.loadingProfiles.map((p) => p.id));
+  DEFAULT_LOADING_PROFILES.forEach((profile) => {
+    if (!existingProfileIds.has(profile.id)) {
+      next.loadingProfiles!.push({ ...profile });
+      changed = true;
+    }
+  });
   const exerciseMap = new Map(next.exercises.map((exercise) => [exercise.id, exercise]));
   const userMap = new Map(next.users.map((user) => [user.id, user]));
   const existingSplitIds = new Set(next.splitTemplates.map((split) => split.id));
@@ -503,6 +514,12 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
     }
     // Backfill source flag
     if (!exercise.source) { exercise.source = exercise.ownerUserId ? "custom" : "default"; changed = true; }
+    // Backfill loadingProfileId from the canonical assignment map.
+    // undefined = never set (safe to backfill); "" = user explicitly cleared (skip).
+    if (exercise.loadingProfileId === undefined) {
+      const assignedProfileId = EXERCISE_LOADING_PROFILE_ASSIGNMENTS[exercise.id];
+      if (assignedProfileId) { exercise.loadingProfileId = assignedProfileId; changed = true; }
+    }
   });
 
   // Backfill hasVariations — true if any exercise names this one as its parent.
