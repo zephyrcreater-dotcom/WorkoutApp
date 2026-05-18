@@ -1,4 +1,5 @@
 import { createId, nowIso } from "../lib/ids";
+import { DEFAULT_LOADING_PROFILES } from "../lib/loadingProfiles";
 import type {
   Exercise,
   ExerciseUnit,
@@ -3111,6 +3112,7 @@ export async function seedDatabase(): Promise<TrainingDatabase> {
     workoutTemplates: [powerTemplate],
     programs: [],
     sessions: [],
+    loadingProfiles: DEFAULT_LOADING_PROFILES,
     readiness,
     prs: [],
     weakPoints: [],

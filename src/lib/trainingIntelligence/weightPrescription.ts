@@ -420,6 +420,7 @@ export function prescribeLoadFromObservedE1RM(input: {
   exercise: Pick<Exercise, "category" | "trackPerSide" | "defaultIncrement" | "customIncrement">;
   unit: UnitPreference;
   recentActualWeight?: number;
+  increment?: number;
 }): PrescriptionResult {
   const { observedE1RM, exercise, unit, recentActualWeight } = input;
   const guardrailsApplied: string[] = [];
@@ -454,7 +455,7 @@ export function prescribeLoadFromObservedE1RM(input: {
     };
   }
 
-  const increment = getExerciseIncrement(exercise, unit);
+  const increment = input.increment ?? getExerciseIncrement(exercise, unit);
   const roundedWeight = roundToIncrement(prescribedWeight, increment);
   const wasRounded = Math.abs(roundedWeight - prescribedWeight) > 0.01;
 

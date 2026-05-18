@@ -32,7 +32,6 @@ import {
   Timer,
   Trash2,
   UserRound,
-  Warehouse,
   Wand2,
   X
 } from "lucide-react";
@@ -68,7 +67,6 @@ import {
 } from "./lib/programmingLogic";
 import {
   buildFatigueBudget,
-  getExerciseIncrement,
   getExerciseFatigueTag,
   getGoalUsed,
   getSameExerciseBaseline,
@@ -115,6 +113,7 @@ import {
   generateWeekReview
 } from "./lib/trainingMath";
 import { parseCSVText, buildImportReviewSummary, applyImportGroups, applyMatchOverride } from "./lib/importers/csvWorkoutImport";
+import { getEffectiveLoading } from "./lib/loadingProfiles";
 import { downloadExercisesCSV, downloadFullBackupJSON, downloadTrainingDataWorkbook, downloadWorkoutHistoryCSV } from "./lib/importers/exporters";
 import {
   buildExerciseImportReviewSummary,
@@ -146,6 +145,8 @@ import type {
   DayFocus,
   EquipmentCategory,
   Exercise,
+  LoadingProfile,
+  LoadingProfileEquipmentType,
   ExerciseBaseline,
   ExerciseCategoryLabel,
   ExerciseRole,
@@ -232,6 +233,13 @@ const muscleOptions: MuscleGroup[] = [
   "obliques",
   "forearms",
   "conditioning"
+];
+
+// Common muscles shown by default in the secondary muscles picker (collapsed view).
+// Less-common muscles are hidden behind "Show all muscles".
+const COMMON_SECONDARY_MUSCLES: MuscleGroup[] = [
+  "chest", "back", "upper-back", "lats", "triceps", "biceps",
+  "front-delts", "side-delts", "rear-delts", "quads", "hamstrings", "glutes", "abs",
 ];
 
 // Parent muscle groups: broad categories whose requirements can be satisfied by specific child muscles.
@@ -1975,9 +1983,15 @@ function LiveLogger({
   const liveExerciseLog = activeExerciseLog;
   const liveExercise = exercise;
   // Use exercise display unit everywhere in the logger — do NOT default to user.unit alone
-  const exerciseUnit = getExerciseLoadUnit(liveExercise, user, liveExerciseLog.sets.find((set) => isWeightUnit(set.unit))?.unit);
+  const rawExerciseUnit = getExerciseLoadUnit(liveExercise, user, liveExerciseLog.sets.find((set) => isWeightUnit(set.unit))?.unit);
   const bodyweightMovement = isBodyweightExercise(liveExercise);
-  const exerciseIncrement = getExerciseIncrement(liveExercise, exerciseUnit);
+  const _eff = getEffectiveLoading(liveExercise, db.loadingProfiles, rawExerciseUnit);
+  // Loading profile is unit authority: use its unit when a profile is active.
+  const exerciseUnit =
+    (_eff.source === "exercise_profile" || _eff.source === "equipment_default")
+      ? _eff.unit
+      : rawExerciseUnit;
+  const exerciseIncrement = _eff.increment;
   const isEditingLoggedSet = !!editingLineupItem?.actualSet;
   const sourceSetIndex = findRecommendationSourceIndex(liveExerciseLog.sets, effectiveSetIndex);
   const sourceSet = sourceSetIndex >= 0 ? liveExerciseLog.sets[sourceSetIndex] : undefined;
@@ -1994,6 +2008,7 @@ function LiveLogger({
         setsCompletedThisExercise: countCompletedThroughIndex(liveExerciseLog.sets, sourceSetIndex),
         readiness: liveSession.readiness,
         unit: exerciseUnit,
+        loadingProfiles: db.loadingProfiles,
       })
     : undefined;
   const recommendationKey = recommendation
@@ -5006,6 +5021,7 @@ function LibraryScreen({
   const [progressExerciseId, setProgressExerciseId] = useState<string | undefined>();
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>();
   const [showAdvancedExercise, setShowAdvancedExercise] = useState(false);
+  const [showAllSecondaryMuscles, setShowAllSecondaryMuscles] = useState(false);
   const [parentSearch, setParentSearch] = useState("");
   const [showVariations, setShowVariations] = useState(false);
   const [expandedVariantParentIds, setExpandedVariantParentIds] = useState<Set<string>>(new Set());
@@ -5021,6 +5037,7 @@ function LibraryScreen({
     allowedUnits: [user.unit] as ExerciseUnit[],
     defaultIncrement: user.unit === "kg" ? 2.5 : 5,
     customIncrement: user.unit === "kg" ? 2.5 : 5,
+    loadingProfileId: "",
     fatigueRating: 2,
     isCompound: false,
     canBeGymSpecific: false,
@@ -5046,6 +5063,7 @@ function LibraryScreen({
       allowedUnits: exercise.allowedUnits || [user.unit],
       defaultIncrement: exercise.defaultIncrement || (user.unit === "kg" ? 2.5 : 5),
       customIncrement: exercise.customIncrement || (user.unit === "kg" ? 2.5 : 5),
+      loadingProfileId: exercise.loadingProfileId ?? "",
       fatigueRating: exercise.fatigueRating || 2,
       isCompound: exercise.isCompound || false,
       canBeGymSpecific: exercise.canBeGymSpecific || false,
@@ -5056,6 +5074,7 @@ function LibraryScreen({
       variationType: exercise.variationType || exercise.variationName || "",
     });
     setShowAdvancedExercise(false);
+    setShowAllSecondaryMuscles(false);
     setParentSearch("");
   }
 
@@ -5073,6 +5092,7 @@ function LibraryScreen({
       allowedUnits: parent.allowedUnits || [user.unit],
       defaultIncrement: parent.defaultIncrement || (user.unit === "kg" ? 2.5 : 5),
       customIncrement: parent.customIncrement || (user.unit === "kg" ? 2.5 : 5),
+      loadingProfileId: parent.loadingProfileId ?? "",
       fatigueRating: parent.fatigueRating || 2,
       isCompound: parent.isCompound || false,
       canBeGymSpecific: parent.canBeGymSpecific || false,
@@ -5083,6 +5103,7 @@ function LibraryScreen({
       variationType: "",
     });
     setShowAdvancedExercise(false);
+    setShowAllSecondaryMuscles(false);
     setParentSearch(parent.name);
   }
   const exercises = db.exercises.filter((exercise) => {
@@ -5128,6 +5149,7 @@ function LibraryScreen({
       target.allowedUnits = draft.allowedUnits;
       target.defaultIncrement = draft.defaultIncrement;
       target.customIncrement = draft.customIncrement;
+      target.loadingProfileId = draft.loadingProfileId;
       target.fatigueRating = draft.fatigueRating as Exercise["fatigueRating"];
       target.isCompound = draft.isCompound || ["sbd", "main_compound", "secondary_compound", "machine_compound"].includes(draft.exerciseCategory);
       target.kind = target.isCompound ? ["compound"] : draft.exerciseCategory === "conditioning" ? ["conditioning"] : ["accessory"];
@@ -5181,6 +5203,7 @@ function LibraryScreen({
       allowedUnits: draft.allowedUnits,
       defaultIncrement: draft.defaultIncrement,
       customIncrement: draft.customIncrement,
+      loadingProfileId: draft.loadingProfileId || undefined,
       canBeGymSpecific: draft.canBeGymSpecific,
       isGymSpecificEnabled: draft.isGymSpecificEnabled,
       createdByUser: true,
@@ -5443,11 +5466,17 @@ function LibraryScreen({
             </div>
             <div className={editingExerciseId ? "fixed inset-0 z-50 overflow-y-auto bg-iron-950 xl:static xl:inset-auto xl:z-auto xl:overflow-visible xl:bg-transparent" : ""}>
               {editingExerciseId && (
-                <div className="xl:hidden sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-iron-950 px-4 py-3 mb-2">
-                  <p className="font-black text-sm">Edit Exercise</p>
-                  <button className="btn-ghost" onClick={() => { setEditingExerciseId(undefined); setDraft(emptyDraft); }} aria-label="Close editor">
-                    <X className="h-5 w-5" />
-                  </button>
+                <div className="xl:hidden sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-white/10 bg-iron-950 px-4 py-3 mb-2">
+                  <div className="min-w-0">
+                    <p className="font-black text-sm">Edit Exercise</p>
+                    {draft.name && <p className="truncate text-xs text-iron-400">{draft.name}</p>}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button className="rounded-lg bg-volt px-3 py-1.5 text-xs font-black text-iron-950" onClick={saveEditExercise}>Save</button>
+                    <button className="btn-ghost" onClick={() => { setEditingExerciseId(undefined); setDraft(emptyDraft); }} aria-label="Close editor">
+                      <X className="h-5 w-5" />
+                    </button>
+                  </div>
                 </div>
               )}
             <Panel title={editingExerciseId ? "Edit Exercise" : "Add Exercise"} icon={editingExerciseId ? Pencil : Plus}>
@@ -5462,11 +5491,46 @@ function LibraryScreen({
                 <TextField label="Notes / cues" value={draft.notes} onChange={(notes) => setDraft((value) => ({ ...value, notes }))} />
                 <SelectField label="Equipment" value={draft.equipment} options={equipmentOptions} onChange={(value) => setDraft((item) => ({ ...item, equipment: value as EquipmentCategory }))} />
                 <SelectField label="Exercise category" value={draft.exerciseCategory} options={exerciseCategoryOptions} onChange={(value) => setDraft((item) => ({ ...item, exerciseCategory: value as ExerciseCategoryLabel, isCompound: ["sbd", "main_compound", "secondary_compound", "machine_compound"].includes(value) || item.isCompound }))} />
-                <SelectField label="Default unit" value={draft.defaultUnit} options={exerciseUnitOptions} onChange={(defaultUnit) => setDraft((item) => ({ ...item, defaultUnit: defaultUnit as ExerciseUnit, allowedUnits: Array.from(new Set([...item.allowedUnits, defaultUnit as ExerciseUnit])) }))} />
-                <div className="grid grid-cols-2 gap-3">
-                  <NumberField label="Default increment" value={draft.defaultIncrement} onChange={(defaultIncrement) => setDraft((item) => ({ ...item, defaultIncrement }))} />
-                  <NumberField label="Custom increment" value={draft.customIncrement} onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement }))} />
-                </div>
+                {(() => {
+                  const effectiveLoading = getEffectiveLoading(
+                    { category: draft.equipment, loadingProfileId: draft.loadingProfileId || undefined, defaultIncrement: draft.defaultIncrement, customIncrement: draft.customIncrement, trackPerSide: false },
+                    db.loadingProfiles,
+                    user.unit as UnitPreference
+                  );
+                  const profileOptions = ["", ...(db.loadingProfiles ?? []).map((p) => p.id)];
+                  const profileLabels: Record<string, string> = { "": "Auto / Default" };
+                  (db.loadingProfiles ?? []).forEach((p) => { profileLabels[p.id] = p.name; });
+                  const fieldLabel = draft.equipment === "cable" ? "Cable Stack" : "Loading Profile";
+                  const hasProfileActive = effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default";
+                  const effectiveText = (() => {
+                    const { increment, unit, source, loadingProfileName } = effectiveLoading;
+                    const jumpStr = `${increment} ${unit} jumps`;
+                    if (source === "exercise_profile") return `Using ${loadingProfileName}: ${jumpStr}`;
+                    if (source === "equipment_default") return `Auto (${draft.equipment}): ${loadingProfileName} — ${jumpStr}`;
+                    return `Exercise-specific: ${jumpStr}`;
+                  })();
+                  return (
+                    <>
+                      {hasProfileActive ? (
+                        <p className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-iron-400">
+                          Unit controlled by <span className="font-bold text-iron-200">{effectiveLoading.loadingProfileName}</span>
+                        </p>
+                      ) : (
+                        <SelectField label="Default unit" value={draft.defaultUnit} options={exerciseUnitOptions} onChange={(defaultUnit) => setDraft((item) => ({ ...item, defaultUnit: defaultUnit as ExerciseUnit, allowedUnits: Array.from(new Set([...item.allowedUnits, defaultUnit as ExerciseUnit])) }))} />
+                      )}
+                      <div>
+                        <SelectField label={fieldLabel} value={draft.loadingProfileId} options={profileOptions} labels={profileLabels} onChange={(v) => setDraft((item) => ({ ...item, loadingProfileId: v }))} />
+                        <p className="mt-1 text-xs text-iron-500">{effectiveText}</p>
+                      </div>
+                      {!hasProfileActive && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <NumberField label="Default increment" value={draft.defaultIncrement} onChange={(defaultIncrement) => setDraft((item) => ({ ...item, defaultIncrement }))} />
+                          <NumberField label="Custom increment" value={draft.customIncrement} onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement }))} />
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 <div>
                   <p className="label mb-2">Primary muscles</p>
                   <div className="grid grid-cols-2 gap-2">
@@ -5476,8 +5540,17 @@ function LibraryScreen({
                 <div>
                   <p className="label mb-2">Secondary muscles</p>
                   <div className="grid grid-cols-2 gap-2">
-                    {muscleOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.secondaryMuscles.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftMuscle("secondaryMuscles", item)}>{item}</button>)}
+                    {muscleOptions
+                      .filter((item) => showAllSecondaryMuscles || COMMON_SECONDARY_MUSCLES.includes(item) || draft.secondaryMuscles.includes(item))
+                      .map((item) => (
+                        <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.secondaryMuscles.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftMuscle("secondaryMuscles", item)}>
+                          {item}
+                        </button>
+                      ))}
                   </div>
+                  <button className="mt-2 text-xs text-iron-500 hover:text-iron-300 transition" onClick={() => setShowAllSecondaryMuscles((v) => !v)}>
+                    {showAllSecondaryMuscles ? "Show common muscles only" : "Show all muscles"}
+                  </button>
                 </div>
                 {/* Variation controls */}
                 <div>
@@ -6246,50 +6319,90 @@ function SplitDayEditor({ day, index, onChange, onDelete }: { day: SplitDay; ind
     </div>
   );
 }
-function GymScreen({
+const EQUIPMENT_TYPE_DISPLAY: Record<string, string> = {
+  dumbbell: "Dumbbell",
+  barbell: "Barbell",
+  cable_stack: "Cable Stack",
+  selectorized_machine: "Selectorized Machine",
+  plate_loaded: "Plate Loaded",
+  bodyweight: "Bodyweight",
+  other: "Other",
+};
+const LOADING_PROFILE_EQUIPMENT_OPTIONS = [
+  "dumbbell", "barbell", "cable_stack", "selectorized_machine", "plate_loaded", "bodyweight", "other",
+] as const;
+const LOADING_PROFILE_UNIT_OPTIONS = ["lb", "kg"] as const;
+
+function LoadingProfilesPanel({
   db,
   user,
   updateDb,
-  embedded = false
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
-  embedded?: boolean;
 }) {
-  const gyms = db.gyms.filter((gym) => gym.userId === user.id);
-  const [name, setName] = useState("");
-  const [machineName, setMachineName] = useState("");
+  const profiles = db.loadingProfiles ?? [];
+  const emptyProfileDraft = { name: "", equipmentType: "cable_stack" as LoadingProfileEquipmentType, unit: user.unit as "lb" | "kg", increment: 5, notes: "" };
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [profileDraft, setProfileDraft] = useState(emptyProfileDraft);
 
-  function addGym() {
-    if (!name.trim()) return;
-    void updateDb((draft) => {
-      const id = createId("gym");
-      draft.gyms.push({ id, userId: user.id, name: name.trim(), equipment: [], unavailableEquipment: [], machines: [], substitutions: [], exerciseAdjustments: [] });
-      const target = draft.users.find((item) => item.id === user.id);
-      if (target && !target.activeGymId) target.activeGymId = id;
-      return draft;
-    });
-    setName("");
+  function startEdit(profile: LoadingProfile) {
+    setEditingId(profile.id);
+    setProfileDraft({ name: profile.name, equipmentType: profile.equipmentType, unit: (profile.unit === "lb" || profile.unit === "kg") ? profile.unit : user.unit, increment: profile.increment, notes: profile.notes ?? "" });
   }
 
-  function addMachine(gymId: string) {
-    if (!machineName.trim()) return;
-    void updateDb((draft) => {
-      const gym = draft.gyms.find((item) => item.id === gymId);
-      gym?.machines.push({ id: createId("machine"), name: machineName.trim(), category: "cable", exerciseIds: [], stackMax: 200, stackIncrement: 10, feels: "normal" });
-      return draft;
-    });
-    setMachineName("");
+  function startAdd() {
+    setEditingId("new");
+    setProfileDraft(emptyProfileDraft);
   }
 
-  return (
-    <div className="space-y-5">
-      {!embedded && <PageTitle eyebrow="Gyms" title="Track equipment and machine-specific history." />}
-      <section className="panel p-4">
-        <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-          <input className="field" placeholder="New gym name" value={name} onChange={(event) => setName(event.target.value)} />
-          <button className="btn-primary" onClick={addGym}><Plus className="h-4 w-4" /> Add Gym</button>
+  function saveProfile() {
+    if (!profileDraft.name.trim()) return;
+    void updateDb((draft) => {
+      draft.loadingProfiles ||= [];
+      if (editingId === "new") {
+        draft.loadingProfiles.push({ id: createId("lp"), name: profileDraft.name.trim(), unit: profileDraft.unit, increment: profileDraft.increment, equipmentType: profileDraft.equipmentType, notes: profileDraft.notes.trim() || undefined });
+      } else {
+        const target = draft.loadingProfiles.find((p) => p.id === editingId);
+        if (target) {
+          target.name = profileDraft.name.trim();
+          target.unit = profileDraft.unit;
+          target.increment = profileDraft.increment;
+          target.equipmentType = profileDraft.equipmentType;
+          target.notes = profileDraft.notes.trim() || undefined;
+        }
+      }
+      return draft;
+    });
+    setEditingId(null);
+  }
+
+  function deleteProfile(id: string) {
+    const usedBy = db.exercises.filter((e) => e.loadingProfileId === id).map((e) => e.name);
+    const msg = usedBy.length
+      ? `Delete this profile? ${usedBy.length} exercise(s) will revert to equipment defaults: ${usedBy.slice(0, 3).join(", ")}${usedBy.length > 3 ? "…" : ""}`
+      : "Delete this loading profile?";
+    if (!confirm(msg)) return;
+    void updateDb((draft) => {
+      draft.loadingProfiles = (draft.loadingProfiles ?? []).filter((p) => p.id !== id);
+      draft.exercises.forEach((e) => { if (e.loadingProfileId === id) e.loadingProfileId = ""; });
+      return draft;
+    });
+    if (editingId === id) setEditingId(null);
+  }
+
+  const editForm = (
+    <div className="rounded-lg border border-volt/30 bg-volt/5 p-3 space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <TextField label="Name" value={profileDraft.name} onChange={(name) => setProfileDraft((d) => ({ ...d, name }))} />
+        <SelectField label="Equipment type" value={profileDraft.equipmentType} options={LOADING_PROFILE_EQUIPMENT_OPTIONS} labels={EQUIPMENT_TYPE_DISPLAY} onChange={(v) => setProfileDraft((d) => ({ ...d, equipmentType: v as LoadingProfileEquipmentType }))} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <SelectField label="Unit" value={profileDraft.unit} options={LOADING_PROFILE_UNIT_OPTIONS} onChange={(v) => setProfileDraft((d) => ({ ...d, unit: v as "lb" | "kg" }))} />
+        <div>
+          <label className="label">Increment ({profileDraft.unit})</label>
+          <input className="field mt-2" type="number" step="0.5" min="0.5" value={profileDraft.increment} onChange={(e) => setProfileDraft((d) => ({ ...d, increment: Number(e.target.value) || 1 }))} />
         </div>
       </section>
       <div className="grid gap-4 lg:grid-cols-2">
@@ -6415,7 +6528,44 @@ function GymScreen({
       </div>
     </div>
   );
+
+  return (
+    <section className="grid gap-4">
+      <Panel title="Loading Profiles" icon={SlidersHorizontal}>
+        <p className="mb-3 text-xs text-iron-400">Each profile defines the weight unit and increment for a piece of equipment. Exercises use these automatically based on their equipment type, or you can assign a specific profile in the exercise editor.</p>
+        <div className="space-y-2">
+          {profiles.map((profile) => (
+            <div key={profile.id} className="rounded-lg border border-white/10 bg-white/[0.04] p-3">
+              {editingId === profile.id ? editForm : (
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-bold text-sm">{profile.name}</p>
+                    <p className="text-xs text-iron-400">
+                      <span className="mr-2 rounded px-1.5 py-0.5 bg-white/10 text-iron-300">{EQUIPMENT_TYPE_DISPLAY[profile.equipmentType] ?? profile.equipmentType}</span>
+                      {profile.increment} {profile.unit} jumps
+                    </p>
+                    {profile.notes && <p className="mt-0.5 text-xs text-iron-500">{profile.notes}</p>}
+                  </div>
+                  <div className="flex gap-1">
+                    <button className="btn-ghost" onClick={() => startEdit(profile)} title="Edit"><Pencil className="h-3.5 w-3.5" /></button>
+                    <button className="btn-ghost text-iron-500 hover:text-orange-300" onClick={() => deleteProfile(profile.id)} title="Delete"><Trash2 className="h-3.5 w-3.5" /></button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+          {!profiles.length && <p className="text-xs text-iron-500">No loading profiles yet. Add one below.</p>}
+        </div>
+        {editingId === "new" ? (
+          <div className="mt-3">{editForm}</div>
+        ) : (
+          <button className="btn-secondary mt-3 w-full" onClick={startAdd}><Plus className="h-4 w-4" /> Add Loading Profile</button>
+        )}
+      </Panel>
+    </section>
+  );
 }
+
 
 // Deep-copy a week's exercises to a target week, assigning fresh IDs and clearing plannedWeight.
 // Returns true if at least one day was copied.
@@ -7580,7 +7730,7 @@ function SettingsScreen({
       <section className="grid gap-4">
         <DataManagementPanel db={db} user={user} updateDb={updateDb} importDb={importDb} />
       </section>
-      <GymScreen db={db} user={user} updateDb={updateDb} embedded />
+      <LoadingProfilesPanel db={db} user={user} updateDb={updateDb} />
     </div>
   );
 }
@@ -8151,7 +8301,7 @@ function getExerciseRecommendation(params: {
     targetRpe: Math.max(targetRpe, targets.selectedRpeRange.min),
     baseline,
     readiness,
-    increment: getExerciseIncrement(exercise, exerciseDisplayUnit),
+    increment: getEffectiveLoading(exercise, db.loadingProfiles, exerciseDisplayUnit).increment,
     unit: exerciseDisplayUnit,
   });
 
@@ -8207,10 +8357,11 @@ function buildSetRecommendation(params: {
   setsCompletedThisExercise: number; // retained for call-site compat; not used in e1RM pipeline
   readiness?: ReadinessCheckIn;
   unit: UnitPreference;
+  loadingProfiles?: LoadingProfile[];
 }): Recommendation | undefined {
   const {
     user, exercise, sourceSet, sourceSetIndex, targetSetIndex,
-    sourceExerciseIndex, targetExerciseIndex, nextPlannedSet, readiness, unit,
+    sourceExerciseIndex, targetExerciseIndex, nextPlannedSet, readiness, unit, loadingProfiles,
   } = params;
 
   if (targetSetIndex <= sourceSetIndex || sourceSet.skipped) return undefined;
@@ -8274,7 +8425,7 @@ function buildSetRecommendation(params: {
 
   // ── Step 4: reverse-prescribe target load ────────────────────────────────
   const targetReps = nextPlannedSet?.targetReps ?? sourceSet.actualReps;
-  const increment = getExerciseIncrement(exercise, unit);
+  const increment = getEffectiveLoading(exercise, loadingProfiles, unit).increment;
   const profile = getSetRecommendationProfile(exercise, targetReps);
   const prescription = prescribeLoadFromObservedE1RM({
     observedE1RM: e1rmResult.e1rm,
@@ -8283,6 +8434,7 @@ function buildSetRecommendation(params: {
     exercise,
     unit,
     recentActualWeight: sourceSet.actualWeight,
+    increment,
   });
 
   if (prescription.roundedWeight <= 0) return undefined;
