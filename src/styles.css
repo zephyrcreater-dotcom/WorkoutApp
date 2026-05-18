@@ -4,7 +4,7 @@
 
 :root {
   color-scheme: dark;
-  background: #07090d;
+  background: #0d1016;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -27,10 +27,8 @@ body {
 
 body {
   margin: 0;
-  background:
-    radial-gradient(circle at top left, rgba(56, 189, 248, 0.12), transparent 30rem),
-    linear-gradient(160deg, #07090d 0%, #111827 48%, #0d1016 100%);
-  color: #f8fafc;
+  background: #0d1016;
+  color: #f1f5f9;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior-y: auto;
 }
@@ -70,35 +68,80 @@ textarea {
 }
 
 @layer components {
+  /* Surfaces — no glow shadow, calm dark surfaces */
   .panel {
-    @apply rounded-lg border border-white/10 bg-white/[0.055] shadow-glow backdrop-blur;
+    @apply rounded-xl border border-white/[0.08] bg-white/[0.04] backdrop-blur-sm;
   }
 
   .panel-soft {
-    @apply rounded-lg border border-white/10 bg-white/[0.035] backdrop-blur;
+    @apply rounded-xl border border-white/[0.06] bg-white/[0.025] backdrop-blur-sm;
   }
 
+  /* Buttons */
   .btn-primary {
-    @apply tap-highlight inline-flex min-h-11 items-center justify-center gap-2 rounded-lg bg-volt px-4 py-2.5 text-sm font-black text-iron-950 transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50;
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-volt px-4 py-2 text-sm font-bold text-iron-950 transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50;
   }
 
   .btn-secondary {
-    @apply tap-highlight inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/15 active:scale-[0.98];
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97];
   }
 
   .btn-ghost {
-    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-iron-200 transition hover:bg-white/10 active:scale-[0.98];
+    @apply tap-highlight inline-flex min-h-9 items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-sm font-medium text-iron-400 transition hover:bg-white/[0.07] hover:text-iron-200 active:scale-[0.97];
   }
 
+  /* Forms */
   .field {
-    @apply min-h-11 w-full rounded-lg border border-white/10 bg-iron-950/70 px-3 py-2 text-sm text-white outline-none ring-0 transition placeholder:text-iron-500 focus:border-volt/70;
+    @apply min-h-10 w-full rounded-lg border border-white/[0.1] bg-iron-950/60 px-3 py-2 text-sm text-white outline-none ring-0 transition placeholder:text-iron-500 focus:border-volt/40 focus:bg-iron-950/80;
   }
 
+  /* Typography */
   .label {
-    @apply text-xs font-bold uppercase tracking-[0.18em] text-iron-400;
+    @apply text-xs font-semibold uppercase tracking-[0.1em] text-iron-500;
   }
 
+  /* Data cards */
   .metric-card {
-    @apply rounded-lg border border-white/10 bg-iron-950/60 p-3;
+    @apply rounded-lg border border-white/[0.06] bg-iron-900/50 p-3;
+  }
+
+  /* Compact list row — use for exercise rows, settings rows, etc. */
+  .list-row {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition hover:bg-white/[0.05];
+  }
+
+  /* Tappable list row — same as list-row but styled as an interactive target */
+  .list-row-tap {
+    @apply tap-highlight flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm transition hover:bg-white/[0.06] active:bg-white/[0.09] cursor-pointer;
+  }
+
+  /* Grouped list section — replaces heavy panel cards for lists */
+  .list-section {
+    @apply rounded-xl border border-white/[0.07] bg-white/[0.03] overflow-hidden;
+  }
+
+  /* Section header inside a list-section */
+  .list-section-header {
+    @apply px-4 pt-3 pb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-500;
+  }
+
+  /* Separator between list rows */
+  .list-divider {
+    @apply mx-3 h-px bg-white/[0.05];
+  }
+
+  /* Compact secondary action row — for ghost actions below a primary card */
+  .compact-actions {
+    @apply flex flex-wrap items-center gap-0.5 border-t border-white/[0.05] pt-2.5 mt-3;
+  }
+
+  /* Small ghost action button for compact-actions rows */
+  .btn-compact {
+    @apply tap-highlight inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium text-iron-500 transition hover:bg-white/[0.07] hover:text-iron-300 active:scale-[0.97];
+  }
+
+  /* Danger/destructive action button — muted ember orange, Apollo-calm */
+  .btn-danger {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-ember/30 bg-ember/[0.07] px-4 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] hover:text-orange-200 active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40;
   }
 }
