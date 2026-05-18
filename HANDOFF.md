@@ -8,6 +8,338 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
+## Current Handoff — Logger Smart Finish + Skip Entire Exercise Hold (Session 27)
+
+### What changed
+
+**Primary logger action is now context-aware**
+- The separate always-visible `Finish Exercise` button is removed from the live logger action row.
+- The green primary button now chooses its label from the active session state:
+  - `Save Set` / `Next Set` while required sets still remain
+  - `Finish Exercise` when the current pending set is the last remaining required set for that exercise
+  - `Finish Workout` when that same set also closes the final incomplete exercise in the workout
+- This now uses uncovered required-set coverage instead of only checking the last planned index, so out-of-order completion works correctly.
+
+**Skip Set now supports hold-to-skip-exercise**
+- Tap `Skip Set` still skips only the current set.
+- Holding `Skip Set` for about 600 ms opens a confirmation modal for skipping the entire exercise.
+- Confirming `Skip Exercise` marks every remaining incomplete non-deleted set in the current exercise as skipped while preserving already completed work.
+
+**Completion and skipped counts stay aligned**
+- Final-set save/skip flows now build completion summary state from the post-action session preview so skipped/completed totals reflect the newly logged set immediately.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Smart primary labels across in-order and out-of-order last-set flows
+- Hold vs tap behavior on `Skip Set` on iPhone Safari
+- Skip-entire-exercise navigation into the next exercise and last-exercise workout finish flow
+
+## Current Handoff — Apply Feedback + RPE Increment Guard Fix (Session 26)
+
+### What changed
+
+**Apply feedback is visible again**
+- The live logger now shows quiet confirmation text after Apply succeeds:
+  - `Applied to current set.`
+  - `Current set already matches the recommendation.`
+- This uses derived draft-vs-recommendation matching plus a short-lived `recentlyAppliedRecommendationKey`, instead of bringing back sticky applied-state bugs.
+
+**Logger-facing RPE stays clean**
+- `Apply to Current Set` now sanitizes any recommended RPE to the app’s normal 0.5-step logger values before writing it into the draft.
+- The recommendation model can still use its internal adjusted target RPE for load math, but the live logger draft now keeps the visible target RPE practical and clean.
+
+**Rounded-load copy is clearer**
+- When the exact target lands between available load jumps, recommendation copy now explains that the app is using the closest practical load instead of silently pushing odd decimal RPE into the draft.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Apply `180 -> 165` should update the weight input and show `Applied to current set.`
+- Manually changing the draft after Apply should remove the applied confirmation
+- Same-as-current recommendation should hide Apply and show the quiet exact-match text
+- Logger RPE should not show values like `6.75`
+
+## Current Handoff — Prescription Correction: Missed Reps Dominate + Apply Fix (Session 25)
+
+### What changed
+
+**Missed reps now dominate contradictory RPE input**
+- `deriveActualRpeFromFeel()` now resolves explicit-RPE vs feel conflicts more safely when target reps were missed.
+- If reps were missed and feel is `1` or `2`, the logger now uses the harder of:
+  - explicit actual RPE
+  - feel-derived RPE
+- This prevents `11 reps` with feel `1` from being treated like a clean `@7` success.
+
+**Missed-rep penalties are stronger in the logger model**
+- Large rep misses now force a stronger decrement bias.
+- A `3+` rep miss with feel `1` now pushes harder than the prior pass, so cases like `190 x 11` against planned `190 x 14 @ 7` land closer to `175` than `180`.
+
+**Apply button now uses the current recommendation explicitly**
+- `Apply to Current Set` now takes the currently rendered recommendation as an explicit argument and writes it into the active draft via a shared draft-apply helper.
+- Reps/RPE also fall back to the current planned set when needed, so the active inputs update immediately and consistently.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- `190 x 11`, feel `1`, next target `14 @ 7` should now land around `175`
+- Apply should immediately change the active draft when recommendation differs
+- Same-as-current recommendation should still suppress Apply
+
+## Current Handoff — Prescription Model Correction: Missed Reps + Manual Overrides (Session 24)
+
+### What changed
+
+**Manual overrides now become the recommendation source of truth**
+- Next-set recommendations still come from the most recent saved actual set before the selected set.
+- Hold recommendations now explicitly respect successful manual increases instead of pulling back toward older lower suggestions when the override matched target reps/RPE.
+
+**Missed reps now have their own prescription penalty**
+- `buildSetRecommendation()` now compares the saved set against that set’s own planned reps, not just the next target and not just e1RM/RPE.
+- Missing reps now adds an explicit decrement penalty:
+  - `1` rep missed: small practical drop when warranted
+  - `2` reps missed: moderate drop
+  - `3+` reps missed: strong drop, especially for secondary/isolation work
+- Harder feel stacks with the missed-rep penalty instead of erasing it through rounding.
+
+**Apply state stays live instead of stale**
+- `Apply to Current Set` still writes into the current selected set draft only.
+- Same-as-current recommendations stay suppressed, and no sticky “applied” state is carried from earlier selections.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Successful manual increase should hold the new weight on the next same-target set
+- `190 x 11` vs planned `190 x 14 @ 7` should now drop more meaningfully
+- Apply button should visibly update the active draft after manual-override flows
+- Source label should reflect the latest saved prior set
+
+## Current Handoff — Logger Draft State + Missed Target Prescription Fix (Session 23)
+
+### What changed
+
+**Draft input now belongs to the selected set**
+- Live logger draft state is rebuilt from the selected set instead of being preserved across set switches.
+- Switching between pending sets, completed sets, edit mode, and exercises now discards unsaved values from the previous selection.
+- Set feel now resets per set:
+  - saved feel loads when editing a logged set
+  - unsaved/new sets default back to `3`
+
+**Editing old sets no longer pollutes current pending sets**
+- Canceling completed-set editing now falls back to the active pending set draft instead of leaving edited values behind.
+- Set switching now relies on a shared `buildDraftFromSet(...)` path so weight/reps/RPE/feel/notes come from the chosen set only.
+
+**Next-set recommendation is stricter about missed targets**
+- If the source set missed the target reps and the next target is not easier, the recommendation now biases toward reducing load.
+- This now works even when explicit RPE is missing or when feel/RPE alone would otherwise suggest a hold.
+- Same-as-current recommendation cards are suppressed, and “applied” state is now derived from the current draft instead of stale session flags.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Unsaved draft leakage across set switches
+- Feel resetting to `3` on unsaved/new set switches
+- Edit completed set -> cancel -> pending set isolation
+- Missed-rep example like `190 x 12` vs planned `14 @ RPE 7`
+- Same-as-current recommendation suppression
+- No stale “Applied” message when switching sets
+
+## Current Handoff — Prescription + Suggestion Polish (Session 22)
+
+### What changed
+
+**Next-set recommendations are less redundant**
+- Live logger suggestions now suppress the `Apply to Current Set` action when the current draft already matches the recommendation within half an increment.
+- Redundancy checks now consider suggested weight plus suggested reps/RPE when present, so manual edits no longer get nagged by an identical recommendation.
+
+**Feel-driven load changes now survive rounding**
+- `buildSetRecommendation()` now uses an exercise prescription profile to distinguish main compounds, secondary compounds, and isolation/accessory work.
+- Feel ratings now force practical next-step movement when appropriate:
+  - feel `1` drops at least one increment when possible
+  - feel `4`/`5` increases at least one increment when safe
+  - isolation/accessory movements weight set feel more heavily than e1RM
+- Guardrails still cap jumps, keep easier targets from drifting heavier than the last set, and keep recommendations below observed e1RM.
+
+**Suggestion copy is clearer**
+- Copy now explains when a calculated change was smaller than the exercise increment.
+- Isolation/accessory copy explicitly says feel is weighted more than e1RM.
+- Compound lifts still cite observed e1RM more directly, but without contradictory “easy/hard” messaging.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npx eslint src/lib/trainingIntelligence/weightPrescription.ts` ✓
+- `npm run build` ✓
+- `npm run lint` ✗ pre-existing repo-wide failures from generated `.claude/.../dist` files and service worker globals
+
+### Manual verification still recommended
+- Current draft already equals recommendation → no `Apply to Current Set`
+- Manual weight change carries forward without redundant identical recommendation
+- Cable/isolation feel `1` and `5` flows move by real increments
+- Bench/squat/deadlift still feel conservative and do not jump absurdly
+- Rounding explanation copy reads cleanly in the logger
+- Units remain correct for lb/kg/bodyweight-added-load cases
+
+## Current Handoff — Completed Workout Summary/Edit Mode Cleanup (Session 19)
+
+## Current Handoff — Completed Workout Unified Editor Fix (Session 20)
+
+## Current Handoff — Completed Workout Button Cleanup + Today Go Back Fix (Session 21)
+
+### What changed
+
+**Completed cards are less cluttered**
+- Today completed cards now use:
+  - clickable `completed` badge for summary
+  - one `Edit Workout` action
+- Week completed cards now use the same simplified pattern:
+  - clickable `completed` badge for summary
+  - one `Edit Workout` action
+- Removed the duplicate top-row/bottom-row completed edit actions from the main Week card view.
+
+**Today `Go Back` now prefers the real completed workout**
+- `Go Back` no longer only rewinds the block pointer.
+- It now looks for the most relevant previously completed workout session in the active block:
+  - prefers earlier workouts completed today
+  - otherwise uses the most recent prior completed workout in the block
+- If found, it opens that exact session’s completed summary without changing status or creating a duplicate.
+
+### Validation
+- Targeted lint: `npx eslint src/App.tsx` ✓
+- Build: `npm run build` ✓
+- Manual browser verification: not completed in this session
+
+### What changed
+
+**Completed summary is read-only again**
+- `CompletedWorkoutReview` no longer shows the fake `Quick Edit Summary` form.
+- The summary page now acts as a true read-only view with:
+  - workout stats
+  - session notes
+  - read-only logged set tables
+  - primary `Edit Workout` action
+
+**One real completed workout editor**
+- The only real completed-workout editing flow is now the live logger in `completed-edit` mode.
+- `Edit Workout` opens the same session id in `LiveLogger`, where the user can:
+  - edit existing sets
+  - delete sets
+  - add sets
+  - add exercises
+  - save/finish the workout again
+
+**Week now aligns with the same model**
+- Week cards and Week Editor completed-session actions now route edit behavior into the same logger editor flow.
+- Week still allows viewing the completed summary, but editing no longer happens in a separate summary-table UI.
+
+**Incomplete additions are now intentional resume triggers**
+- Opening a completed workout editor does not mark it in-progress.
+- Editing existing completed values still preserves completed state.
+- Intentional unfinished additions such as `Add Set` and `Add Exercise` now transition the session to resumable editing state if the user leaves before finishing.
+
+### Validation
+- Targeted lint: `npx eslint src/App.tsx` ✓
+- Build: `npm run build` ✓
+- Manual browser verification: not completed in this session
+
+### What changed
+
+**Completed workout viewing no longer mutates session status**
+- Opening a completed workout from Today or Week now keeps the session `completed`.
+- `View Summary`, `Quick Edit Summary`, `Back to Summary`, and `Back to Today` no longer create a fake resumable workout.
+- The logger no longer treats every session with `completedAt` as automatically being in edit mode.
+
+**Completed-summary and completed-edit are now separated by navigation mode**
+- Logger navigation now uses an explicit mode:
+  - `active-logger`
+  - `completed-edit`
+- The completed workout banner and summary/back buttons only appear when the user intentionally enters `completed-edit`.
+- `Edit / Continue Workout` opens the same session in logger-style editing without immediately changing it to `in-progress`.
+
+**Back buttons are now safer**
+- In completed-edit mode:
+  - `Back to Summary` returns to the completed summary
+  - `Back to Today` returns to Today
+- If the user has unsaved draft inputs in completed-edit mode, leaving now prompts:
+  - `Leave editing? Unsaved changes may be lost.`
+
+**Completed summary stays a true summary**
+- Today completed cards now use:
+  - `View Summary`
+  - `Edit / Continue`
+- Quick summary edits still save to the same completed session and keep it completed.
+- The completion overlay `Add Exercise` / `Edit / Continue Workout` actions no longer silently flip review/completed sessions back to in-progress just to reopen the logger UI.
+
+### Validation
+- Targeted lint: `npx eslint src/App.tsx` ✓
+- Build: `npm run build` ✓
+- Full repo lint: `npm run lint` still fails for pre-existing reasons outside this change:
+  - generated files under `.claude/.../dist`
+  - service worker globals in generated/copied service-worker files
+- Manual browser verification: not completed in this session
+
+### Current caveat
+- Completed-edit mode is now UI-only unless the session was already truly active. That fixes the accidental `Resume Workout` bug.
+- A future polish pass could add a more explicit persisted “dirty completed edit” concept if you want partially reopened completed sessions to surface as resumable only after intentional unfinished additions.
+
+## Current Handoff — Completed Workout Edit + Add Exercise Flow Fix (Session 18)
+
+### What changed
+
+**Completed workouts are no longer dead ends**
+- `src/App.tsx` now routes completed-session review through a shared app-level review flow instead of trapping the user in screen-local review islands.
+- Added explicit logger navigation context so reopening a completed workout knows whether to return to:
+  - completed summary
+  - Today
+  - Week
+
+**Completed sessions can reopen in the same logger session**
+- Editing a completed workout now reuses the same `WorkoutSession.id`.
+- Reopening a completed session moves it back to editable logger mode without clearing its logged work.
+- Original `completedAt` is preserved when the user reopens the session to continue editing.
+
+**Today now exposes actionable completed workouts**
+- Added a `Completed today` section on Today with:
+  - `View`
+  - `Edit`
+- This keeps same-day completed sessions reachable even after the block pointer advances to the next workout.
+
+**Logger back/resume behavior is explicit**
+- When the logger is opened from a completed workout, it now shows an `Editing completed workout` notice.
+- The logger exposes clear exit actions:
+  - `Back to Summary` when the user came from a completed summary
+  - `Back to Today`
+
+**Add Exercise after completion is fixed**
+- Adding an exercise to a reopened completed session now appends to the existing session and immediately navigates to the newly added exercise using the new log id.
+- This avoids the stale-state bug where the logger tried to jump using the pre-update exercise list.
+
+### Validation
+- Targeted lint: `npx eslint src/App.tsx` ✓
+- Build: `npm run build` ✓
+- Full repo lint: `npm run lint` still fails because eslint is scanning generated files under `.claude/.../dist` plus service-worker globals outside this change
+- Manual browser verification: blocked in this environment because starting the local dev server on `127.0.0.1:5174` returned `EPERM`
+
+### Manual verification checklist
+1. Start a workout and log at least one exercise.
+2. Finish the workout and confirm the review summary shows `Edit / Continue Workout`.
+3. Return to Today and confirm the workout appears under `Completed today`.
+4. From Today, press `View` and confirm the completed summary opens.
+5. From Today or the summary, press `Edit` / `Edit / Continue Workout` and confirm the same session reopens in the logger.
+6. Confirm existing completed sets are still present and tappable for edit.
+7. Add a set to an existing exercise and confirm it saves on the same session.
+8. Add a new exercise and confirm the logger jumps to that new exercise in the same session.
+9. Finish the workout again and confirm no duplicate session is created.
+
 ## Current Handoff — Algorithm Phase 1: Observed e1RM + Reverse Prescription (Session 17)
 
 ### What changed

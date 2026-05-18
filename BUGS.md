@@ -2,6 +2,108 @@
 
 ## Known Bugs
 
+## Logger Smart Finish + Skip Entire Exercise Hold (Session 27)
+
+- The smart primary-action and skip-entire-exercise flows are updated in code, but manual logger verification is still recommended for:
+  - out-of-order final required-set completion
+  - hold-vs-tap reliability on mobile Safari
+  - last-exercise skip flows and completion-summary counts
+- Repo-wide lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Apply Feedback + RPE Increment Guard Fix (Session 26)
+
+- Apply feedback and logger-side RPE sanitizing are fixed in code, but manual logger verification is still recommended for:
+  - apply -> confirmation copy -> manual edit -> confirmation clears
+  - exact-match recommendation states
+  - any readiness/rounding path that previously surfaced odd RPE values like `6.75`
+- Repo-wide lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Prescription Correction: Missed Reps Dominate + Apply Fix (Session 25)
+
+- The contradictory explicit-RPE vs hard-feel case and the apply-button path are fixed in code, but manual logger verification is still recommended for the exact `190 x 11` against `190 x 14 @ 7` scenario.
+- Repo-wide lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Prescription Model Correction: Missed Reps + Manual Overrides (Session 24)
+
+- The stale manual-override pullback and missed-rep under-penalization are fixed in code, but manual logger verification is still recommended for:
+  - same-target follow-up after a successful manual increase
+  - large rep-miss cases on 5 lb increment exercises
+  - compound vs accessory differences
+- Repo-wide lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Logger Draft State + Missed Target Prescription Fix (Session 23)
+
+- The draft-leak, feel-leak, stale applied-state, and same-as-current recommendation issues are fixed in code, but manual logger verification is still recommended for the exact set-switch flows.
+- Missed-target rep handling now biases recommendations downward in code, but real gym-flow verification is still recommended for:
+  - same-target follow-up sets
+  - lower-rep follow-up sets
+  - accessory vs compound behavior
+- Repo-wide lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Prescription + Suggestion Polish (Session 22)
+
+- Recommendation suppression and feel-driven rounding are fixed in code, but manual logger verification is still recommended for:
+  - current draft already matching the recommendation
+  - manual weight edits that auto-carry into the next set
+  - cable/isolation feel `1` and `5` flows
+  - compound lifts with higher/lower rep and RPE targets
+- Repo-wide lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Completed Workout Button Cleanup + Today Go Back Fix (Session 21)
+
+- The duplicate completed-card actions were reduced in code, and the completed badge now opens summary.
+- Today `Go Back` now prefers reopening the relevant completed session in code, but manual verification is still recommended for real same-day flows and odd pointer states.
+- Full repo lint still fails for pre-existing reasons outside this change:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in generated/copied service-worker files
+
+## Completed Workout Unified Editor Fix (Session 20)
+
+- The confusing summary-side editing table is removed in code, and completed workout editing is centralized in the logger.
+- Manual browser verification is still recommended for:
+  - Today `View Summary` vs `Edit Workout`
+  - Week completed-session `View Summary` vs `Edit Workout`
+  - leaving completed-edit after adding an unfinished set/exercise
+  - confirming Resume only appears after intentional unfinished additions
+- Full repo lint still fails for pre-existing reasons outside this change:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in generated/copied service-worker files
+
+## Completed Workout Summary/Edit Mode Cleanup (Session 19)
+
+- The accidental `completed -> in-progress` reopen bug is fixed in code, and completed summary/back flows should no longer create a fake `Resume Workout`.
+- Manual browser verification is still recommended for the exact flows requested:
+  - summary -> back to Today
+  - quick edit summary -> save -> back to Today
+  - completed-edit -> back out without changes
+  - completed-edit -> add exercise -> finish again
+- Full repo lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in generated/copied service-worker files
+
+## Completed Workout Edit + Add Exercise Flow Fix (Session 18)
+
+- The completed-workout reopen path is fixed in code, but real browser/device verification is still recommended for:
+  - Today `Completed today` card actions
+  - `Back to Summary` vs `Back to Today`
+  - reopening a completed session, adding an exercise, and finishing again
+- Full repo lint still fails for pre-existing reasons outside this change:
+  - generated files under `.claude/.../dist`
+  - service worker globals in `public/service-worker.js`
+- Manual browser verification was not completed in this environment because the local dev server could not bind to `127.0.0.1:5174` and returned `EPERM`.
+
 ## Algorithm Phase 1: Observed e1RM + Reverse Prescription (Session 17)
 
 - The new e1RM-based live logger pipeline is implemented and all spec math verifies. Manual gym-flow verification is still recommended:

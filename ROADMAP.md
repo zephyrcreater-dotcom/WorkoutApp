@@ -1,5 +1,136 @@
 # ROADMAP.md
 
+## Logger Smart Finish + Skip Entire Exercise Hold — Completed (Session 27)
+
+### Delivered
+- Removed the redundant separate `Finish Exercise` action from the normal live-logger action row.
+- Made the green primary action derive `Save Set`, `Next Set`, `Finish Exercise`, or `Finish Workout` from remaining required-set coverage instead of set order alone.
+- Added hold-to-confirm `Skip Exercise` from the `Skip Set` button while keeping tap-to-skip-current-set behavior.
+- Made skip/save terminal flows use post-action session previews for completion-summary counts.
+
+### Next steps
+- Manually verify the long-press threshold and reliability on touch devices.
+- Decide later whether the finish-early confirmation and skip-entire-exercise confirmation should eventually share one reusable modal component, but keep the current scoped logger implementation for now.
+
+## Apply Feedback + RPE Increment Guard Fix — Completed (Session 26)
+
+### Delivered
+- Restored quiet post-Apply confirmation in the live logger without reintroducing sticky applied-state bugs.
+- Kept logger-facing recommendation/apply RPE values on clean 0.5-step increments.
+- Preserved planned target RPE in the draft/apply flow while letting the model still use internal adjusted RPE for load math.
+- Added clearer rounded-load copy when exact target effort falls between available load jumps.
+
+### Next steps
+- Manually verify the apply-confirmation lifecycle on-device:
+  - apply
+  - exact-match quiet text
+  - manual edit clears confirmation
+- Watch for any remaining recommendation copy that implies an RPE change when the logger is actually preserving the planned target RPE.
+
+## Prescription Correction: Missed Reps Dominate + Apply Fix — Completed (Session 25)
+
+### Delivered
+- Made missed-target rep failures dominate contradictory explicit-RPE entries when hard feel indicates the set was tougher.
+- Strengthened the rep-miss decrement path for large misses.
+- Made `Apply to Current Set` use the current recommendation explicitly when updating the draft.
+
+### Next steps
+- Manually verify the exact `190 x 11`, feel `1`, next `14 @ 7` case and confirm the recommendation settles near `175` with 5 lb increments.
+
+## Prescription Model Correction: Missed Reps + Manual Overrides — Completed (Session 24)
+
+### Delivered
+- Made successful manual set overrides the effective source of truth for the next same-exercise recommendation.
+- Added explicit missed-rep decrement penalties beyond the base e1RM reverse-prescription math.
+- Let harder feel stack with rep-miss penalties so clear underperformance survives rounding.
+- Kept same-as-current recommendations suppressed so the logger stays quieter when no action is needed.
+
+### Next steps
+- Manually verify real-world ranges for rep-miss penalties on compounds vs accessories.
+- Decide later whether missed-target copy should expose confidence language, but keep the current short coaching copy for now.
+
+## Logger Draft State + Missed Target Prescription Fix — Completed (Session 23)
+
+### Delivered
+- Rebuilt live logger draft state from the selected set so unsaved values do not leak across set switches.
+- Reset unsaved feel/notes/RPE/weight/reps per set unless the selected set already has saved values.
+- Removed sticky recommendation-applied UI behavior and now derive match/applied state from the current draft.
+- Added stronger downward bias when a set misses target reps and the next target is not easier.
+
+### Next steps
+- Manually verify the set-switching flows on-device/in-browser, especially completed-set edit cancel paths.
+- Decide later whether recommendation copy for missed-target underperformance should mention confidence explicitly, but keep the current compact logger copy for now.
+
+## Prescription + Suggestion Polish — Completed (Session 22)
+
+### Delivered
+- Suppressed redundant next-set apply actions when the current draft already matches the recommendation.
+- Made feel-driven changes survive increment rounding so hard/easy sets produce practical next-step movement.
+- Added exercise-type recommendation profiles so main compounds lean more on e1RM while isolation/accessory work leans more on set feel.
+- Tightened logger suggestion copy for rounding-blocked changes and lower-confidence accessory guidance.
+
+### Next steps
+- Manually verify the requested logger scenarios in-browser, especially cable/isolation increment behavior and compound conservatism.
+- Decide later whether the suggestion card should fully hide instead of showing the subtle “already matches” message in the exact-match case.
+
+## Completed Workout Button Cleanup + Today Go Back Fix — Completed (Session 21)
+
+### Delivered
+- Simplified Today and Week completed workout cards to a clickable `completed` badge plus one `Edit Workout` action.
+- Made the completed badge open the completed workout summary.
+- Updated Today `Go Back` to reopen the relevant prior completed session instead of only moving the active block pointer backward.
+
+### Next steps
+- Manual browser verification that `Go Back` consistently prefers the intended same-day completed session in real user flows.
+- Decide later whether the Week Editor completed-session panel should also be visually compressed further, but the main card clutter is now reduced.
+
+## Completed Workout Unified Editor Fix — Completed (Session 20)
+
+### Delivered
+- Removed the confusing summary-side `Quick Edit Summary` editing surface.
+- Made the live logger the single real completed-workout editor.
+- Updated Today completed cards to use the clearer `Edit Workout` action.
+- Aligned Week completed-session edit actions with the same logger editor model.
+- Limited resumable state creation to intentional unfinished additions like added sets/exercises.
+
+### Next steps
+- Manual browser verification of the unified completed editor flow end-to-end on Today and Week.
+- Decide later whether the completed summary should gain more compact read-only highlights, but keep editing centralized in the logger.
+
+## Completed Workout Summary/Edit Mode Cleanup — Completed (Session 19)
+
+### Delivered
+- Split completed workout handling into a true summary path and an explicit logger `completed-edit` path.
+- Removed the automatic `completed -> in-progress` mutation when reopening a completed workout.
+- Fixed Today completed cards to use clearer `View Summary` and `Edit / Continue` actions.
+- Added safer completed-edit back behavior with unsaved-draft confirmation.
+- Kept quick summary edits on the same completed session without creating `Resume Workout`.
+
+### Next steps
+- Manual browser verification of the completed workout flows:
+  - view summary -> back to Today
+  - quick edit summary -> save -> back to Today
+  - edit / continue -> back out with no changes
+  - edit / continue -> add exercise -> finish again
+- Decide later whether partially reopened completed workouts should ever persist as a resumable “dirty completed edit” state, or always remain reachable only through completed history until re-finished.
+
+## Completed Workout Edit + Add Exercise Flow Fix — Completed (Session 18)
+
+### Delivered
+- Added app-level completed-session review routing so Today, Week, and the logger can reopen the same completed session consistently.
+- Added a Today `Completed today` section with `View` and `Edit` actions.
+- Added explicit logger back behavior for reopened completed sessions.
+- Fixed add-exercise navigation so newly added exercises in an existing session become immediately selectable without depending on stale state.
+
+### Next steps
+- Manually verify the completed-session edit loop in the browser:
+  - finish workout
+  - reopen same session
+  - edit sets
+  - add exercise
+  - finish again
+- Decide later whether repo-wide eslint should ignore generated `.claude/.../dist` artifacts and service worker globals so `npm run lint` reflects app-source health more accurately.
+
 ## Algorithm Phase 1: Observed e1RM + Reverse Prescription — Completed (Session 17)
 
 ### Delivered

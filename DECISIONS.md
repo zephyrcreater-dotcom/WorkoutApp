@@ -1,5 +1,81 @@
 # DECISIONS.md
 
+## Logger Smart Finish + Skip Entire Exercise Hold Decisions (Session 27)
+
+- The live logger should expose one primary completion action, not a separate always-visible `Finish Exercise` button competing with `Save Set` / `Next Set`.
+- Smart logger completion state is based on remaining required-set coverage, not on whether the selected set happens to be the highest planned index. This preserves out-of-order completion behavior.
+- `Skip Set` tap remains a single-set action. Skipping an entire movement is a higher-risk action and requires a deliberate hold plus confirmation.
+- Skipping an entire exercise should preserve completed work and only mark the remaining incomplete non-deleted required sets as skipped.
+- Completion summary counts should be derived from the post-action logger state immediately, even before the DB update round-trip re-renders.
+
+## Apply Feedback + RPE Increment Guard Decisions (Session 26)
+
+- Recommendation-applied state remains a derived comparison between the active draft and the active recommendation; the app should not persist a standalone applied boolean.
+- The logger may use a small transient key to tell “just applied” apart from “already matched,” but that feedback must disappear once the draft no longer matches or the user changes context.
+- Live logger RPE should stay on clean 0.5-step increments. Internal model math may use finer-grained RPE adjustments, but those values should not be written directly into the visible workout draft.
+- When exact target effort falls between available load jumps, the UI should explain that the app chose the closest practical load rather than silently changing the logged target RPE.
+
+## Prescription Correction: Missed Reps Dominate + Apply Fix Decisions (Session 25)
+
+- If target reps were missed and feel indicates the set was harder than the explicit RPE suggests, the logger should trust the higher-effort signal for prescription math.
+- A large rep miss with hard feel is treated as a failed prescription, not a near-success rounded back to the same working weight.
+- `Apply to Current Set` should always operate on the recommendation currently rendered for the selected set, not an implicit closure over an older recommendation.
+
+## Prescription Model Correction: Missed Reps + Manual Overrides Decisions (Session 24)
+
+- Next-set recommendations should judge the saved source set against that source set’s own target reps/RPE, not only against the upcoming target and not only through e1RM.
+- A successful manual override should be allowed to hold as the new working load when the saved set matched target performance.
+- Missing target reps is a standalone underperformance signal. When the next target is not easier, it should force a practical downward bias even if RPE alone looks neutral.
+- Harder feel and missed reps stack; easier feel should not erase a meaningful rep miss by itself.
+
+## Logger Draft State + Missed Target Prescription Fix Decisions (Session 23)
+
+- Unsaved logger draft values now belong only to the currently selected set. Changing sets discards unsaved draft state instead of carrying it across selections.
+- Set feel is set-local. If a set has no saved feel, the logger should default back to `3` rather than inheriting the previous set’s rating.
+- Recommendation-applied state is a derived UI fact, not durable session state. It should be recomputed from the active draft and active recommendation each render.
+- Missing target reps is treated as a real underperformance signal. When the next target is not easier, the recommendation should bias toward reducing load even if simple rounding or neutral feel would otherwise produce a hold.
+
+## Prescription + Suggestion Polish Decisions (Session 22)
+
+- Next-set recommendations should not ask the user to apply values that already match the current draft within half an exercise increment.
+- Exercise type now affects recommendation confidence:
+  - main compounds trust e1RM most
+  - secondary compounds blend e1RM and set feel
+  - isolation/accessory movements weight set feel more heavily than e1RM
+- Feel direction should survive rounding. If a hard/easy rating clearly implies a practical one-increment move, rounding should not erase that intent unless a safety guardrail blocks it.
+- Suggestion copy should explain increment-limited holds in plain language instead of implying a change happened when the rounded answer stayed the same.
+
+## Completed Workout Button Cleanup + Today Go Back Fix Decisions (Session 21)
+
+- The `completed` badge is now the summary affordance. This reduces duplication and keeps summary access visible without needing a separate text button.
+- Each main completed workout card should expose only one visible `Edit Workout` action.
+- Today `Go Back` should prioritize reopening the actual completed session the user likely meant, not just rewinding the block pointer blindly.
+- Opening the summary from the badge remains a read-only navigation action and does not mutate session state.
+
+## Completed Workout Unified Editor Fix Decisions (Session 20)
+
+- The completed summary screen is read-only again. Editing from summary was removed because it duplicated the logger mental model and confused users.
+- The live logger is now the single source of truth for completed-workout editing.
+- Week tab completed-session editing follows the same logger flow as Today instead of opening a separate editing island.
+- Merely opening completed-edit does not mutate status. Intentional unfinished additions such as new sets/exercises are the threshold for creating a resumable editing state.
+- Button copy was simplified toward `View Summary` and `Edit Workout` to reduce “review vs continue vs edit” ambiguity.
+
+## Completed Workout Summary/Edit Mode Cleanup Decisions (Session 19)
+
+- Viewing a completed workout is now a pure navigation action, not a session-status action. Opening summary or backing out of completed-edit must not create a resumable workout.
+- Logger behavior for completed sessions now depends on explicit UI navigation mode (`completed-edit`), not on `session.completedAt`.
+- Quick summary edits belong to the completed-summary flow and keep the underlying session completed.
+- Back actions from completed-edit should protect unsaved draft inputs with a confirmation prompt, but they should still avoid silently converting the workout into `in-progress`.
+- For this pass, completed-edit is treated primarily as a UI mode rather than a persisted status transition. This is the safest way to remove the accidental `Resume Workout` behavior without broad logger refactors.
+
+## Completed Workout Edit + Add Exercise Flow Decisions (Session 18)
+
+- A completed workout should stay editable through the same `WorkoutSession.id`, not by spawning a follow-up session. This avoids duplicate analytics/history entries and keeps resume/edit behavior intuitive.
+- Completed-session navigation now uses explicit app-level context instead of relying on whichever screen happened to open the logger. The logger needs to know whether `back` means summary, Today, or Week.
+- Reopening a completed workout sets it back to editable logger mode but preserves `completedAt`. This keeps the original completion record unless a future product pass explicitly decides to rewrite completion timestamps on re-finish.
+- Same-day completed sessions should remain visible on Today even after block progression advances to the next planned workout. A lightweight `Completed today` section is enough to keep them actionable.
+- Adding an exercise to an existing session must navigate using the new log id created during the update, not by indexing into stale pre-update session state.
+
 ## Algorithm Phase 1 Decisions (Session 17)
 
 **Epley with effective reps as the default formula**
