@@ -1043,6 +1043,7 @@ function TodayScreen({
       })
     : undefined;
   const [showEditDay, setShowEditDay] = useState(false);
+  const [showPlanPreview, setShowPlanPreview] = useState(false);
 
   function getGoBackCompletedSession(): WorkoutSession | undefined {
     if (!activeBlock || !selectedDay) return undefined;
@@ -1434,36 +1435,49 @@ function TodayScreen({
       {/* Week ready: show normal workout card */}
       {activeProgram && selectedDay && !weekLocked && (
         <section className="list-section">
-          <div className="flex items-center gap-3 px-4 py-3">
+          <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-2.5">
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium text-iron-500">Up next</p>
-              <h2 className="mt-0.5 text-base font-bold">{selectedDay.name}</h2>
-              <p className="text-xs text-iron-400">
+              <h2 className="text-lg font-bold leading-tight">{selectedDay.name}</h2>
+              <p className="mt-0.5 text-xs text-iron-500">
                 {[todayPlan?.label, selectedDay.focus, selectedDay.exercises.length ? `~${estimateWorkoutDuration(selectedDay)} min` : null].filter(Boolean).join(" · ")}
               </p>
               {!selectedDay.exercises.length && (
                 <p className="mt-1 text-xs text-iron-500">Week {currentWeekNumber} hasn&apos;t been planned yet.</p>
               )}
             </div>
-            <div className="shrink-0">
+            <div className="shrink-0 pt-0.5">
               {selectedDay.status === "rest" ? (
-                <button className="btn-primary" onClick={() => updateActiveBlockProgress("rest-complete")}>
-                  <CheckCircle2 className="h-4 w-4" />
-                  Mark Rest Complete
+                <button
+                  className="tap-highlight inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#0a84ff] px-3 py-1.5 text-sm font-bold text-white transition active:scale-[0.97]"
+                  onClick={() => updateActiveBlockProgress("rest-complete")}
+                >
+                  Mark Rest
                 </button>
               ) : selectedDay.exercises.length ? (
-                <button className="btn-primary" onClick={() => startWorkout(selectedDay)}>
-                  <Timer className="h-4 w-4" />
+                <button
+                  className="tap-highlight inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#0a84ff] px-3 py-1.5 text-sm font-bold text-white transition active:scale-[0.97]"
+                  onClick={() => startWorkout(selectedDay)}
+                >
                   {resumableSelectedDaySession?.status === "review" ? "Review" : resumableSelectedDaySession ? "Resume" : "Start"}
                 </button>
               ) : (
-                <button className="btn-primary" onClick={() => onPlanWeek(currentWeekNumber)}>
-                  <CalendarDays className="h-4 w-4" />
-                  Plan Week {currentWeekNumber}
+                <button
+                  className="tap-highlight inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-white/[0.1] bg-white/[0.07] px-3 py-1.5 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]"
+                  onClick={() => onPlanWeek(currentWeekNumber)}
+                >
+                  Plan Week
                 </button>
               )}
             </div>
           </div>
+          {resumableSelectedDaySession?.readiness && (
+            <div className="px-4 pb-2.5">
+              <p className="text-xs text-iron-500">
+                Readiness <span className="text-iron-300 font-medium">{resumableSelectedDaySession.readiness.readinessScore}/100</span>
+                {" · "}{readinessAdjustment(resumableSelectedDaySession.readiness).explanation}
+              </p>
+            </div>
+          )}
           {otherInProgressSession && (
             <>
               <div className="list-divider" />
@@ -1492,6 +1506,21 @@ function TodayScreen({
               </>
             )}
           </div>
+          {selectedDay.exercises.length > 0 && (
+            <>
+              <div className="list-divider" />
+              <button
+                className="flex w-full items-center justify-between px-4 py-2.5 text-left transition hover:bg-white/[0.04]"
+                onClick={() => setShowPlanPreview((v) => !v)}
+              >
+                <span className="text-xs text-iron-500">
+                  {selectedDay.exercises.length} exercise{selectedDay.exercises.length !== 1 ? "s" : ""} · {selectedDay.exercises.reduce((sum, e) => sum + e.plannedSets.length, 0)} sets
+                </span>
+                <ChevronRight className={`h-3.5 w-3.5 text-iron-600 transition-transform duration-150 ${showPlanPreview ? "rotate-90" : ""}`} />
+              </button>
+              {showPlanPreview && <WorkoutDayView db={db} user={user} day={selectedDay} />}
+            </>
+          )}
         </section>
       )}
       {recentCompletedSessions.length > 0 && (
@@ -1544,7 +1573,6 @@ function TodayScreen({
           <WorkoutDayEditor db={db} user={user} program={activeProgram} day={selectedDay} updateDb={updateDb} showNameFocusFields={false} />
         </section>
       )}
-      {selectedDay && !weekLocked && selectedDay.status !== "rest" && <WorkoutDayView db={db} user={user} day={selectedDay} />}
     </div>
   );
 }
@@ -2505,13 +2533,6 @@ function LiveLogger({
     });
   }
 
-  function previousSet() {
-    const targetIndex = Math.max(0, effectiveSetIndex - 1);
-    setEditingSetId(null);
-    setSelectedLoggingIndex(targetIndex);
-    setDraftDirty(false);
-    setShowSetNotes(false);
-  }
 
   function navigateToNextExercise() {
     // Route to the earliest INCOMPLETE exercise, not simply the next in sequence.
@@ -3007,10 +3028,10 @@ function LiveLogger({
       )}
       <PageTitle eyebrow="Live Logger" title={session.name} />
       {editingCompletedWorkout && (
-        <section className="rounded-lg border border-volt/30 bg-volt/10 p-4">
+        <section className="rounded-lg border border-[#0a84ff]/30 bg-[#0a84ff]/[0.08] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-volt">Editing completed workout</p>
+              <p className="text-xs font-semibold text-[#0a84ff]">Editing completed workout</p>
               <p className="mt-1 text-sm text-iron-200">Edit sets, add exercises, then save the workout again.</p>
             </div>
             <div className="flex w-full flex-wrap gap-2 sm:w-auto">
@@ -3028,91 +3049,136 @@ function LiveLogger({
       )}
       {!session.readiness && <ReadinessCard onSubmit={addReadiness} user={user} />}
       {session.readiness && (
-        <div className="rounded-lg border border-white/[0.07] bg-white/[0.03] px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-medium text-iron-500">Readiness</p>
-              <p className="mt-0.5 text-xl font-bold">{session.readiness.readinessScore}<span className="text-sm font-normal text-iron-500">/100</span></p>
-            </div>
-            <p className="text-xs text-iron-500">{readinessAdjustment(session.readiness).explanation}</p>
-          </div>
+        <p className="text-xs text-iron-600">
+          Readiness <span className="text-iron-400 font-medium">{session.readiness.readinessScore}/100</span>
+          {" · "}{readinessAdjustment(session.readiness).explanation}
+        </p>
+      )}
+
+      {/* Mobile: horizontal exercise tab strip */}
+      {session.loggedExercises.length > 1 && (
+        <div className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4 xl:hidden">
+          {session.loggedExercises.map((logged) => {
+            const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
+            const isActive = activeExerciseLog.id === logged.id;
+            const hardSets = logged.sets.filter(isHardSet).length;
+            const totalSets = logged.sets.length;
+            return (
+              <button
+                key={logged.id}
+                className={`logger-tab ${isActive ? "logger-tab-active" : "logger-tab-inactive"}`}
+                onClick={() => {
+                  setActiveExerciseId(logged.id);
+                  setSelectedLoggingIndex(null);
+                  setEditingSetId(null);
+                  setOpenSwipeSetId(undefined);
+                  swipeGestureRef.current = null;
+                  setSwipeDrag(null);
+                  setPendingDeleteTarget(null);
+                }}
+                onPointerDown={() => {
+                  if (exerciseLongPressTimerRef.current) clearTimeout(exerciseLongPressTimerRef.current);
+                  exerciseLongPressTimerRef.current = window.setTimeout(() => {
+                    exerciseLongPressTimerRef.current = null;
+                    setExerciseContextMenuId(logged.id);
+                  }, 500);
+                }}
+                onPointerUp={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+                onPointerLeave={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+                onPointerCancel={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+              >
+                <span className={`block max-w-[9rem] truncate text-sm font-medium ${isActive ? "text-white" : ""}`}>{item?.name}</span>
+                <span className={`text-xs ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets} hard · {totalSets} total</span>
+              </button>
+            );
+          })}
         </div>
       )}
 
       <section className="grid min-w-0 gap-4 xl:grid-cols-[16rem_minmax(0,1fr)]">
-        <div className="list-section h-fit min-w-0">
-          <p className="list-section-header">Exercises</p>
-          <div>
-            {session.loggedExercises.map((logged, loggedIndex) => {
-              const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
-              const isActive = activeExerciseLog.id === logged.id;
-              const hardSets = logged.sets.filter(isHardSet).length;
-              const skippedSets = logged.sets.filter(s => s.skipped).length;
-              return (
-                <div key={logged.id}>
-                  {loggedIndex > 0 && <div className="list-divider" />}
-                <button
-                  className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition ${
-                    isActive
-                      ? "bg-white/[0.08] text-white"
-                      : "text-iron-300 hover:bg-white/[0.05] hover:text-iron-100"
-                  }`}
-                  onClick={() => {
-                    setActiveExerciseId(logged.id);
-                    setSelectedLoggingIndex(null);
-                    setEditingSetId(null);
-                    setOpenSwipeSetId(undefined);
-                    swipeGestureRef.current = null;
-                    setSwipeDrag(null);
-                    setPendingDeleteTarget(null);
-                  }}
-                  onPointerDown={() => {
-                    if (exerciseLongPressTimerRef.current) clearTimeout(exerciseLongPressTimerRef.current);
-                    exerciseLongPressTimerRef.current = window.setTimeout(() => {
-                      exerciseLongPressTimerRef.current = null;
-                      setExerciseContextMenuId(logged.id);
-                    }, 500);
-                  }}
-                  onPointerUp={() => {
-                    if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                  }}
-                  onPointerLeave={() => {
-                    if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                  }}
-                  onPointerCancel={() => {
-                    if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                  }}
-                >
-                  <span className="min-w-0">
-                    <span className={`block truncate text-sm ${isActive ? "font-semibold text-white" : "font-medium"}`}>{item?.name}</span>
-                    <span className="text-xs text-iron-500">
-                      {hardSets} hard{skippedSets > 0 ? ` · ${skippedSets} skipped` : ""} · {logged.sets.length} total
-                    </span>
-                  </span>
-                  {isActive && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-volt/60" />}
-                </button>
-                </div>
-              );
-            })}
+        {/* Desktop sidebar — hidden on mobile */}
+        <div className="hidden h-fit min-w-0 xl:block">
+          <div className="list-section">
+            <p className="list-section-header">Exercises</p>
+            <div>
+              {session.loggedExercises.map((logged, loggedIndex) => {
+                const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
+                const isActive = activeExerciseLog.id === logged.id;
+                const hardSets = logged.sets.filter(isHardSet).length;
+                const skippedSets = logged.sets.filter(s => s.skipped).length;
+                return (
+                  <div key={logged.id}>
+                    {loggedIndex > 0 && <div className="list-divider" />}
+                    <button
+                      className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition ${
+                        isActive
+                          ? "bg-white/[0.08] text-white"
+                          : "text-iron-300 hover:bg-white/[0.05] hover:text-iron-100"
+                      }`}
+                      onClick={() => {
+                        setActiveExerciseId(logged.id);
+                        setSelectedLoggingIndex(null);
+                        setEditingSetId(null);
+                        setOpenSwipeSetId(undefined);
+                        swipeGestureRef.current = null;
+                        setSwipeDrag(null);
+                        setPendingDeleteTarget(null);
+                      }}
+                      onPointerDown={() => {
+                        if (exerciseLongPressTimerRef.current) clearTimeout(exerciseLongPressTimerRef.current);
+                        exerciseLongPressTimerRef.current = window.setTimeout(() => {
+                          exerciseLongPressTimerRef.current = null;
+                          setExerciseContextMenuId(logged.id);
+                        }, 500);
+                      }}
+                      onPointerUp={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+                      onPointerLeave={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+                      onPointerCancel={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+                    >
+                      <span className="min-w-0">
+                        <span className={`block truncate text-sm ${isActive ? "font-semibold text-white" : "font-medium"}`}>{item?.name}</span>
+                        <span className="text-xs text-iron-500">
+                          {hardSets} hard{skippedSets > 0 ? ` · ${skippedSets} skipped` : ""} · {logged.sets.length} total
+                        </span>
+                      </span>
+                      {isActive && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#0a84ff]/60" />}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
 
         <div className="min-w-0 space-y-4 pb-6">
-          <section className="min-w-0 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 sm:p-4">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+          <section className="min-w-0">
+            <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] py-2">
               <div className="min-w-0 flex-1">
-                <h3 className="text-xl font-bold leading-tight">{exercise.name}</h3>
+                {/* Show name only on desktop where tabs are hidden */}
+                <h3 className="hidden text-base font-bold leading-tight xl:block">{exercise.name}</h3>
                 {exercise.setupCues.length > 0 && (
-                  <p className="mt-1 text-sm text-iron-400">{exercise.setupCues.slice(0, 2).join(" · ")}</p>
+                  <p className="text-xs text-iron-400">{exercise.setupCues.slice(0, 2).join(" · ")}</p>
                 )}
-                <p className="mt-1 text-xs text-iron-500">
-                  {activeGym?.name || "No gym selected"}
-                  {weightRec?.recommendedWeight
-                    ? ` · suggested ${formatExerciseLoadText({ exercise: liveExercise, user, weight: weightRec.recommendedWeight, unit: exerciseUnit })} (${weightRec.confidence}%)`
-                    : ""}
-                </p>
+                {activeGym?.name && (
+                  <p className="text-xs text-iron-600">{activeGym.name}</p>
+                )}
               </div>
-              <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
+              <div className="flex shrink-0 items-center gap-2">
+                {!isPastLastPlannedSet && !isEditingLoggedSet && (
+                  <button
+                    className="tap-highlight inline-flex min-h-8 items-center justify-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium text-orange-400/70 transition hover:bg-orange-500/[0.08] hover:text-orange-300 active:scale-[0.97]"
+                    onPointerDown={startSkipSetHold}
+                    onPointerMove={cancelSkipSetHoldOnMove}
+                    onPointerUp={cancelSkipSetHold}
+                    onPointerLeave={cancelSkipSetHold}
+                    onPointerCancel={cancelSkipSetHold}
+                    onClick={handleSkipSetPress}
+                  >
+                    Skip Set
+                  </button>
+                )}
+                <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
+              </div>
             </div>
             {compatibleMachines.length > 0 && (
               <div className="mt-3">
@@ -3179,9 +3245,9 @@ function LiveLogger({
                     : undefined;
                   // No active: classes — content must never become transparent on press/touch.
                   const rowBg = isEditingThisRow
-                    ? "bg-volt/[0.07]"
+                    ? "bg-[#0a84ff]/[0.07]"
                     : isSelected
-                      ? "bg-volt/[0.04]"
+                      ? "bg-[#0a84ff]/[0.04]"
                       : actual
                         ? "bg-iron-900/40"
                         : "bg-transparent";
@@ -3214,7 +3280,7 @@ function LiveLogger({
                         </div>
                       )}
                       {(isEditingThisRow || isSelected) && (
-                        <div className={`absolute inset-y-0 left-0 w-0.5 ${isEditingThisRow ? "bg-volt/80" : "bg-volt/50"}`} />
+                        <div className={`absolute inset-y-0 left-0 w-0.5 ${isEditingThisRow ? "bg-[#0a84ff]/80" : "bg-[#0a84ff]/50"}`} />
                       )}
                       <div
                         className={`relative z-10 px-3 py-2.5 cursor-pointer ${rowBg}`}
@@ -3260,7 +3326,7 @@ function LiveLogger({
                           <div className="min-w-0 flex-1">
                             <div className="flex items-baseline gap-2">
                               <span className="text-sm font-semibold">Set {lineupItem.displayIndex + 1}</span>
-                              <span className={`text-xs font-medium ${isSelected && !isEditingThisRow ? "text-volt/80" : actual?.skipped ? "text-orange-400/70" : actual ? "text-iron-400" : "text-iron-600"}`}>{statusLabel}</span>
+                              <span className={`text-xs font-medium ${isSelected && !isEditingThisRow ? "text-[#0a84ff]" : actual?.skipped ? "text-orange-400/70" : actual ? "text-iron-400" : "text-iron-600"}`}>{statusLabel}</span>
                               {(set?.kind || actual?.kind) && (set?.kind || actual?.kind) !== "working" && (
                                 <span className="text-xs text-iron-600">{set?.kind || actual?.kind}</span>
                               )}
@@ -3271,7 +3337,7 @@ function LiveLogger({
                               )}
                               {!set && !actual && <span className="text-iron-600">Extra set</span>}
                               {actual && !actual.skipped && (
-                                <span className={isLoggedSet && !isEditingThisRow ? "text-volt/90 font-medium" : "text-iron-400"}>
+                                <span className={isLoggedSet && !isEditingThisRow ? "text-[#0a84ff]/90 font-medium" : "text-iron-400"}>
                                   {actualWeightText || getBodyweightPreviewLabel(liveExercise)} × {actual.actualReps}{actual.actualRpe ? ` @ ${actual.actualRpe}` : ""}
                                 </span>
                               )}
@@ -3305,12 +3371,57 @@ function LiveLogger({
                 )}
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <BigInput label={bodyweightMovement ? `Added load (${exerciseUnit})` : `Weight (${exerciseUnit})`} value={setDraft.actualWeight} onChange={(value) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualWeight: value })); }} placeholder={bodyweightMovement ? "BW" : undefined} />
-              <BigInput label="Reps" value={setDraft.actualReps} onChange={(value) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualReps: value })); }} />
-              <BigInput label="RPE" value={setDraft.actualRpe} onChange={(value) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualRpe: value })); }} step="0.5" />
+            <div className="logger-input-list">
+              <div className="logger-input-row">
+                <label className="logger-input-label" htmlFor="li-weight">
+                  {bodyweightMovement ? "Added load" : "Weight"}
+                </label>
+                <div className="logger-input-control">
+                  <input
+                    id="li-weight"
+                    className="logger-input-value"
+                    inputMode="decimal"
+                    type="number"
+                    step="1"
+                    value={setDraft.actualWeight}
+                    placeholder={bodyweightMovement ? "BW" : undefined}
+                    onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualWeight: e.target.value })); }}
+                  />
+                  <span className="logger-input-unit">{exerciseUnit}</span>
+                </div>
+              </div>
+              <div className="logger-input-divider" />
+              <div className="logger-input-row">
+                <label className="logger-input-label" htmlFor="li-reps">Reps</label>
+                <div className="logger-input-control">
+                  <input
+                    id="li-reps"
+                    className="logger-input-value"
+                    inputMode="decimal"
+                    type="number"
+                    step="1"
+                    value={setDraft.actualReps}
+                    onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualReps: e.target.value })); }}
+                  />
+                </div>
+              </div>
+              <div className="logger-input-divider" />
+              <div className="logger-input-row">
+                <label className="logger-input-label" htmlFor="li-rpe">RPE</label>
+                <div className="logger-input-control">
+                  <input
+                    id="li-rpe"
+                    className="logger-input-value"
+                    inputMode="decimal"
+                    type="number"
+                    step="0.5"
+                    value={setDraft.actualRpe}
+                    onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualRpe: e.target.value })); }}
+                  />
+                </div>
+              </div>
             </div>
-            <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
+            <p className="logger-input-meta mt-1.5">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
               <p className="mb-2 text-xs font-medium text-iron-500">Difficulty <span className="text-iron-600">· 1 harder · 3 as planned · 5 easy</span></p>
             </div>
@@ -3318,7 +3429,7 @@ function LiveLogger({
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
                 const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nA bit hard", 3: "3\nAs planned", 4: "4\nA bit easy", 5: "5\nEasy" };
                 return (
-                  <button key={rating} className={`min-h-10 rounded-lg text-[0.62rem] font-semibold leading-tight transition ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/[0.06] text-iron-400 hover:bg-white/10 hover:text-iron-200"}`} onClick={() => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
+                  <button key={rating} className={`min-h-10 rounded-sm text-[0.62rem] font-semibold leading-tight transition ${setDraft.setRating === rating ? "bg-[#0a84ff] text-white" : "bg-white/[0.06] text-iron-400 hover:bg-white/10 hover:text-iron-200"}`} onClick={() => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
                     {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-xs" : "block opacity-70"}>{line}</span>)}
                   </button>
                 );
@@ -3350,26 +3461,13 @@ function LiveLogger({
                 )
               }
             </div>
-            <div className="safe-bottom sticky bottom-0 z-10 -mx-3 mt-4 border-t border-white/[0.08] bg-iron-950/95 px-3 py-3 backdrop-blur sm:-mx-4 sm:px-4">
-              <div className="grid grid-cols-4 gap-2">
-                {isEditingLoggedSet
-                  ? <button className="btn-ghost" onClick={() => setEditingSetId(null)}>Cancel</button>
-                  : <button className="btn-ghost" onClick={previousSet} disabled={!liveExerciseLog.sets.length}>Back</button>
-                }
+            <div className="safe-bottom sticky bottom-0 z-10 -mx-3 mt-4 border-t border-white/[0.06] bg-iron-950/90 px-3 py-3 backdrop-blur sm:-mx-4 sm:px-4">
+              <div className="flex items-center gap-2">
+                {isEditingLoggedSet && (
+                  <button className="btn-ghost shrink-0" onClick={() => setEditingSetId(null)}>Cancel</button>
+                )}
                 <button
-                  className="btn-danger disabled:opacity-30"
-                  disabled={isPastLastPlannedSet || isEditingLoggedSet}
-                  onPointerDown={startSkipSetHold}
-                  onPointerMove={cancelSkipSetHoldOnMove}
-                  onPointerUp={cancelSkipSetHold}
-                  onPointerLeave={cancelSkipSetHold}
-                  onPointerCancel={cancelSkipSetHold}
-                  onClick={handleSkipSetPress}
-                >
-                  Skip Set
-                </button>
-                <button
-                  className="btn-primary col-span-1"
+                  className="tap-highlight flex flex-1 items-center justify-center gap-2 rounded-md bg-[#0a84ff] px-4 py-2.5 text-sm font-bold text-white transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={() => {
                     if (isEditingLoggedSet) {
                       logSet(setDraft.setRating, "stay");
@@ -3401,43 +3499,32 @@ function LiveLogger({
                 >
                   <Check className="h-4 w-4" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : finishWorkoutLabel) : primaryActionLabel}
                 </button>
-                <button className="btn-secondary" onClick={addSet}>+ Set</button>
+                <button className="btn-secondary shrink-0" onClick={addSet}>+ Set</button>
               </div>
             </div>
           </section>
 
           {lastSetWasSkipped && (
-            <section className="panel border-white/10 p-4">
-              <p className="text-xs font-medium text-iron-500">Last set</p>
-              <p className="mt-1 text-sm text-iron-400">Set skipped — no recommendation.</p>
-            </section>
+            <p className="text-xs text-iron-600">Last set skipped — no recommendation.</p>
           )}
           {!showRecommendationCard && !selectedActualSet && recommendationFeedbackText && (
-            <div className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-iron-300">
-              {recommendationFeedbackText}
-            </div>
+            <p className="text-xs text-iron-500">{recommendationFeedbackText}</p>
           )}
           {showRecommendationCard && !selectedActualSet && recommendation && (() => {
             const suggestedWeight = recommendation.action?.suggestedWeight;
             const sourceSetNum = sourceSet?.setNumber;
+            if (!suggestedWeight && !recommendation.title) return null;
             return (
-              <div className="flex items-start justify-between gap-3 rounded-lg border border-volt/10 bg-volt/[0.04] px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <p className="text-[0.68rem] font-medium text-volt/60">
-                    Suggestion{sourceSetNum ? ` · set ${sourceSetNum}` : ""}
-                  </p>
-                  <p className="mt-0.5 text-sm font-medium text-iron-100">
-                    {suggestedWeight
-                      ? `Use ${formatExerciseLoadText({ exercise: liveExercise, user, weight: suggestedWeight, unit: exerciseUnit })}`
-                      : recommendation.title}
-                  </p>
-                  {recommendation.explanation && (
-                    <p className="mt-0.5 text-xs text-iron-500">{recommendation.explanation}</p>
-                  )}
-                </div>
+              <div className="flex items-center justify-between gap-3 border-t border-white/[0.05] pt-2">
+                <p className="text-xs text-iron-500">
+                  <span className="text-iron-400">Suggested:</span>{" "}
+                  {suggestedWeight
+                    ? `${formatExerciseLoadText({ exercise: liveExercise, user, weight: suggestedWeight, unit: exerciseUnit })} · based on ${sourceSetNum ? `set ${sourceSetNum}` : "history"}`
+                    : recommendation.title}
+                </p>
                 {suggestedWeight && (
                   <button
-                    className="shrink-0 rounded-lg border border-volt/20 bg-volt/[0.08] px-3 py-1.5 text-xs font-semibold text-volt transition hover:bg-volt/[0.14] active:scale-95"
+                    className="shrink-0 text-xs font-semibold text-[#0a84ff] transition hover:text-[#0a84ff]/70 active:scale-95"
                     onClick={() => applySuggestion(recommendation)}
                   >
                     Apply
@@ -3446,20 +3533,6 @@ function LiveLogger({
               </div>
             );
           })()}
-
-          {weightRec?.recommendedWeight && weightRec.recommendedWeight > 0 && (
-            <section className="rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-semibold text-iron-500">Weight analysis</p>
-                <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-xs text-iron-500">
-                  {weightRec.confidence}% {weightRec.confidenceBand}
-                </span>
-              </div>
-              {weightRec.reasonParts.slice(0, 2).map((line, i) => (
-                <p key={i} className={`mt-0.5 ${i === 0 ? "text-xs text-iron-400" : "text-xs text-iron-600"}`}>{line}</p>
-              ))}
-            </section>
-          )}
 
           <LoggedSetsTable logged={activeExerciseLog} exercise={exercise} user={user} displayUnit={exerciseUnit} />
           <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-3">
@@ -7673,13 +7746,13 @@ function ReadinessCard({ onSubmit }: { onSubmit: (input: Omit<ReadinessCheckIn, 
   });
   const score = calculateReadinessScore(draft);
   return (
-    <section className="panel p-4">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <section className="border-b border-white/[0.06] pb-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <p className="label">Readiness Check-In</p>
-          <h3 className="mt-1 text-xl font-black">Score: {score}/100</h3>
+          <p className="mt-0.5 text-sm font-semibold text-iron-200">Score: {score}/100</p>
         </div>
-        <Activity className="h-8 w-8 text-volt" />
+        <Activity className="h-5 w-5 text-[#0a84ff]/60" />
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {(["sleepQuality", "stress", "soreness", "motivation", "energy", "jointPain", "nutritionQuality"] as const).map((key) => (
@@ -7688,7 +7761,7 @@ function ReadinessCard({ onSubmit }: { onSubmit: (input: Omit<ReadinessCheckIn, 
         <BigInput label="Bodyweight" value={draft.bodyweight ? String(draft.bodyweight) : ""} onChange={(value) => setDraft((current) => ({ ...current, bodyweight: Number(value) || 0 }))} />
       </div>
       <textarea className="field mt-3 min-h-16" placeholder="Pain, limitations, travel, low sleep, etc." value={draft.limitations} onChange={(event) => setDraft((current) => ({ ...current, limitations: event.target.value }))} />
-      <button className="btn-primary mt-4 w-full" onClick={() => onSubmit({ ...draft, bodyweight: draft.bodyweight || undefined })}>Save Check-In</button>
+      <button className="tap-highlight mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97] disabled:opacity-50" onClick={() => onSubmit({ ...draft, bodyweight: draft.bodyweight || undefined })}>Save Check-In</button>
     </section>
   );
 }
