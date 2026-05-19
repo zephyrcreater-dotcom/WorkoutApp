@@ -201,6 +201,11 @@ type LoggerNavigationState = {
   loggerMode?: "active-logger" | "completed-edit";
 };
 
+type TodayExerciseDetailState = {
+  plannedExerciseId: string;
+  fromEditMode: boolean;
+};
+
 const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "today", label: "Today", icon: Dumbbell },
   { id: "week", label: "Week", icon: ClipboardList },
@@ -209,6 +214,8 @@ const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "progress", label: "Analytics", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings }
 ];
+
+const mobileNavItems = navItems.filter((item) => item.id !== "programs");
 
 const muscleOptions: MuscleGroup[] = [
   "chest",
@@ -237,12 +244,65 @@ const muscleOptions: MuscleGroup[] = [
   "conditioning"
 ];
 
-// Common muscles shown by default in the secondary muscles picker (collapsed view).
-// Less-common muscles are hidden behind "Show all muscles".
-const COMMON_SECONDARY_MUSCLES: MuscleGroup[] = [
-  "chest", "back", "upper-back", "lats", "triceps", "biceps",
-  "front-delts", "side-delts", "rear-delts", "quads", "hamstrings", "glutes", "abs",
+const LIBRARY_MUSCLE_GROUPS: {
+  id: "chest" | "back" | "shoulders" | "arms" | "legs" | "core" | "conditioning";
+  label: string;
+  broadValue?: MuscleGroup;
+  muscles: MuscleGroup[];
+}[] = [
+  { id: "chest", label: "Chest", broadValue: "chest", muscles: ["chest", "upper-chest", "lower-chest"] },
+  { id: "back", label: "Back", broadValue: "back", muscles: ["back", "lats", "upper-back", "mid-back", "traps", "spinal-erectors"] },
+  { id: "shoulders", label: "Shoulders", muscles: ["front-delts", "side-delts", "rear-delts"] },
+  { id: "arms", label: "Arms", muscles: ["biceps", "triceps", "forearms"] },
+  { id: "legs", label: "Legs", muscles: ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"] },
+  { id: "core", label: "Core", muscles: ["abs", "obliques"] },
+  { id: "conditioning", label: "Conditioning", broadValue: "conditioning", muscles: ["conditioning"] },
 ];
+
+const LIBRARY_BLUE = "#0a84ff";
+const LIBRARY_BLUE_BORDER = "border-[#0a84ff]/30";
+const LIBRARY_BLUE_TEXT = "text-[#8fb9ff]";
+const LIBRARY_BLUE_FILL = "bg-[#0a84ff]/[0.1]";
+
+function titleCaseLabel(value: string): string {
+  return value
+    .split("-")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatEquipmentLabel(value?: string): string {
+  if (!value) return "equipment";
+  return titleCaseLabel(value);
+}
+
+function formatMuscleLabel(value: MuscleGroup): string {
+  return titleCaseLabel(value);
+}
+
+function summarizeMuscleList(muscles: MuscleGroup[], fallback = "None selected"): string {
+  if (!muscles.length) return fallback;
+  return muscles.map(formatMuscleLabel).join(" · ");
+}
+
+function summarizeExerciseListMuscles(exercise: Exercise): string {
+  const summary = [...exercise.primaryMuscles];
+  exercise.secondaryMuscles.forEach((muscle) => {
+    if (!summary.includes(muscle) && summary.length < 4) summary.push(muscle);
+  });
+  return summary.length ? summary.map((muscle) => muscle.toLowerCase()).join(" · ") : "unassigned";
+}
+
+function inferCompactExerciseType(exercise: Exercise): string {
+  if (exercise.exerciseCategory === "conditioning") return "conditioning";
+  if (isCompound(exercise)) return "compound";
+  if (exercise.isVariation) return "variation";
+  return "accessory";
+}
+
+function getLibraryMuscleGroupForMuscle(muscle: MuscleGroup) {
+  return LIBRARY_MUSCLE_GROUPS.find((group) => group.muscles.includes(muscle));
+}
 
 // Parent muscle groups: broad categories whose requirements can be satisfied by specific child muscles.
 // Specific child muscles (lats, upper-back, etc.) must match EXACTLY — no fallback alias expansion.
@@ -846,38 +906,55 @@ function App() {
         {screen !== "logger" && (
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 py-3">
             <button className="flex min-w-0 items-center gap-2.5 text-left" onClick={() => setScreen("today")}>
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-volt text-iron-950">
+              <div className={`flex h-8 w-8 shrink-0 items-center justify-center text-iron-950 ${screen === "today" ? "rounded-md bg-[#0a84ff] shadow-[0_8px_20px_rgba(10,132,255,0.18)]" : "rounded-lg bg-volt"}`}>
                 <Dumbbell className="h-4 w-4" />
               </div>
               <div className="min-w-0">
                 <p className="truncate text-sm font-bold">Iron Orbit</p>
                 <p className="truncate text-xs text-iron-500">
-                  {authMode === "cloud" && cloud.userEmail ? `${currentUser.displayName} · ${cloud.userEmail}` : "Local only"}
+                  {screen === "today"
+                    ? currentUser.displayName
+                    : authMode === "cloud" && cloud.userEmail
+                      ? `${currentUser.displayName} · ${cloud.userEmail}`
+                      : "Local only"}
                 </p>
               </div>
             </button>
             <div className="flex items-center gap-2">
-              <button
-                className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
-                  cloud.status === "synced"
-                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                    : cloud.status === "syncing" || cloud.status === "hydrating"
-                      ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
-                      : cloud.status === "failed"
-                        ? "border-ember/30 bg-ember/10 text-orange-100"
-                        : "border-white/10 bg-white/5 text-iron-300"
-                }`}
-                onClick={() => setScreen("settings")}
-                title={cloud.message}
-              >
-                {renderCloudStatusLabel(cloud.status)}
-              </button>
+              {screen !== "today" && (
+                <button
+                  className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
+                    cloud.status === "synced"
+                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                      : cloud.status === "syncing" || cloud.status === "hydrating"
+                        ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+                        : cloud.status === "failed"
+                          ? "border-ember/30 bg-ember/10 text-orange-100"
+                          : "border-white/10 bg-white/5 text-iron-300"
+                  }`}
+                  onClick={() => setScreen("settings")}
+                  title={cloud.message}
+                >
+                  {renderCloudStatusLabel(cloud.status)}
+                </button>
+              )}
+              {screen === "today" && (
+                <p className="hidden text-xs text-iron-500 sm:block">{renderCloudStatusLabel(cloud.status)}</p>
+              )}
               {activeSession && (
                 <button className="btn-primary hidden sm:inline-flex" onClick={() => void resumeWorkoutSession(activeSession.id)}>
                   <Timer className="h-4 w-4" />
                   Live
                 </button>
               )}
+              <button
+                className={`tap-highlight inline-flex h-10 w-10 items-center justify-center border text-iron-300 transition hover:bg-white/[0.06] hover:text-white ${screen === "today" ? "rounded-md border-white/[0.08] bg-white/[0.03]" : "rounded-full border-white/[0.1] bg-white/[0.02]"}`}
+                onClick={() => setScreen("settings")}
+                aria-label="Open settings"
+                title="Settings"
+              >
+                <Settings className="h-4 w-4" />
+              </button>
             </div>
           </div>
         )}
@@ -969,20 +1046,22 @@ function App() {
         </section>
       </main>
 
-      <nav className={`safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-iron-950/95 px-2 py-1.5 backdrop-blur-xl lg:hidden ${screen === "logger" ? "hidden" : ""}`}>
-        <div className="grid grid-cols-6 gap-0.5">
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-lg px-1 text-[0.62rem] font-medium transition ${
-                screen === item.id ? "text-volt" : "text-iron-500"
-              }`}
-              onClick={() => setScreen(item.id)}
-            >
-              <item.icon className={`h-5 w-5 ${screen === item.id ? "text-volt" : "text-iron-500"}`} />
-              {item.label}
-            </button>
-          ))}
+      <nav className={`safe-bottom fixed inset-x-0 bottom-0 z-40 px-3 py-3 lg:hidden ${screen === "logger" ? "hidden" : ""}`}>
+        <div className="mx-auto max-w-md rounded-[1.15rem] border border-white/[0.08] bg-[#0b1018]/88 px-1.5 py-1.5 shadow-[0_18px_48px_rgba(0,0,0,0.38)] backdrop-blur-xl">
+          <div className="grid grid-cols-5 gap-1">
+            {mobileNavItems.map((item) => (
+              <button
+                key={item.id}
+                className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-[0.9rem] px-1 text-[0.62rem] font-medium transition ${
+                  screen === item.id ? "bg-[#101b2c] text-[#6ab2ff]" : "text-iron-500"
+                }`}
+                onClick={() => setScreen(item.id)}
+              >
+                <item.icon className={`h-5 w-5 ${screen === item.id ? "text-[#6ab2ff]" : "text-iron-500"}`} />
+                {item.label}
+              </button>
+            ))}
+          </div>
         </div>
       </nav>
     </div>
@@ -1048,6 +1127,26 @@ function TodayScreen({
     : undefined;
   const [showEditDay, setShowEditDay] = useState(false);
   const [showPlanPreview, setShowPlanPreview] = useState(false);
+  const [editDraft, setEditDraft] = useState<WorkoutDay | null>(null);
+  const [showInlineAddExercise, setShowInlineAddExercise] = useState(false);
+  const [activeEditExerciseId, setActiveEditExerciseId] = useState<string | null>(null);
+  const [exerciseDetail, setExerciseDetail] = useState<TodayExerciseDetailState | null>(null);
+
+  useEffect(() => {
+    setShowEditDay(false);
+    setShowPlanPreview(false);
+    setEditDraft(null);
+    setShowInlineAddExercise(false);
+    setActiveEditExerciseId(null);
+    setExerciseDetail(null);
+  }, [selectedDay?.id]);
+
+  useEffect(() => {
+    if (!editDraft || !activeEditExerciseId) return;
+    if (!editDraft.exercises.some((item) => item.id === activeEditExerciseId)) {
+      setActiveEditExerciseId(null);
+    }
+  }, [editDraft, activeEditExerciseId]);
 
   function getGoBackCompletedSession(): WorkoutSession | undefined {
     if (!activeBlock || !selectedDay) return undefined;
@@ -1267,6 +1366,60 @@ function TodayScreen({
     onOpenLoggerSession(session.id, { previousScreen: "today" });
   }
 
+  function beginInlineEdit() {
+    if (!selectedDay) return;
+    setShowPlanPreview(false);
+    setShowInlineAddExercise(false);
+    setEditDraft(structuredClone(selectedDay));
+    setActiveEditExerciseId(null);
+    setShowEditDay(true);
+  }
+
+  function cancelInlineEdit() {
+    setShowEditDay(false);
+    setEditDraft(null);
+    setShowInlineAddExercise(false);
+    setActiveEditExerciseId(null);
+  }
+
+  async function saveInlineEdit() {
+    if (!activeProgram || !selectedDay || !editDraft) return;
+    const draftCopy = structuredClone(editDraft);
+    draftCopy.exercises = draftCopy.exercises.map((exercise, index) => ({
+      ...exercise,
+      order: index + 1,
+      plannedSets: normalizeTodayInlinePlannedSets(exercise.plannedSets),
+    }));
+    await updateDb((draft) => {
+      const targetProgram = draft.programs.find((program) => program.id === activeProgram.id);
+      const targetDay = targetProgram?.blocks
+        .flatMap((block) => block.weeks)
+        .flatMap((week) => week.workouts)
+        .find((workout) => workout.id === selectedDay.id);
+      if (targetProgram && targetDay) {
+        Object.assign(targetDay, draftCopy);
+        targetProgram.updatedAt = nowIso();
+        targetProgram.changeLog ||= [];
+        targetProgram.changeLog.unshift({
+          id: createId("change"),
+          at: nowIso(),
+          label: "Edited workout day",
+          detail: `Updated ${draftCopy.name}.`,
+        });
+        draft.programGaps = analyzeProgramGaps(targetProgram, draft);
+      }
+      return draft;
+    });
+    setShowEditDay(false);
+    setEditDraft(null);
+    setShowInlineAddExercise(false);
+    setActiveEditExerciseId(null);
+  }
+
+  function openExerciseDetail(plannedExerciseId: string, fromEditMode = false) {
+    setExerciseDetail({ plannedExerciseId, fromEditMode });
+  }
+
   if (offProgramBuilder.active) {
     return (
       <div className="space-y-5">
@@ -1376,9 +1529,43 @@ function TodayScreen({
     );
   }
 
+  if (exerciseDetail && selectedDay) {
+    const detailSourceDay = showEditDay && editDraft ? editDraft : selectedDay;
+    const planned = detailSourceDay.exercises.find((item) => item.id === exerciseDetail.plannedExerciseId)
+      || selectedDay.exercises.find((item) => item.id === exerciseDetail.plannedExerciseId);
+    const exercise = planned ? db.exercises.find((item) => item.id === planned.exerciseId) : undefined;
+    if (planned && exercise) {
+      return (
+        <TodayExerciseDetailView
+          db={db}
+          user={user}
+          day={selectedDay}
+          planned={planned}
+          exercise={exercise}
+          onBack={() => setExerciseDetail(null)}
+          onEditExercise={() => {
+            setExerciseDetail(null);
+            if (!showEditDay) beginInlineEdit();
+            setActiveEditExerciseId(planned.id);
+          }}
+        />
+      );
+    }
+    return (
+      <section className="space-y-4">
+        <button className="inline-flex items-center gap-2 text-sm text-iron-400 transition hover:text-iron-100" onClick={() => setExerciseDetail(null)}>
+          <ChevronLeft className="h-4 w-4" />
+          Back to Today
+        </button>
+        <Panel title="Exercise not found" icon={ShieldAlert}>
+          <EmptyState title="That exercise could not be opened" detail="The workout may have changed while you were editing." />
+        </Panel>
+      </section>
+    );
+  }
+
   return (
-    <div className="space-y-5">
-      <PageTitle eyebrow="Today" title="Training" />
+    <div className="mx-auto max-w-[54rem] space-y-5 xl:mx-0">
       {resumeMessage && (
         <section className="rounded-lg border border-ember/40 bg-ember/10 p-4">
           <div className="flex items-start justify-between gap-3">
@@ -1438,146 +1625,818 @@ function TodayScreen({
       )}
       {/* Week ready: show normal workout card */}
       {activeProgram && selectedDay && !weekLocked && (
-        <section className="list-section">
-          <div className="flex items-start justify-between gap-3 px-4 pt-3.5 pb-2.5">
-            <div className="min-w-0 flex-1">
-              <h2 className="text-lg font-bold leading-tight">{selectedDay.name}</h2>
-              <p className="mt-0.5 text-xs text-iron-500">
-                {[todayPlan?.label, selectedDay.focus, selectedDay.exercises.length ? `~${estimateWorkoutDuration(selectedDay)} min` : null].filter(Boolean).join(" · ")}
-              </p>
-              {!selectedDay.exercises.length && (
-                <p className="mt-1 text-xs text-iron-500">Week {currentWeekNumber} hasn&apos;t been planned yet.</p>
-              )}
-            </div>
-            <div className="shrink-0 pt-0.5">
+        (() => {
+          const latestReadiness = [...db.readiness]
+            .filter((item) => item.userId === user.id)
+            .sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
+          const readiness = resumableSelectedDaySession?.readiness ?? latestReadiness;
+          const dayNumber = selectedDay.dayIndex || (todayPlan ? todayPlan.dayIndex + 1 : 1);
+          const plannedExerciseCount = selectedDay.exercises.length;
+          const activeExerciseIndex = resumableSelectedDaySession?.currentExerciseIndex ?? 0;
+          const metadata = [
+            `Week ${todayPlan?.week?.weekNumber ?? currentWeekNumber}`,
+            `Day ${dayNumber}`,
+            selectedDay.focus,
+            plannedExerciseCount ? `~${estimateWorkoutDuration(selectedDay)} min` : null,
+          ].filter(Boolean).join(" · ");
+          const readinessMetrics = [
+            {
+              key: "sleep",
+              label: "Sleep",
+              state: readiness ? ["Poor", "Fair", "Good", "Great", "Excellent"][Math.max(0, Math.min(4, readiness.sleepQuality - 1))] : "No check-in",
+              value: readiness ? `${readiness.sleepQuality}/5` : "—",
+            },
+            {
+              key: "stress",
+              label: "Stress",
+              state: readiness ? ["Low", "Steady", "Medium", "High", "Very high"][Math.max(0, Math.min(4, readiness.stress - 1))] : "No check-in",
+              value: readiness ? `${readiness.stress}/5` : "—",
+            },
+            {
+              key: "soreness",
+              label: "Soreness",
+              state: readiness ? ["None", "Mild", "Moderate", "High", "Severe"][Math.max(0, Math.min(4, readiness.soreness - 1))] : "No check-in",
+              value: readiness ? `${readiness.soreness}/5` : "—",
+            },
+            {
+              key: "motivation",
+              label: "Motivation",
+              state: readiness ? ["Low", "Steady", "Good", "High", "All in"][Math.max(0, Math.min(4, readiness.motivation - 1))] : "No check-in",
+              value: readiness ? `${readiness.motivation}/5` : "—",
+            },
+          ];
+          const readinessStatus = readiness ? "baseline" : "awaiting check-in";
+          const showInlineEditActions = selectedDay.status !== "rest" && selectedDay.exercises.length > 0;
+          const displayDay = showEditDay && editDraft ? editDraft : selectedDay;
+          const displayExerciseCount = displayDay.exercises.length;
+          const displaySetCount = displayDay.exercises.reduce((sum, exercise) => sum + exercise.plannedSets.length, 0);
+
+          return (
+            <section className="space-y-4">
+              <div className="space-y-1">
+                <p className="text-[1.95rem] font-semibold tracking-[-0.045em] text-white sm:text-[2.2rem]">Today</p>
+                <h2 className="text-[1.22rem] font-semibold tracking-[-0.03em] text-iron-100 sm:text-[1.42rem]">
+                  {selectedDay.name}
+                </h2>
+                <p className="text-sm text-iron-500">{metadata}</p>
+              </div>
+
               {selectedDay.status === "rest" ? (
                 <button
-                  className="tap-highlight inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#0a84ff] px-3 py-1.5 text-sm font-bold text-white transition active:scale-[0.97]"
+                  className="native-primary-action w-full rounded-md bg-[#0a84ff] text-white shadow-[0_10px_24px_rgba(10,132,255,0.18)] sm:w-[12.75rem]"
                   onClick={() => updateActiveBlockProgress("rest-complete")}
                 >
                   Mark Rest
                 </button>
               ) : selectedDay.exercises.length ? (
                 <button
-                  className="tap-highlight inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md bg-[#0a84ff] px-3 py-1.5 text-sm font-bold text-white transition active:scale-[0.97]"
+                  className="native-primary-action w-full rounded-md bg-[#0a84ff] text-white shadow-[0_10px_24px_rgba(10,132,255,0.18)] sm:w-[12.75rem]"
                   onClick={() => startWorkout(selectedDay)}
                 >
-                  {resumableSelectedDaySession?.status === "review" ? "Review" : resumableSelectedDaySession ? "Resume" : "Start"}
+                  Resume
                 </button>
               ) : (
                 <button
-                  className="tap-highlight inline-flex min-h-9 items-center justify-center gap-1.5 rounded-md border border-white/[0.1] bg-white/[0.07] px-3 py-1.5 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]"
+                  className="native-primary-action w-full rounded-md bg-[#0a84ff] text-white shadow-[0_10px_24px_rgba(10,132,255,0.18)] sm:w-[12.75rem]"
                   onClick={() => onPlanWeek(currentWeekNumber)}
                 >
                   Plan Week
                 </button>
               )}
-            </div>
-          </div>
-          {resumableSelectedDaySession?.readiness && (
-            <div className="px-4 pb-2.5">
-              <p className="text-xs text-iron-500">
-                Readiness <span className="text-iron-300 font-medium">{resumableSelectedDaySession.readiness.readinessScore}/100</span>
-                {" · "}{readinessAdjustment(resumableSelectedDaySession.readiness).explanation}
-              </p>
-            </div>
-          )}
-          {otherInProgressSession && (
-            <>
-              <div className="list-divider" />
-              <button className="list-row-tap text-iron-400" onClick={() => void onResumeWorkout(otherInProgressSession.id, { previousScreen: "today" })}>
-                <Timer className="h-4 w-4 shrink-0 text-iron-500" />
-                <span className="flex-1 text-xs">Resume other in-progress workout</span>
-                <ChevronRight className="h-4 w-4 text-iron-600" />
-              </button>
-            </>
-          )}
-          <div className="list-divider" />
-          <div className="compact-actions px-4 pb-2.5">
-            <button className="btn-compact" onClick={() => updateActiveBlockProgress("previous")}>← Back</button>
-            <button className="btn-compact" onClick={() => updateActiveBlockProgress("next")}>Next Day</button>
-            <button className="btn-compact" onClick={() => updateActiveBlockProgress("skip")}>Skip</button>
-            {selectedDay.status !== "rest" && selectedDay.exercises.length > 0 && (
-              <>
-                <button className="btn-compact ml-auto" onClick={() => setShowEditDay((v) => !v)}>
-                  <Pencil className="h-3 w-3" />
-                  {showEditDay ? "Done" : "Edit"}
-                </button>
-                <button className="btn-compact" onClick={goOffProgram}>
-                  <Shuffle className="h-3 w-3" />
-                  Off Program
-                </button>
-              </>
-            )}
-          </div>
-          {selectedDay.exercises.length > 0 && (
-            <>
-              <div className="list-divider" />
-              <button
-                className="flex w-full items-center justify-between px-4 py-2.5 text-left transition hover:bg-white/[0.04]"
-                onClick={() => setShowPlanPreview((v) => !v)}
-              >
-                <span className="text-xs text-iron-500">
-                  {selectedDay.exercises.length} exercise{selectedDay.exercises.length !== 1 ? "s" : ""} · {selectedDay.exercises.reduce((sum, e) => sum + e.plannedSets.length, 0)} sets
-                </span>
-                <ChevronRight className={`h-3.5 w-3.5 text-iron-600 transition-transform duration-150 ${showPlanPreview ? "rotate-90" : ""}`} />
-              </button>
-              {showPlanPreview && <WorkoutDayView db={db} user={user} day={selectedDay} />}
-            </>
-          )}
-        </section>
-      )}
-      {recentCompletedSessions.length > 0 && (
-        <section className="list-section">
-          <p className="list-section-header">Completed today</p>
-          {recentCompletedSessions.map((session, i) => (
-            <div key={session.id}>
-              {i > 0 && <div className="list-divider" />}
-              <button
-                className="list-row-tap"
-                onClick={() => onOpenCompletedSessionReview(session.id, "today")}
-              >
-                <CheckCircle2 className="h-4 w-4 shrink-0 text-volt/70" />
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-semibold text-iron-100">{session.name}</p>
-                  <p className="text-xs text-iron-500">
-                    {(session.completedAt || session.updatedAt) ? formatDateTime(session.completedAt || session.updatedAt || session.startedAt) : "Completed today"} · {countSessionCompletedSets(session)} sets
+
+              <div className="border-b border-white/[0.07] pb-2.5">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-iron-500">
+                  <button className="transition hover:text-iron-100" onClick={() => updateActiveBlockProgress("previous")}>Back</button>
+                  <span className="text-iron-700">|</span>
+                  <button className="transition hover:text-iron-100" onClick={() => updateActiveBlockProgress("next")}>Next Day</button>
+                  <span className="text-iron-700">|</span>
+                  <button className="text-orange-300 transition hover:text-orange-200" onClick={() => updateActiveBlockProgress("skip")}>Skip</button>
+                  {showInlineEditActions && (
+                    <>
+                      <span className="text-iron-700">|</span>
+                      <button className="transition hover:text-iron-100" onClick={() => {
+                        if (showEditDay) {
+                          cancelInlineEdit();
+                          return;
+                        }
+                        beginInlineEdit();
+                      }}>
+                        Edit
+                      </button>
+                      <span className="text-iron-700">|</span>
+                      <button className="transition hover:text-iron-100" onClick={goOffProgram}>Off Program</button>
+                    </>
+                  )}
+                </div>
+                {otherInProgressSession && (
+                  <button
+                    className="mt-2 text-xs text-iron-500 transition hover:text-iron-200"
+                    onClick={() => void onResumeWorkout(otherInProgressSession.id, { previousScreen: "today" })}
+                  >
+                    Resume other workout
+                  </button>
+                )}
+              </div>
+
+              {selectedDay.exercises.length > 0 && (
+                <>
+                  <div className="space-y-2 border-b border-white/[0.06] pb-2">
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Workout</p>
+                    <div className="flex items-center justify-between gap-3 text-sm text-iron-400">
+                      <p>{displayExerciseCount} exercises · {displaySetCount} sets</p>
+                    {showEditDay ? (
+                      <div className="flex items-center gap-3 text-xs">
+                        <button className="text-[#6ab2ff] transition hover:text-[#8fc4ff]" onClick={() => void saveInlineEdit()}>
+                          Save changes
+                        </button>
+                        <button className="text-iron-500 transition hover:text-iron-200" onClick={cancelInlineEdit}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="inline-flex items-center gap-1 text-xs text-iron-500 transition hover:text-iron-200"
+                        onClick={() => setShowPlanPreview((value) => !value)}
+                      >
+                        {showPlanPreview ? "Hide details" : "Show details"}
+                        <ChevronRight className={`h-3.5 w-3.5 transition-transform ${showPlanPreview ? "rotate-90" : ""}`} />
+                      </button>
+                    )}
+                    </div>
+                  </div>
+
+                  {!showEditDay && !showPlanPreview && (
+                    <section className="overflow-hidden border-b border-white/[0.08] bg-transparent">
+                      {selectedDay.exercises.map((planned, index) => {
+                        const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+                        const latestHistory = getLatestExercisePerformanceLog(db, user.id, planned.exerciseId);
+                        const displayUnit = getExerciseDisplayUnit(
+                          exercise,
+                          user,
+                          isWeightUnit(latestHistory?.unit) ? latestHistory.unit : undefined,
+                        );
+                        const recommendation = getExerciseRecommendation({
+                          db,
+                          user,
+                          exercise,
+                          plannedSet: planned.plannedSets[0],
+                          readiness,
+                          goal: user.goal,
+                          gymId: user.activeGymId,
+                        });
+                        const weightLabel = getPlannedExerciseBadgeText({
+                          exercise,
+                          displayUnit,
+                          recommendationWeight: recommendation?.recommendedWeight,
+                          plannedWeight: planned.plannedSets[0]?.plannedWeight,
+                        });
+                        const repTargets = planned.plannedSets
+                          .map((set) => set.targetReps)
+                          .filter((value): value is number => typeof value === "number" && value > 0);
+                        const repMin = repTargets.length ? Math.min(...repTargets) : undefined;
+                        const repMax = repTargets.length ? Math.max(...repTargets) : undefined;
+                        const prescription = `${planned.plannedSets.length} sets${repMin ? ` · ${repMin}${repMax && repMax !== repMin ? `-${repMax}` : ""} reps` : ""}`;
+                        const isActiveExercise = activeExerciseIndex === index;
+
+                        return (
+                          <button
+                            key={planned.id}
+                            className={`group relative flex w-full items-center gap-3 px-0 py-3 text-left transition ${index > 0 ? "border-t border-white/[0.06]" : ""} ${isActiveExercise ? "bg-[#0d1522]/55" : "hover:bg-white/[0.02]"}`}
+                            onClick={() => openExerciseDetail(planned.id)}
+                          >
+                            <span className={`absolute inset-y-2 left-0 w-[2px] ${isActiveExercise ? "bg-[#0a84ff]" : "bg-transparent group-hover:bg-[#0a84ff]/45"}`} />
+                            <div className="min-w-0 flex-1 pl-4 pr-2">
+                              <p className="truncate text-sm font-medium text-iron-100 sm:text-[0.97rem]">{exercise?.name || "Exercise"}</p>
+                              <p className="mt-0.5 text-xs text-iron-500">{prescription}</p>
+                            </div>
+                            <div className="flex items-center gap-3 pl-2 pr-1">
+                              <p className="text-right text-sm font-semibold text-iron-200">{weightLabel || "—"}</p>
+                              <ChevronRight className="h-4 w-4 text-iron-700 transition group-hover:text-iron-500" />
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </section>
+                  )}
+
+                  {!showEditDay && showPlanPreview && (
+                    <section className="overflow-hidden border-b border-white/[0.08] bg-transparent">
+                      {selectedDay.exercises.map((planned, index) => {
+                        const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+                        const latestHistory = getLatestExercisePerformanceLog(db, user.id, planned.exerciseId);
+                        const displayUnit = getExerciseDisplayUnit(
+                          exercise,
+                          user,
+                          isWeightUnit(latestHistory?.unit) ? latestHistory.unit : undefined,
+                        );
+                        const recommendation = getExerciseRecommendation({
+                          db,
+                          user,
+                          exercise,
+                          plannedSet: planned.plannedSets[0],
+                          readiness,
+                          goal: user.goal,
+                          gymId: user.activeGymId,
+                        });
+                        const weightLabel = getPlannedExerciseBadgeText({
+                          exercise,
+                          displayUnit,
+                          recommendationWeight: recommendation?.recommendedWeight,
+                          plannedWeight: planned.plannedSets[0]?.plannedWeight,
+                        });
+                        const recent = getLatestExercisePreviewHistory(db, user, exercise, displayUnit);
+                        const repTargets = planned.plannedSets
+                          .map((set) => set.targetReps)
+                          .filter((value): value is number => typeof value === "number" && value > 0);
+                        const repMin = repTargets.length ? Math.min(...repTargets) : undefined;
+                        const repMax = repTargets.length ? Math.max(...repTargets) : undefined;
+                        const targetRpe = planned.plannedSets[0]?.targetRpe;
+                        const detailLine = [
+                          `${planned.plannedSets.length} sets`,
+                          repMin ? `${repMin}${repMax && repMax !== repMin ? `-${repMax}` : ""} reps` : undefined,
+                          targetRpe ? `RPE ${targetRpe}` : undefined,
+                        ].filter(Boolean).join(" · ");
+                        const contextLine = [
+                          formatExerciseRoleLabel(planned.exerciseRole),
+                          formatFatigueTagLabel(planned.fatigueTag ?? (exercise ? getExerciseFatigueTag(exercise) : undefined)),
+                        ].filter(Boolean).join(" · ");
+                        const recentLine = recent
+                          ? `Recent: ${formatExerciseLoadText({ exercise, user, weight: recent.weight, unit: recent.unit })} × ${recent.reps}${recent.rpe ? ` @ ${recent.rpe}` : ""}`
+                          : "No recent history";
+
+                        return (
+                          <button
+                            key={planned.id}
+                            className={`w-full px-0 py-3 text-left transition hover:bg-white/[0.02] ${index > 0 ? "border-t border-white/[0.06]" : ""}`}
+                            onClick={() => openExerciseDetail(planned.id)}
+                          >
+                            <div className="flex items-start justify-between gap-4 pl-4 pr-1">
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-iron-100 sm:text-[0.97rem]">{exercise?.name || "Exercise"}</p>
+                                <p className="mt-0.5 text-xs text-iron-400">{detailLine}</p>
+                                <p className="mt-1 text-xs text-iron-500">{recentLine}</p>
+                                {contextLine && <p className="mt-1 text-xs text-iron-600">{contextLine}</p>}
+                              </div>
+                              <p className="shrink-0 text-right text-sm font-semibold text-iron-200">{weightLabel || "—"}</p>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </section>
+                  )}
+
+                  {showEditDay && editDraft && (
+                    <section className="overflow-hidden border-b border-white/[0.08] bg-transparent">
+                      {editDraft.exercises.map((planned, index) => {
+                        const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+                        const latestHistory = getLatestExercisePerformanceLog(db, user.id, planned.exerciseId);
+                        const displayUnit = getExerciseDisplayUnit(
+                          exercise,
+                          user,
+                          isWeightUnit(latestHistory?.unit) ? latestHistory.unit : undefined,
+                        );
+                        const weightValue = planned.plannedSets[0]?.plannedWeight;
+                        const isExpanded = activeEditExerciseId === planned.id;
+                        return (
+                          <div key={planned.id} className={`px-4 py-3.5 ${index > 0 ? "border-t border-white/[0.06]" : ""}`}>
+                            <button
+                              className="flex w-full items-center gap-3 text-left transition hover:bg-white/[0.02]"
+                              onClick={() => setActiveEditExerciseId((current) => current === planned.id ? null : planned.id)}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <p className="truncate text-sm font-medium text-iron-100">{exercise?.name || "Exercise"}</p>
+                                <p className="mt-0.5 text-xs text-iron-500">
+                                  {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps || 8} reps
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-3 pl-2">
+                                <p className="text-right text-sm font-semibold text-iron-200">{weightValue ? `${formatWeight(weightValue, displayUnit)} ${displayUnit}` : "—"}</p>
+                                <ChevronRight className={`h-4 w-4 text-iron-700 transition ${isExpanded ? "rotate-90 text-iron-500" : ""}`} />
+                              </div>
+                            </button>
+                            {isExpanded && (
+                              <div className="mt-3 border-t border-white/[0.06] pt-3">
+                                <div className="mb-3 flex items-center justify-end">
+                                  <button
+                                    className="text-xs text-orange-300 transition hover:text-orange-200"
+                                    onClick={() => setEditDraft((current) => current ? ({
+                                      ...current,
+                                      exercises: current.exercises
+                                        .filter((item) => item.id !== planned.id)
+                                        .map((item, itemIndex) => ({ ...item, order: itemIndex + 1 })),
+                                    }) : current)}
+                                  >
+                                    Remove
+                                  </button>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                  <TodayInlineStepper
+                                    label="Sets"
+                                    value={planned.plannedSets.length}
+                                    min={1}
+                                    step={1}
+                                    onChange={(nextValue) => setEditDraft((current) => current ? ({
+                                      ...current,
+                                      exercises: current.exercises.map((item) => item.id === planned.id
+                                        ? { ...item, plannedSets: resizeTodayInlinePlannedSets(item.plannedSets, Math.max(1, Math.round(nextValue))) }
+                                        : item),
+                                    }) : current)}
+                                  />
+                                  <TodayInlineNumberField
+                                    label="Reps"
+                                    value={planned.plannedSets[0]?.targetReps || 8}
+                                    min={1}
+                                    step={1}
+                                    onChange={(nextValue) => setEditDraft((current) => current ? ({
+                                      ...current,
+                                      exercises: current.exercises.map((item) => item.id === planned.id
+                                        ? { ...item, plannedSets: item.plannedSets.map((set) => ({ ...set, targetReps: Math.max(1, Math.round(nextValue)) })) }
+                                        : item),
+                                    }) : current)}
+                                  />
+                                  <TodayInlineNumberField
+                                    label="RPE"
+                                    value={planned.plannedSets[0]?.targetRpe || 7}
+                                    min={1}
+                                    max={10}
+                                    step={0.5}
+                                    onChange={(nextValue) => setEditDraft((current) => current ? ({
+                                      ...current,
+                                      exercises: current.exercises.map((item) => item.id === planned.id
+                                        ? { ...item, plannedSets: item.plannedSets.map((set) => ({ ...set, targetRpe: sanitizeRpe(nextValue) })) }
+                                        : item),
+                                    }) : current)}
+                                  />
+                                  <TodayInlineNumberField
+                                    label="Weight"
+                                    value={weightValue ?? ""}
+                                    min={0}
+                                    step={displayUnit === "kg" ? 2.5 : 5}
+                                    suffix={exercise ? displayUnit : undefined}
+                                    placeholder="—"
+                                    onChange={(nextValue) => setEditDraft((current) => current ? ({
+                                      ...current,
+                                      exercises: current.exercises.map((item) => item.id === planned.id
+                                        ? {
+                                            ...item,
+                                            plannedSets: item.plannedSets.map((set) => ({
+                                              ...set,
+                                              plannedWeight: nextValue <= 0 ? undefined : nextValue,
+                                            })),
+                                          }
+                                        : item),
+                                    }) : current)}
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                      <div className="border-t border-white/[0.06] px-4 py-3">
+                        <button
+                          className="text-sm text-[#6ab2ff] transition hover:text-[#8fc4ff]"
+                          onClick={() => setShowInlineAddExercise((value) => !value)}
+                        >
+                          + Add exercise
+                        </button>
+                      </div>
+                      {showInlineAddExercise && (
+                        <div className="border-t border-white/[0.06] bg-[#09101a] px-4 py-4">
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <p className="text-sm font-medium text-iron-100">Add exercise</p>
+                            <button className="text-xs text-iron-500 transition hover:text-iron-200" onClick={() => setShowInlineAddExercise(false)}>
+                              Cancel
+                            </button>
+                          </div>
+                          <ExercisePicker
+                            db={db}
+                            user={user}
+                            alreadyAddedIds={editDraft.exercises.map((item) => item.exerciseId)}
+                            onPick={(exercise) => {
+                              const planned = buildPlannedExerciseFromExercise({
+                                db,
+                                user,
+                                program: activeProgram,
+                                day: editDraft,
+                                exercise,
+                                order: editDraft.exercises.length + 1,
+                              });
+                              setEditDraft((current) => current ? ({
+                                ...current,
+                                exercises: [
+                                  ...current.exercises,
+                                  {
+                                    ...planned,
+                                    plannedSets: normalizeTodayInlinePlannedSets(planned.plannedSets),
+                                  },
+                                ],
+                              }) : current);
+                              setShowInlineAddExercise(false);
+                            }}
+                          />
+                        </div>
+                      )}
+                    </section>
+                  )}
+                </>
+              )}
+
+              <section className="space-y-2.5">
+                <div className="space-y-1">
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Readiness</p>
+                  <p className="text-base font-semibold text-iron-100">
+                    {readiness ? `${readiness.readinessScore}/100` : "No check-in"}
+                    <span className="ml-2 text-sm font-medium text-iron-500">· {readinessStatus}</span>
                   </p>
                 </div>
-                <button
-                  className="btn-compact shrink-0"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void onResumeWorkout(session.id, {
-                      previousScreen: "today",
-                      completedReviewState: { sessionId: session.id, returnScreen: "today" },
-                      loggerMode: "completed-edit",
-                    });
-                  }}
-                >
-                  <Pencil className="h-3 w-3" />
-                  Edit
-                </button>
-                <ChevronRight className="h-4 w-4 shrink-0 text-iron-600" />
-              </button>
-            </div>
-          ))}
-        </section>
-      )}
-      {showEditDay && selectedDay && activeProgram && !weekLocked && (
-        <section className="panel p-4">
-          <div className="mb-4 flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold text-volt">Editing this planned day</p>
-              <h3 className="font-black">{selectedDay.name}</h3>
-              <p className="text-xs text-iron-400">Changes apply to this day and week only. Completed workout history is not affected.</p>
-            </div>
-            <button className="btn-secondary" onClick={() => setShowEditDay(false)}>Done</button>
-          </div>
-          <WorkoutDayEditor db={db} user={user} program={activeProgram} day={selectedDay} updateDb={updateDb} showNameFocusFields={false} />
-        </section>
+                <div className="grid grid-cols-2 overflow-hidden border border-white/[0.07] bg-[#0a1018] sm:grid-cols-4">
+                  {readinessMetrics.map((metric, index) => (
+                    <div
+                      key={metric.key}
+                      className={`px-4 py-3 ${index >= 2 ? "border-t border-white/[0.06] sm:border-t-0" : ""} ${index % 2 === 1 ? "border-l border-white/[0.06] sm:border-l-0" : ""} ${index > 0 ? "sm:border-l sm:border-white/[0.06]" : ""}`}
+                    >
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-600">{metric.label}</p>
+                      <p className="mt-2 text-sm font-medium text-iron-100">{metric.state}</p>
+                      <p className="mt-1 text-xs text-iron-500">{metric.value}</p>
+                    </div>
+                  ))}
+                </div>
+                {!readiness && <p className="text-xs text-iron-600">Readiness will appear here after your next check-in.</p>}
+              </section>
+
+              {recentCompletedSessions.length > 0 && (
+                <section className="rounded-sm border border-white/[0.06] bg-white/[0.03] p-4">
+                  <p className="text-[0.72rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Completed Today</p>
+                  <div className="mt-3 space-y-2">
+                    {recentCompletedSessions.map((session) => (
+                      <button
+                        key={session.id}
+                        className="flex w-full items-center justify-between gap-3 rounded-sm border border-white/[0.05] bg-white/[0.02] px-3 py-3 text-left transition hover:bg-white/[0.05]"
+                        onClick={() => onOpenCompletedSessionReview(session.id, "today")}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-iron-100">{session.name}</p>
+                          <p className="mt-1 text-xs text-iron-500">
+                            {formatDateTime(session.completedAt || session.updatedAt || session.startedAt)} · {countSessionCompletedSets(session)} sets
+                          </p>
+                        </div>
+                        <ChevronRight className="h-4 w-4 shrink-0 text-iron-600" />
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </section>
+          );
+        })()
       )}
     </div>
+  );
+}
+
+function normalizeTodayInlinePlannedSets(plannedSets: PlannedSet[]): PlannedSet[] {
+  const normalized = plannedSets.length ? plannedSets : [{ id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 }];
+  return normalized.map((set, index) => ({
+    ...set,
+    id: set.id || createId("pset"),
+    kind: set.kind || "working",
+    setNumber: index + 1,
+    targetReps: Math.max(1, Math.round(set.targetReps || 8)),
+    targetRpe: sanitizeRpe(set.targetRpe || 7),
+  }));
+}
+
+function resizeTodayInlinePlannedSets(plannedSets: PlannedSet[], count: number): PlannedSet[] {
+  const normalized = normalizeTodayInlinePlannedSets(plannedSets);
+  const base = normalized[0];
+  return Array.from({ length: Math.max(1, count) }, (_, index) => ({
+    ...(normalized[index] || { ...base, id: createId("pset") }),
+    id: normalized[index]?.id || createId("pset"),
+    setNumber: index + 1,
+  }));
+}
+
+function formatExerciseRoleLabel(role?: ExerciseRole): string | undefined {
+  if (!role) return undefined;
+  return role
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function formatFatigueTagLabel(tag?: string): string | undefined {
+  if (!tag) return undefined;
+  return `${tag} fatigue`;
+}
+
+function TodayInlineStepper({
+  label,
+  value,
+  min = 1,
+  step = 1,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min?: number;
+  step?: number;
+  onChange: (nextValue: number) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-500">{label}</p>
+      <div className="flex min-h-10 items-center justify-between border border-white/[0.08] bg-[#09101a] px-2">
+        <button
+          className="tap-highlight inline-flex h-8 w-8 items-center justify-center text-iron-400 transition hover:bg-white/[0.06] hover:text-iron-100"
+          onClick={() => onChange(Math.max(min, value - step))}
+        >
+          <Minus className="h-4 w-4" />
+        </button>
+        <span className="text-sm font-medium text-iron-100">{value}</span>
+        <button
+          className="tap-highlight inline-flex h-8 w-8 items-center justify-center text-iron-400 transition hover:bg-white/[0.06] hover:text-iron-100"
+          onClick={() => onChange(value + step)}
+        >
+          <Plus className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function TodayInlineNumberField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  suffix,
+  placeholder,
+}: {
+  label: string;
+  value: number | string;
+  onChange: (nextValue: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  suffix?: string;
+  placeholder?: string;
+}) {
+  return (
+    <label className="space-y-1.5">
+      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-500">{label}</p>
+      <div className="flex min-h-10 items-center gap-2 border border-white/[0.08] bg-[#09101a] px-3">
+        <input
+          className="w-full bg-transparent text-sm text-iron-100 outline-none placeholder:text-iron-600"
+          type="number"
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          placeholder={placeholder}
+          onChange={(event) => onChange(Number(event.target.value) || 0)}
+        />
+        {suffix && <span className="shrink-0 text-xs text-iron-500">{suffix}</span>}
+      </div>
+    </label>
+  );
+}
+
+function TodayExerciseDetailView({
+  db,
+  user,
+  day,
+  planned,
+  exercise,
+  onBack,
+  onEditExercise,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  day: WorkoutDay;
+  planned: PlannedExercise;
+  exercise: Exercise;
+  onBack: () => void;
+  onEditExercise: () => void;
+}) {
+  const latestHistory = getLatestExercisePerformanceLog(db, user.id, exercise.id);
+  const displayUnit = getExerciseDisplayUnit(
+    exercise,
+    user,
+    isWeightUnit(latestHistory?.unit) ? latestHistory.unit : undefined,
+  );
+  const historyEntries = collectExerciseHistoryEntries({ db, user, exerciseIds: [exercise.id] });
+  const recentHistory = getLatestExercisePreviewHistory(db, user, exercise, displayUnit);
+  const bestRecentE1rm = Math.max(
+    0,
+    ...historyEntries.map((entry) => getEntryDisplayValues(entry, displayUnit).e1rm || 0),
+  );
+  const detailSets = planned.plannedSets;
+  const repTargets = detailSets.map((set) => set.targetReps).filter((value): value is number => value > 0);
+  const repMin = repTargets.length ? Math.min(...repTargets) : undefined;
+  const repMax = repTargets.length ? Math.max(...repTargets) : undefined;
+  const targetRpe = detailSets[0]?.targetRpe;
+  const targetWeight = getPlannedExerciseBadgeText({
+    exercise,
+    displayUnit,
+    plannedWeight: detailSets[0]?.plannedWeight,
+  });
+
+  const recentLoggedSets = db.sessions
+    .filter((session) => session.userId === user.id && session.status === "completed")
+    .flatMap((session) =>
+      session.loggedExercises
+        .filter((logged) => logged.exerciseId === exercise.id)
+        .flatMap((logged) =>
+          logged.sets
+            .filter((set) => isCompletedValidSet(set))
+            .map((set) => ({
+              id: `${session.id}:${logged.id}:${set.id}`,
+              date: set.completedAt || session.completedAt || session.startedAt,
+              label: new Date(set.completedAt || session.completedAt || session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+              set,
+            }))
+        )
+    )
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 8);
+
+  const avgFeel = recentLoggedSets.length
+    ? (recentLoggedSets.reduce((sum, item) => sum + setRatingNumeric(item.set.setRating), 0) / recentLoggedSets.length).toFixed(1)
+    : undefined;
+  const avgRpe = recentLoggedSets.length
+    ? safeAverageRpe(recentLoggedSets.map((item) => item.set))
+    : undefined;
+  const hardSets = recentLoggedSets.filter((item) => isHardSet(item.set)).length;
+  const chartPoints = historyEntries
+    .filter((entry) => (getEntryDisplayValues(entry, displayUnit).e1rm || 0) > 0)
+    .map((entry) => ({
+      label: entry.label,
+      value: getEntryDisplayValues(entry, displayUnit).e1rm as number,
+      date: entry.date,
+    }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  return (
+    <section className="space-y-4">
+      <button className="inline-flex items-center gap-2 text-sm text-iron-400 transition hover:text-iron-100" onClick={onBack}>
+        <ChevronLeft className="h-4 w-4" />
+        Today
+      </button>
+
+      <div className="space-y-1">
+        <h2 className="text-[1.35rem] font-semibold tracking-[-0.03em] text-iron-100">{exercise.name}</h2>
+        <p className="text-sm text-iron-500">
+          {day.name} · Week {day.weekNumber} Day {day.dayIndex || 1} · {day.focus}
+        </p>
+      </div>
+
+      <section className="space-y-2 border-b border-white/[0.06] pb-3">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Planned today</p>
+        <p className="text-sm text-iron-200">
+          {detailSets.length} sets
+          {repMin ? ` · ${repMin}${repMax && repMax !== repMin ? `-${repMax}` : ""} reps` : ""}
+          {targetRpe ? ` · RPE ${targetRpe}` : ""}
+        </p>
+        <p className="text-sm text-iron-500">Target: {targetWeight || "—"}</p>
+      </section>
+
+      <section className="space-y-2 border-b border-white/[0.06] pb-3">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Recent</p>
+        {recentHistory ? (
+          <>
+            <p className="text-sm text-iron-200">
+              Last: {formatExerciseLoadText({ exercise, user, weight: recentHistory.weight, unit: recentHistory.unit })} × {recentHistory.reps}
+              {recentHistory.rpe ? ` @ ${recentHistory.rpe}` : ""}
+            </p>
+            <p className="text-sm text-iron-500">
+              Best recent e1RM: {bestRecentE1rm > 0 ? `${formatWeight(bestRecentE1rm, displayUnit)} ${displayUnit}` : "No recent e1RM"}
+            </p>
+          </>
+        ) : (
+          <p className="text-sm text-iron-500">No recent history yet.</p>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">History</p>
+        {recentLoggedSets.length > 0 ? (
+          <div className="overflow-hidden border border-white/[0.07] bg-[#0a1018]">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[36rem] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-white/[0.06] text-[0.68rem] text-iron-600">
+                    <th className="px-4 py-2 font-medium">Set</th>
+                    <th className="px-4 py-2 font-medium">Load</th>
+                    <th className="px-4 py-2 font-medium">Reps</th>
+                    <th className="px-4 py-2 font-medium">RPE</th>
+                    <th className="px-4 py-2 font-medium">Feel</th>
+                    <th className="px-4 py-2 font-medium">e1RM</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentLoggedSets.map((item) => (
+                    <tr key={item.id} className="border-t border-white/[0.05]">
+                      <td className="px-4 py-2 text-iron-400">{item.label}</td>
+                      <td className="px-4 py-2 text-iron-200">{formatExerciseLoadText({ exercise, user, weight: item.set.actualWeight, unit: item.set.unit || displayUnit })}</td>
+                      <td className="px-4 py-2 text-iron-200">{item.set.actualReps}</td>
+                      <td className="px-4 py-2 text-iron-200">{item.set.actualRpe || "—"}</td>
+                      <td className="px-4 py-2 text-iron-200">{item.set.setRating ? `${item.set.setRating}/5` : "—"}</td>
+                      <td className="px-4 py-2 text-iron-200">
+                        {calculateE1RMFromSet(item.set) ? `${formatWeight(calculateE1RMFromSet(item.set) || 0, item.set.unit || displayUnit)} ${item.set.unit || displayUnit}` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : historyEntries.length > 0 ? (
+          <div className="overflow-hidden border border-white/[0.07] bg-[#0a1018]">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[36rem] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-white/[0.06] text-[0.68rem] text-iron-600">
+                    <th className="px-4 py-2 font-medium">Set</th>
+                    <th className="px-4 py-2 font-medium">Load</th>
+                    <th className="px-4 py-2 font-medium">Reps</th>
+                    <th className="px-4 py-2 font-medium">RPE</th>
+                    <th className="px-4 py-2 font-medium">Feel</th>
+                    <th className="px-4 py-2 font-medium">e1RM</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyEntries.slice(0, 8).map((entry) => {
+                    const displayValues = getEntryDisplayValues(entry, displayUnit);
+                    return (
+                      <tr key={entry.id} className="border-t border-white/[0.05]">
+                        <td className="px-4 py-2 text-iron-400">{entry.label}</td>
+                        <td className="px-4 py-2 text-iron-200">{formatExerciseLoadText({ exercise, user, weight: displayValues.weight ?? entry.weight, unit: displayUnit })}</td>
+                        <td className="px-4 py-2 text-iron-200">{entry.reps ?? "—"}</td>
+                        <td className="px-4 py-2 text-iron-200">{entry.rpe ?? "—"}</td>
+                        <td className="px-4 py-2 text-iron-500">—</td>
+                        <td className="px-4 py-2 text-iron-200">{displayValues.e1rm ? `${formatWeight(displayValues.e1rm, displayUnit)} ${displayUnit}` : "—"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-iron-500">No recent history yet.</p>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Ratings</p>
+        {recentLoggedSets.length > 0 ? (
+          <div className="grid grid-cols-3 overflow-hidden border border-white/[0.07] bg-[#0a1018]">
+            <div className="px-4 py-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-600">Average feel</p>
+              <p className="mt-2 text-sm font-medium text-iron-100">{avgFeel ? `${avgFeel}/5` : "—"}</p>
+            </div>
+            <div className="border-l border-white/[0.06] px-4 py-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-600">Average RPE</p>
+              <p className="mt-2 text-sm font-medium text-iron-100">{avgRpe ? avgRpe.toFixed(1) : "—"}</p>
+            </div>
+            <div className="border-l border-white/[0.06] px-4 py-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-600">Hard sets</p>
+              <p className="mt-2 text-sm font-medium text-iron-100">{hardSets}</p>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-iron-500">No ratings yet.</p>
+        )}
+      </section>
+
+      <section className="space-y-2">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">e1RM Trend</p>
+        {chartPoints.length >= 2 ? (
+          <ExerciseE1rmChart points={chartPoints.map(({ label, value }) => ({ label, value }))} unit={displayUnit} title="e1RM trend" strokeColor="#0a84ff" />
+        ) : (
+          <div className="border border-white/[0.07] bg-[#0a1018] px-4 py-4 text-sm text-iron-500">
+            Not enough data for chart yet.
+          </div>
+        )}
+      </section>
+
+      {(exercise.notes || exercise.description) && (
+        <section className="space-y-2">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Notes</p>
+          <div className="border border-white/[0.07] bg-[#0a1018] px-4 py-4 text-sm text-iron-300">
+            {exercise.notes || exercise.description}
+          </div>
+        </section>
+      )}
+
+      <div className="flex flex-wrap gap-3">
+        <button className="btn-secondary" onClick={onEditExercise}>Edit exercise</button>
+        <button className="btn-secondary" onClick={onBack}>Back to Today</button>
+      </div>
+    </section>
   );
 }
 
@@ -4175,17 +5034,20 @@ function WeekDayCardSelector({
   db,
   days,
   selectedDayId,
+  compact = false,
   onSelect,
 }: {
   db: TrainingDatabase;
   days: WorkoutDay[];
   selectedDayId?: string;
+  compact?: boolean;
   onSelect: (day: WorkoutDay) => void;
 }) {
   const dayNames = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const hasScheduledDays = days.some((day) => !!day.scheduledDay);
   return (
-    <div className="grid gap-2 md:grid-cols-7">
+    <div className={compact ? "-mx-4 overflow-x-auto px-4 scrollbar-none" : "grid gap-2 md:grid-cols-7"}>
+      <div className={compact ? "flex min-w-max gap-2" : "contents"}>
       {dayNames.map((name, index) => {
         const day = hasScheduledDays ? days.find((workout) => workout.scheduledDay === name) : days[index];
         const selected = day?.id === selectedDayId;
@@ -4199,32 +5061,56 @@ function WeekDayCardSelector({
             key={name}
             type="button"
             disabled={!day}
-            className={`min-h-32 rounded-lg border p-3 text-left transition ${
-              day
-                ? selected
-                  ? "border-volt bg-volt/10"
-                  : "border-white/10 bg-white/[0.045] hover:bg-white/[0.07]"
-                : "cursor-default border-dashed border-white/10 bg-white/[0.02]"
-            }`}
+            className={compact
+              ? `min-w-[10rem] border-b px-0 py-2 text-left transition ${
+                day
+                  ? selected
+                    ? "border-[#0a84ff] text-[#8fb9ff]"
+                    : "border-transparent text-iron-400 hover:text-iron-200"
+                  : "cursor-default border-transparent text-iron-600"
+              }`
+              : `min-h-32 rounded-lg border p-3 text-left transition ${
+                day
+                  ? selected
+                    ? "border-volt bg-volt/10"
+                    : "border-white/10 bg-white/[0.045] hover:bg-white/[0.07]"
+                  : "cursor-default border-dashed border-white/10 bg-white/[0.02]"
+              }`}
             onClick={() => day && onSelect(day)}
           >
-            <p className="text-xs font-black uppercase tracking-[0.14em] text-iron-500">{name.slice(0, 3)}</p>
-            {day && !restDay ? (
-              <>
-                <p className="mt-2 font-black text-white">{day.name}</p>
-                <p className="mt-1 text-xs text-volt">{day.focus} - ~{estimateWorkoutDuration(day)} min</p>
-                {keyExercises?.length ? (
-                  <p className="mt-2 line-clamp-2 text-xs text-iron-300">{keyExercises.join(", ")}</p>
-                ) : (
-                  <p className="mt-2 text-xs text-iron-500">Draft day</p>
-                )}
-              </>
+            {compact ? (
+              day && !restDay ? (
+                <>
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">{name.slice(0, 3)}</p>
+                  <p className="mt-1 text-sm font-medium text-white">{day.name}</p>
+                  <p className="mt-1 text-xs text-iron-500">{day.focus}</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">{name.slice(0, 3)}</p>
+                  <p className="mt-1 text-sm font-medium text-iron-500">Rest</p>
+                </>
+              )
             ) : (
-              <div className="mt-6 rounded-lg border border-dashed border-white/10 p-3 text-center text-xs font-bold text-iron-500">Rest</div>
+              day && !restDay ? (
+                <>
+                  <p className="text-xs font-black uppercase tracking-[0.14em] text-iron-500">{name.slice(0, 3)}</p>
+                  <p className="mt-2 font-black text-white">{day.name}</p>
+                  <p className="mt-1 text-xs text-volt">{day.focus} - ~{estimateWorkoutDuration(day)} min</p>
+                  {keyExercises?.length ? (
+                    <p className="mt-2 line-clamp-2 text-xs text-iron-300">{keyExercises.join(", ")}</p>
+                  ) : (
+                    <p className="mt-2 text-xs text-iron-500">Draft day</p>
+                  )}
+                </>
+              ) : (
+                <div className="mt-6 rounded-lg border border-dashed border-white/10 p-3 text-center text-xs font-bold text-iron-500">Rest</div>
+              )
             )}
           </button>
         );
       })}
+      </div>
     </div>
   );
 }
@@ -4236,6 +5122,7 @@ function WorkoutDayEditor({
   day,
   updateDb,
   showNameFocusFields = true,
+  variant = "default",
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -4243,7 +5130,9 @@ function WorkoutDayEditor({
   day: WorkoutDay;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   showNameFocusFields?: boolean;
+  variant?: "default" | "week";
 }) {
+  const weekVariant = variant === "week";
   const allSplitDays = db.splitTemplates.flatMap((split) => split.days);
   const requirements = deriveRequirements(day, allSplitDays);
 
@@ -4277,6 +5166,7 @@ function WorkoutDayEditor({
   const [showAllExercises, setShowAllExercises] = useState(false);
   const [chooserWarning, setChooserWarning] = useState("");
   const [showPrescription, setShowPrescription] = useState(allReqsMet);
+  const [showPicker, setShowPicker] = useState(day.exercises.length === 0);
   const [pendingExtraExercise, setPendingExtraExercise] = useState<Exercise | null>(null);
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>(day.exercises[0]?.id);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | undefined>();
@@ -4292,6 +5182,7 @@ function WorkoutDayEditor({
     if (!day.exercises.length) {
       setEditingExerciseId(undefined);
       setSwappingExerciseId(undefined);
+      setShowPicker(true);
       return;
     }
     if (editingExerciseId && !day.exercises.some((planned) => planned.id === editingExerciseId)) {
@@ -4585,6 +5476,208 @@ function WorkoutDayEditor({
     ? []
     : [currentReq.targetMuscle];
 
+  if (weekVariant) {
+    return (
+      <div className="space-y-5">
+        {showNameFocusFields && (
+          <div className="grid gap-4 border-b border-white/[0.06] pb-4 md:grid-cols-2">
+            <TextField label="Day name" value={day.name} onChange={(name) => updateDay((target) => { target.name = name; })} />
+            <SelectField label="Focus" value={day.focus} options={["strength", "hypertrophy", "technical", "recovery", "conditioning", "hybrid"]} onChange={(focus) => updateDay((target) => { target.focus = focus as WorkoutDay["focus"]; })} />
+          </div>
+        )}
+
+        {requirements.length > 0 && (
+          <section className="border-b border-white/[0.06] pb-4">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Requirements</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {reqProgress.map((item, idx) => {
+                const done = item.fulfilled >= item.needed;
+                const active = idx === currentReqIndex && !showAllExercises;
+                return (
+                  <button
+                    key={item.req.id}
+                    className={`rounded-sm border px-2.5 py-1 text-xs font-medium transition ${
+                      active
+                        ? "border-[#0a84ff]/40 bg-[#0a84ff]/10 text-[#8fb9ff]"
+                        : done
+                          ? "border-white/[0.08] bg-white/[0.04] text-iron-300"
+                          : "border-white/[0.08] bg-transparent text-iron-500"
+                    }`}
+                    onClick={() => { setCurrentReqIndex(idx); setShowAllExercises(false); setShowPicker(true); }}
+                  >
+                    {item.req.targetMuscle} {item.fulfilled}/{item.needed}
+                  </button>
+                );
+              })}
+            </div>
+            {chooserWarning && <p className="mt-3 text-sm text-orange-300">{chooserWarning}</p>}
+          </section>
+        )}
+
+        <section className="border-b border-white/[0.06] pb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Exercises</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button className="btn-compact" onClick={chooseForMe}>
+                <Wand2 className="h-3.5 w-3.5" />
+                Choose for me
+              </button>
+              <button className="btn-compact text-[#8fb9ff]" onClick={() => { setSwappingExerciseId(undefined); setShowPicker((value) => !value); }}>
+                <Plus className="h-3.5 w-3.5" />
+                Add Exercise
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
+            {day.exercises.map((planned, index) => {
+              const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+              const displayUnit = exercise ? getExerciseDisplayUnit(exercise, user) : user.unit;
+              const plannedWeightText = getPlannedExerciseBadgeText({
+                exercise,
+                displayUnit,
+                plannedWeight: planned.plannedSets[0]?.plannedWeight,
+              }) || "—";
+              const reqBadge = planned.fulfillsRequirementId
+                ? requirements.find((req) => req.id === planned.fulfillsRequirementId)
+                : undefined;
+              const isSwappingExercise = swappingExerciseId === planned.id;
+
+              return (
+                <div key={planned.id} className="py-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-white">{index + 1}. {exercise?.name || "Unknown exercise"}</p>
+                      <p className="mt-1 text-sm text-iron-400">
+                        {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps || 8} reps · RPE {planned.plannedSets[0]?.targetRpe || 7}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {reqBadge && <span className="rounded-sm border border-[#0a84ff]/30 px-2 py-0.5 text-[0.68rem] font-medium text-[#8fb9ff]">{reqBadge.targetMuscle}</span>}
+                        {planned.isExtra && <span className="rounded-sm border border-white/[0.08] px-2 py-0.5 text-[0.68rem] font-medium text-iron-500">extra</span>}
+                        {planned.fatigueTag === "high" && <span className="rounded-sm border border-orange-500/20 px-2 py-0.5 text-[0.68rem] font-medium text-orange-300">high fatigue</span>}
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-sm font-medium text-iron-300">{plannedWeightText}</span>
+                  </div>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                    <WeekEditorStepper
+                      label="Sets"
+                      value={planned.plannedSets.length}
+                      step={1}
+                      min={1}
+                      onChange={(count) => updateDay((target) => {
+                        const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                        if (!targetExercise) return;
+                        const base = targetExercise.plannedSets[0] || { id: createId("pset"), kind: "working" as SetKind, targetReps: 8, targetRpe: 7 };
+                        targetExercise.plannedSets = Array.from({ length: Math.max(1, Math.round(count)) }, () => ({ ...base, id: createId("pset") }));
+                      })}
+                    />
+                    <WeekEditorStepper
+                      label="Reps"
+                      value={planned.plannedSets[0]?.targetReps || 8}
+                      step={1}
+                      min={1}
+                      onChange={(reps) => updateDay((target) => {
+                        target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetReps = Math.max(1, Math.round(reps)); });
+                      })}
+                    />
+                    <WeekEditorStepper
+                      label="RPE"
+                      value={planned.plannedSets[0]?.targetRpe || 7}
+                      step={0.5}
+                      min={1}
+                      max={10}
+                      onChange={(rpe) => updateDay((target) => {
+                        target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                      })}
+                    />
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-x-1 gap-y-1">
+                    <button className={`btn-compact ${isSwappingExercise ? "text-[#8fb9ff]" : ""}`} onClick={() => { setShowPicker(false); setSwappingExerciseId((current) => current === planned.id ? undefined : planned.id); }}>
+                      <RefreshCcw className="h-3.5 w-3.5" />
+                      {isSwappingExercise ? "Done" : "Swap exercise"}
+                    </button>
+                    <button
+                      className="btn-compact text-orange-300 hover:text-orange-200"
+                      onClick={() => updateDay((target) => {
+                        target.exercises = target.exercises.filter((item) => item.id !== planned.id).map((item, nextIndex) => ({ ...item, order: nextIndex + 1 }));
+                      })}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {showPicker && (
+          <ExercisePicker
+            db={db}
+            user={user}
+            onPick={(exercise) => {
+              addExercise(exercise);
+              setShowPicker(false);
+            }}
+            alreadyAddedIds={alreadyAddedIds}
+            targetMuscles={pickerTargetMuscles}
+            targetPatterns={showAllExercises ? [] : day.movementPatterns || []}
+            grouped={!showAllExercises}
+            variant="week-sheet"
+            title={allReqsMet ? "Add exercise" : "Add exercise"}
+            onClose={() => setShowPicker(false)}
+          />
+        )}
+
+        {swappingExerciseId && (
+          <ExercisePicker
+            db={db}
+            user={user}
+            onPick={(replacement) => swapExercise(swappingExerciseId, replacement)}
+            alreadyAddedIds={day.exercises.filter((item) => item.id !== swappingExerciseId).map((item) => item.exerciseId)}
+            selectedIds={(() => {
+              const selectedPlanned = day.exercises.find((item) => item.id === swappingExerciseId);
+              return selectedPlanned ? [selectedPlanned.exerciseId] : [];
+            })()}
+            targetMuscles={(() => {
+              const selectedPlanned = day.exercises.find((item) => item.id === swappingExerciseId);
+              const req = selectedPlanned?.fulfillsRequirementId ? requirements.find((item) => item.id === selectedPlanned.fulfillsRequirementId) : undefined;
+              const exercise = selectedPlanned ? db.exercises.find((item) => item.id === selectedPlanned.exerciseId) : undefined;
+              return req ? [req.targetMuscle] : exercise?.primaryMuscles || [];
+            })()}
+            targetPatterns={day.movementPatterns || []}
+            grouped
+            variant="week-sheet"
+            title="Swap exercise"
+            onClose={() => setSwappingExerciseId(undefined)}
+          />
+        )}
+
+        {pendingExtraExercise && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+            <div className="panel w-full max-w-sm space-y-4 p-6">
+              <h3 className="text-lg font-black">Add extra exercise?</h3>
+              <p className="text-sm text-iron-300">
+                <span className="font-bold text-white">{pendingExtraExercise.name}</span> would be added beyond the requirement for{" "}
+                <span className="font-bold text-[#8fb9ff]">{currentReq?.targetMuscle}</span>.
+              </p>
+              <div className="flex gap-3">
+                <button className="apollo-primary-btn flex-1" onClick={() => addExercise(pendingExtraExercise, true)}>
+                  Add Extra
+                </button>
+                <button className="apollo-secondary-btn" onClick={() => setPendingExtraExercise(null)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="mt-5 space-y-4">
       {showNameFocusFields && (
@@ -4754,7 +5847,10 @@ function ExercisePicker({
   compoundFilter = "all",
   targetMuscles = [],
   targetPatterns = [],
-  grouped = false
+  grouped = false,
+  variant = "default",
+  title,
+  onClose,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -4765,7 +5861,11 @@ function ExercisePicker({
   targetMuscles?: MuscleGroup[];
   targetPatterns?: MovementPattern[];
   grouped?: boolean;
+  variant?: "default" | "week-sheet";
+  title?: string;
+  onClose?: () => void;
 }) {
+  const weekSheet = variant === "week-sheet";
   const [query, setQuery] = useState("");
   const [muscle, setMuscle] = useState("all");
   const [equipment, setEquipment] = useState("all");
@@ -4817,67 +5917,129 @@ function ExercisePicker({
       <button
         key={exercise.id}
         disabled={isAlreadyAdded}
-        className={`rounded-lg border p-3 text-left transition ${
-          isAlreadyAdded ? "cursor-not-allowed border-white/5 bg-white/[0.03] opacity-50" :
-          isSelected ? "border-volt bg-volt/10 hover:border-volt/80" :
-          "border-white/10 bg-white/[0.06] hover:border-volt/50"
-        }`}
+        className={weekSheet
+          ? `w-full border-b border-white/[0.06] px-0 py-3 text-left transition ${
+            isAlreadyAdded ? "cursor-not-allowed opacity-45" :
+            isSelected ? "bg-[#0a84ff]/[0.08]" :
+            "hover:bg-white/[0.03]"
+          }`
+          : `rounded-lg border p-3 text-left transition ${
+            isAlreadyAdded ? "cursor-not-allowed border-white/5 bg-white/[0.03] opacity-50" :
+            isSelected ? "border-volt bg-volt/10 hover:border-volt/80" :
+            "border-white/10 bg-white/[0.06] hover:border-volt/50"
+          }`}
         onClick={() => !isAlreadyAdded && onPick(exercise)}
       >
         <div className="flex items-start justify-between gap-2">
-          <p className="font-black">{exercise.name}</p>
+          <div className="min-w-0 flex-1">
+            <p className={`${weekSheet ? "text-sm font-medium text-white" : "font-black"}`}>{exercise.name}</p>
+            <p className={`mt-1 ${weekSheet ? "text-xs text-iron-400" : "text-xs text-iron-400"}`}>
+              {exercise.primaryMuscles.slice(0, 2).join(" · ")}{exercise.equipment[0] ? ` · ${exercise.equipment[0]}` : ""}
+            </p>
+            <p className={`mt-1 ${weekSheet ? "text-[0.68rem] uppercase tracking-[0.12em] text-iron-500" : "text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500"}`}>
+              {isCompound(exercise) ? "compound" : "isolation"} · fatigue {fatigueRatingForExercise(exercise)}/5
+            </p>
+          </div>
           {isAlreadyAdded
-            ? <span className="rounded-full bg-white/10 px-2 py-0.5 text-[0.65rem] font-bold text-iron-400">Added</span>
+            ? <span className={`${weekSheet ? "rounded-sm border border-white/[0.08] px-2 py-0.5 text-[0.65rem] font-medium text-iron-500" : "rounded-full bg-white/10 px-2 py-0.5 text-[0.65rem] font-bold text-iron-400"}`}>Added</span>
             : isSelected
-              ? <Check className="h-4 w-4 text-volt" />
+              ? <Check className={`h-4 w-4 ${weekSheet ? "text-[#8fb9ff]" : "text-volt"}`} />
               : null}
         </div>
-        <p className="mt-1 text-xs text-iron-400">{exercise.primaryMuscles.join(", ")} · {exercise.equipment.join(", ")} · {exercise.movementPattern}</p>
-        <p className="mt-1 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500">{isCompound(exercise) ? "compound" : "isolation/accessory"} · fatigue {fatigueRatingForExercise(exercise)}/5</p>
       </button>
     );
   };
 
-  return (
-    <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
-      <div className="mb-3 flex items-center gap-2">
-        <SlidersHorizontal className="h-4 w-4 text-volt" />
-        <p className="font-black">Exercise picker</p>
-      </div>
-      <p className="mb-3 text-sm text-iron-300">Search and select exercises from the exercise library.</p>
-      <input className="field" placeholder="Search name, muscle, equipment, movement pattern..." value={query} onChange={(event) => setQuery(event.target.value)} />
-      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
-          <option value="all">Muscle</option>
-          {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-        </select>
-        <select className="field" value={equipment} onChange={(event) => setEquipment(event.target.value)}>
-          <option value="all">Equipment</option>
-          {equipmentOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-        </select>
-        <select className="field" value={pattern} onChange={(event) => setPattern(event.target.value)}>
-          <option value="all">Pattern</option>
-          {movementOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-        </select>
-        <select className="field" value={fatigue} onChange={(event) => setFatigue(event.target.value)}>
-          <option value="all">Fatigue</option>
-          {[1, 2, 3, 4, 5].map((item) => <option key={item} value={item}>{item}/5</option>)}
-        </select>
-      </div>
+  const pickerBody = (
+    <>
+      {weekSheet ? (
+        <div className="border-b border-white/[0.06] px-4 py-4">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-base font-semibold text-white">{title || "Add exercise"}</p>
+            {onClose && <button className="btn-compact" onClick={onClose}>Cancel</button>}
+          </div>
+          <div className="mt-4">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Search</p>
+            <input className="field mt-2" placeholder="Search exercises..." value={query} onChange={(event) => setQuery(event.target.value)} />
+          </div>
+          <div className="mt-4">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Filters</p>
+            <div className="-mx-4 mt-2 overflow-x-auto px-4 scrollbar-none">
+              <div className="flex min-w-max gap-2">
+                <select className="field min-w-[8.5rem]" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+                  <option value="all">Muscle</option>
+                  {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+                <select className="field min-w-[8.5rem]" value={equipment} onChange={(event) => setEquipment(event.target.value)}>
+                  <option value="all">Equipment</option>
+                  {equipmentOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+                <select className="field min-w-[8.5rem]" value={pattern} onChange={(event) => setPattern(event.target.value)}>
+                  <option value="all">Pattern</option>
+                  {movementOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </select>
+                <select className="field min-w-[8rem]" value={fatigue} onChange={(event) => setFatigue(event.target.value)}>
+                  <option value="all">Fatigue</option>
+                  {[1, 2, 3, 4, 5].map((item) => <option key={item} value={item}>{item}/5</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="mb-3 flex items-center gap-2">
+            <SlidersHorizontal className="h-4 w-4 text-volt" />
+            <p className="font-black">Exercise picker</p>
+          </div>
+          <p className="mb-3 text-sm text-iron-300">Search and select exercises from the exercise library.</p>
+          <input className="field" placeholder="Search name, muscle, equipment, movement pattern..." value={query} onChange={(event) => setQuery(event.target.value)} />
+        </>
+      )}
+      {!weekSheet && (
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+            <option value="all">Muscle</option>
+            {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <select className="field" value={equipment} onChange={(event) => setEquipment(event.target.value)}>
+            <option value="all">Equipment</option>
+            {equipmentOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <select className="field" value={pattern} onChange={(event) => setPattern(event.target.value)}>
+            <option value="all">Pattern</option>
+            {movementOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <select className="field" value={fatigue} onChange={(event) => setFatigue(event.target.value)}>
+            <option value="all">Fatigue</option>
+            {[1, 2, 3, 4, 5].map((item) => <option key={item} value={item}>{item}/5</option>)}
+          </select>
+        </div>
+      )}
       {groupedSections.length ? (
-        <div className="mt-3 space-y-3">
+        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : "mt-3 space-y-3"}>
           {groupedSections.map((section) => (
-            <div key={section.muscle} className="rounded-lg border border-white/10 bg-white/[0.035] p-2">
-              <p className="label mb-2">{section.muscle}</p>
-              <div className="grid gap-2 sm:grid-cols-2">{section.exercises.map(renderExerciseButton)}</div>
+            <div key={section.muscle} className={weekSheet ? "mb-4" : "rounded-lg border border-white/10 bg-white/[0.035] p-2"}>
+              <p className={`${weekSheet ? "mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500" : "label mb-2"}`}>{section.muscle}</p>
+              <div className={weekSheet ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "grid gap-2 sm:grid-cols-2"}>{section.exercises.map(renderExerciseButton)}</div>
             </div>
           ))}
         </div>
       ) : (
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">{matches.map(renderExerciseButton)}</div>
+        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : "mt-3 grid gap-2 sm:grid-cols-2"}>
+          <div className={weekSheet ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "contents"}>{matches.map(renderExerciseButton)}</div>
+        </div>
       )}
       {!matches.length && !groupedSections.length && <EmptyState title="No exercises found" detail="Try a broader muscle, equipment, or movement filter." />}
+    </>
+  );
+
+  return weekSheet ? (
+    <div className="apollo-picker-sheet">
+      <div className="apollo-picker-panel">{pickerBody}</div>
     </div>
+  ) : (
+    <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">{pickerBody}</div>
   );
 }
 
@@ -5163,8 +6325,9 @@ function LibraryScreen({
   const [gymSpecificFilter, setGymSpecificFilter] = useState<string>("all");
   const [progressExerciseId, setProgressExerciseId] = useState<string | undefined>();
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>();
+  const [isCreatingExercise, setIsCreatingExercise] = useState(false);
   const [showAdvancedExercise, setShowAdvancedExercise] = useState(false);
-  const [showAllSecondaryMuscles, setShowAllSecondaryMuscles] = useState(false);
+  const [musclePickerRole, setMusclePickerRole] = useState<"primaryMuscles" | "secondaryMuscles" | undefined>();
   const [parentSearch, setParentSearch] = useState("");
   const [showVariations, setShowVariations] = useState(false);
   const [expandedVariantParentIds, setExpandedVariantParentIds] = useState<Set<string>>(new Set());
@@ -5191,10 +6354,16 @@ function LibraryScreen({
     variationType: "",
   };
   const [draft, setDraft] = useState(emptyDraft);
+  const selectedExercise = editingExerciseId ? db.exercises.find((exercise) => exercise.id === editingExerciseId) : undefined;
+  const inspectorTitle = editingExerciseId ? "Exercise Inspector" : "Add Exercise";
+  const isMobileInspectorOpen = Boolean(editingExerciseId || isCreatingExercise);
+  const filterMuscleOptions = [
+    { id: "all", label: "All muscles" },
+    ...LIBRARY_MUSCLE_GROUPS.map((group) => ({ id: group.id, label: group.label })),
+  ];
 
-  function startEditExercise(exercise: Exercise) {
-    setEditingExerciseId(exercise.id);
-    setDraft({
+  function buildDraftFromExercise(exercise: Exercise) {
+    return {
       name: exercise.name,
       notes: exercise.notes || exercise.description || "",
       primaryMuscles: exercise.primaryMuscles,
@@ -5215,14 +6384,39 @@ function LibraryScreen({
       isVariation: exercise.isVariation || false,
       parentExerciseId: exercise.parentExerciseId || "",
       variationType: exercise.variationType || exercise.variationName || "",
-    });
+    };
+  }
+
+  function closeInspector() {
+    setEditingExerciseId(undefined);
+    setIsCreatingExercise(false);
+    setDraft(emptyDraft);
     setShowAdvancedExercise(false);
-    setShowAllSecondaryMuscles(false);
     setParentSearch("");
+    setMusclePickerRole(undefined);
+  }
+
+  function startAddExercise() {
+    setEditingExerciseId(undefined);
+    setIsCreatingExercise(true);
+    setDraft(emptyDraft);
+    setShowAdvancedExercise(false);
+    setParentSearch("");
+    setMusclePickerRole(undefined);
+  }
+
+  function startEditExercise(exercise: Exercise) {
+    setEditingExerciseId(exercise.id);
+    setIsCreatingExercise(false);
+    setDraft(buildDraftFromExercise(exercise));
+    setShowAdvancedExercise(false);
+    setParentSearch("");
+    setMusclePickerRole(undefined);
   }
 
   function startAddVariation(parent: Exercise) {
     setEditingExerciseId(undefined);
+    setIsCreatingExercise(true);
     setDraft({
       name: `${parent.name} (Variation)`,
       notes: "",
@@ -5246,22 +6440,23 @@ function LibraryScreen({
       variationType: "",
     });
     setShowAdvancedExercise(false);
-    setShowAllSecondaryMuscles(false);
     setParentSearch(parent.name);
+    setMusclePickerRole(undefined);
   }
+
   const exercises = db.exercises.filter((exercise) => {
-    // Ownership: exclude other users' custom exercises
     if (exercise.ownerUserId && exercise.ownerUserId !== user.id) return false;
     const isCustom = !!(exercise.ownerUserId);
-    // Archived items only show in the "archived" tab
     if (exercise.isArchived && sourceFilter !== "archived") return false;
     if (sourceFilter === "custom" && !isCustom) return false;
     if (sourceFilter === "default" && isCustom) return false;
-    // Hide variations from the flat list when no search query and variations toggle is off
     if (exercise.isVariation && !query && !showVariations) return false;
     const searchText = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
     const matchesQuery = searchText.includes(query.toLowerCase());
-    const matchesMuscle = muscle === "all" || exercise.primaryMuscles.includes(muscle as MuscleGroup) || exercise.muscleGroup === muscle;
+    const groupedMuscles = muscle === "all"
+      ? []
+      : LIBRARY_MUSCLE_GROUPS.find((group) => group.id === muscle)?.muscles || [muscle as MuscleGroup];
+    const matchesMuscle = muscle === "all" || exercise.primaryMuscles.some((item) => groupedMuscles.includes(item));
     const matchesEquipment = equipmentFilter === "all" || exercise.equipment.includes(equipmentFilter as EquipmentCategory);
     const matchesPattern = patternFilter === "all" || exercise.movementPattern === patternFilter || exercise.movementPatterns?.includes(patternFilter as MovementPattern);
     const matchesKind = kindFilter === "all" || (kindFilter === "compound" ? isCompound(exercise) : exercise.kind.includes("isolation") || !isCompound(exercise));
@@ -5269,6 +6464,10 @@ function LibraryScreen({
     return matchesQuery && matchesMuscle && matchesEquipment && matchesPattern && matchesKind && matchesGymSpecific;
   });
   const progressExercise = db.exercises.find((exercise) => exercise.id === progressExerciseId);
+  const parentExerciseOptions = db.exercises
+    .filter((exercise) => !exercise.isVariation && !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id) && exercise.id !== editingExerciseId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const filteredParentOptions = parentExerciseOptions.filter((exercise) => exercise.name.toLowerCase().includes(parentSearch.toLowerCase()));
 
   function saveEditExercise() {
     if (!draft.name.trim() || !editingExerciseId) return;
@@ -5307,8 +6506,7 @@ function LibraryScreen({
       target.updatedAt = nowIso();
       return data;
     });
-    setEditingExerciseId(undefined);
-    setDraft(emptyDraft);
+    setIsCreatingExercise(false);
   }
 
   function addCustomExercise() {
@@ -5361,7 +6559,11 @@ function LibraryScreen({
       data.exercises.unshift(exercise);
       return data;
     });
-    setDraft(emptyDraft);
+    setEditingExerciseId(exercise.id);
+    setIsCreatingExercise(false);
+    setDraft(buildDraftFromExercise(exercise));
+    setShowAdvancedExercise(false);
+    setMusclePickerRole(undefined);
   }
 
   function deleteExercise(exercise: Exercise) {
@@ -5376,7 +6578,7 @@ function LibraryScreen({
         data.exercises = data.exercises.filter((e) => e.id !== exercise.id);
         return data;
       });
-      if (editingExerciseId === exercise.id) { setEditingExerciseId(undefined); setDraft(emptyDraft); }
+      if (editingExerciseId === exercise.id) closeInspector();
     } else {
       if (!confirm(`Hide "${exercise.name}" from the library? It will no longer appear in searches. You can reset defaults to restore it.`)) return;
       void updateDb((data) => {
@@ -5384,7 +6586,7 @@ function LibraryScreen({
         if (target) { target.isArchived = true; target.updatedAt = nowIso(); }
         return data;
       });
-      if (editingExerciseId === exercise.id) { setEditingExerciseId(undefined); setDraft(emptyDraft); }
+      if (editingExerciseId === exercise.id) closeInspector();
     }
   }
 
@@ -5401,8 +6603,7 @@ function LibraryScreen({
       target.updatedAt = nowIso();
       return data;
     });
-    setEditingExerciseId(undefined);
-    setDraft(emptyDraft);
+    closeInspector();
   }
 
   function duplicateExercise(exercise: Exercise) {
@@ -5446,6 +6647,285 @@ function LibraryScreen({
     }));
   }
 
+  const effectiveLoading = getEffectiveLoading(
+    { category: draft.equipment, loadingProfileId: draft.loadingProfileId || undefined, defaultIncrement: draft.defaultIncrement, customIncrement: draft.customIncrement, trackPerSide: false },
+    db.loadingProfiles,
+    user.unit as UnitPreference
+  );
+  const profileOptions = ["", ...(db.loadingProfiles ?? []).map((profile) => profile.id)];
+  const profileLabels: Record<string, string> = { "": "Auto / Default" };
+  (db.loadingProfiles ?? []).forEach((profile) => {
+    profileLabels[profile.id] = profile.name;
+  });
+  const loadingHelperText = `${effectiveLoading.source === "exercise_profile" ? effectiveLoading.loadingProfileName : `Auto: ${formatEquipmentLabel(draft.equipment)}`} · ${effectiveLoading.increment} ${effectiveLoading.unit} jumps`;
+  const isDefaultExercise = Boolean(selectedExercise && !selectedExercise.ownerUserId);
+  const variationCount = selectedExercise ? db.exercises.filter((exercise) => exercise.parentExerciseId === selectedExercise.id && !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id)).length : 0;
+  const selectedParent = draft.parentExerciseId ? db.exercises.find((exercise) => exercise.id === draft.parentExerciseId) : undefined;
+
+  const inspectorBody = (
+    <div className="flex h-full flex-col">
+      <div className="border-b border-white/[0.08] px-4 py-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-iron-500">
+              {editingExerciseId ? "Exercise Inspector" : "Add Exercise"}
+            </p>
+            <h2 className="truncate text-lg font-semibold text-white">{draft.name.trim() || inspectorTitle}</h2>
+            {selectedExercise ? (
+              <p className="mt-1 text-xs text-iron-500">
+                {summarizeExerciseListMuscles(selectedExercise)} · {selectedExercise.equipment[0]} · {inferCompactExerciseType(selectedExercise)}
+              </p>
+            ) : (
+              <p className="mt-1 text-xs text-iron-500">Create a library exercise with compact primary and secondary muscle summaries.</p>
+            )}
+          </div>
+          <button className="xl:hidden btn-ghost" onClick={closeInspector} aria-label="Close inspector">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        {isDefaultExercise ? (
+          <p className={`mt-3 rounded-sm border px-3 py-2 text-xs ${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`}>
+            Editing default exercise. {editSaveContext(authMode, cloudStatus)} Reset to restore app defaults.
+          </p>
+        ) : null}
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        <div className="space-y-4">
+          <TextField label="Name" value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <SelectField label="Equipment" value={draft.equipment} options={equipmentOptions} onChange={(value) => setDraft((item) => ({ ...item, equipment: value as EquipmentCategory }))} />
+            <SelectField
+              label="Category"
+              value={draft.exerciseCategory}
+              options={exerciseCategoryOptions}
+              onChange={(value) => setDraft((item) => ({
+                ...item,
+                exerciseCategory: value as ExerciseCategoryLabel,
+                isCompound: ["sbd", "main_compound", "secondary_compound", "machine_compound"].includes(value) || item.isCompound,
+              }))}
+            />
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default" ? (
+              <div className="md:col-span-2">
+                <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Default unit</p>
+                  <p className="mt-1 text-sm text-iron-200">Controlled by {effectiveLoading.loadingProfileName}</p>
+                </div>
+              </div>
+            ) : (
+              <SelectField
+                label="Default unit"
+                value={draft.defaultUnit}
+                options={exerciseUnitOptions}
+                onChange={(defaultUnit) => setDraft((item) => ({
+                  ...item,
+                  defaultUnit: defaultUnit as ExerciseUnit,
+                  allowedUnits: Array.from(new Set([...item.allowedUnits, defaultUnit as ExerciseUnit])),
+                }))}
+              />
+            )}
+            <div className={effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default" ? "md:col-span-2" : ""}>
+              <SelectField label="Loading Profile" value={draft.loadingProfileId} options={profileOptions} labels={profileLabels} onChange={(value) => setDraft((item) => ({ ...item, loadingProfileId: value }))} />
+              <p className="mt-1 text-xs text-iron-500">{loadingHelperText}</p>
+            </div>
+          </div>
+
+          {effectiveLoading.source !== "exercise_profile" && effectiveLoading.source !== "equipment_default" ? (
+            <div className="grid gap-3 md:grid-cols-2">
+              <NumberField label="Default increment" value={draft.defaultIncrement} onChange={(defaultIncrement) => setDraft((item) => ({ ...item, defaultIncrement }))} />
+              <NumberField label="Custom increment" value={draft.customIncrement} onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement }))} />
+            </div>
+          ) : null}
+
+          <div className="border-y border-white/[0.08] py-4">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Muscles</p>
+            <div className="mt-3 space-y-3">
+              <div className="flex items-start justify-between gap-3 border-b border-white/[0.06] pb-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white">Primary</p>
+                  <p className="mt-1 text-sm text-iron-300">{summarizeMuscleList(draft.primaryMuscles)}</p>
+                </div>
+                <button className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`} onClick={() => setMusclePickerRole("primaryMuscles")}>
+                  Edit
+                </button>
+              </div>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white">Secondary</p>
+                  <p className="mt-1 text-sm text-iron-300">{summarizeMuscleList(draft.secondaryMuscles)}</p>
+                </div>
+                <button className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`} onClick={() => setMusclePickerRole("secondaryMuscles")}>
+                  Edit
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <TextField label="Notes / cues" value={draft.notes} onChange={(notes) => setDraft((value) => ({ ...value, notes }))} />
+
+          <div className="border-b border-white/[0.08] pb-4">
+            <button
+              className="flex w-full items-center justify-between gap-3 border border-white/[0.08] bg-white/[0.03] px-3 py-3 text-left transition hover:bg-white/[0.05]"
+              onClick={() => setShowAdvancedExercise((value) => !value)}
+            >
+              <div>
+                <p className="text-sm font-semibold text-white">Advanced</p>
+                <p className="mt-1 text-xs text-iron-500">Variations, patterns, units, and hidden/default behavior.</p>
+              </div>
+              <ChevronRight className={`h-4 w-4 text-iron-500 transition ${showAdvancedExercise ? "rotate-90" : ""}`} />
+            </button>
+
+            {showAdvancedExercise ? (
+              <div className="mt-3 space-y-4 border border-white/[0.08] bg-white/[0.02] p-3">
+                <div className="space-y-3 border-b border-white/[0.08] pb-4">
+                  <button
+                    className="flex w-full items-center justify-between gap-3 border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-left transition hover:bg-white/[0.05]"
+                    onClick={() => setDraft((value) => ({ ...value, isVariation: !value.isVariation }))}
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-white">Variations</p>
+                      <p className="mt-1 text-xs text-iron-500">
+                        {draft.isVariation ? "This exercise is linked to a parent movement." : "Keep this off for standard standalone exercises."}
+                      </p>
+                    </div>
+                    <span className={`text-xs font-semibold ${draft.isVariation ? LIBRARY_BLUE_TEXT : "text-iron-500"}`}>{draft.isVariation ? "On" : "Off"}</span>
+                  </button>
+
+                  {draft.isVariation ? (
+                    <div className="space-y-3">
+                      {selectedParent ? (
+                        <div className={`flex items-center gap-2 rounded-sm border px-3 py-2 ${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL}`}>
+                          <span className={`min-w-0 flex-1 truncate text-sm font-semibold ${LIBRARY_BLUE_TEXT}`}>{selectedParent.name}</span>
+                          <button className="text-iron-300 transition hover:text-white" onClick={() => { setDraft((value) => ({ ...value, parentExerciseId: "" })); setParentSearch(""); }}>
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div>
+                          <TextField label="Parent exercise" value={parentSearch} onChange={setParentSearch} />
+                          {parentSearch.trim() ? (
+                            <div className="mt-2 max-h-44 overflow-y-auto border border-white/[0.08] bg-iron-950/80">
+                              {filteredParentOptions.length ? filteredParentOptions.map((exercise) => (
+                                <button
+                                  key={exercise.id}
+                                  className="flex w-full items-center justify-between gap-3 border-b border-white/[0.06] px-3 py-2 text-left text-sm text-iron-200 transition last:border-b-0 hover:bg-white/[0.05]"
+                                  onClick={() => { setDraft((value) => ({ ...value, parentExerciseId: exercise.id })); setParentSearch(exercise.name); }}
+                                >
+                                  <span className="truncate">{exercise.name}</span>
+                                  <ChevronRight className="h-4 w-4 text-iron-600" />
+                                </button>
+                              )) : <p className="px-3 py-2 text-xs text-iron-500">No exercises found.</p>}
+                            </div>
+                          ) : null}
+                        </div>
+                      )}
+                      <TextField label="Variation type" value={draft.variationType} onChange={(variationType) => setDraft((value) => ({ ...value, variationType }))} />
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <NumberField label="Fatigue rating" value={draft.fatigueRating} onChange={(fatigueRating) => setDraft((item) => ({ ...item, fatigueRating: Math.min(5, Math.max(1, fatigueRating)) }))} />
+                  <div>
+                    <p className="label mb-2">Flags</p>
+                    <div className="space-y-2 rounded-sm border border-white/[0.08] bg-white/[0.03] p-3 text-sm text-iron-200">
+                      <label className="flex items-center gap-2"><input type="checkbox" checked={draft.isCompound} onChange={(event) => setDraft((item) => ({ ...item, isCompound: event.target.checked }))} /> Compound movement</label>
+                      <label className="flex items-center gap-2"><input type="checkbox" checked={draft.canBeGymSpecific} onChange={(event) => setDraft((item) => ({ ...item, canBeGymSpecific: event.target.checked }))} /> Can vary by gym</label>
+                      <label className="flex items-center gap-2"><input type="checkbox" checked={draft.isGymSpecificEnabled} onChange={(event) => setDraft((item) => ({ ...item, isGymSpecificEnabled: event.target.checked, canBeGymSpecific: item.canBeGymSpecific || event.target.checked }))} /> Enable gym-specific behavior</label>
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <p className="label mb-2">Movement patterns</p>
+                  <div className="flex flex-wrap gap-2">
+                    {movementOptions.map((item) => (
+                      <button
+                        key={item}
+                        className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${
+                          draft.movementPatterns.includes(item)
+                            ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`
+                            : "border-white/[0.1] bg-white/[0.04] text-iron-300 hover:bg-white/[0.08]"
+                        }`}
+                        onClick={() => toggleDraftPattern(item)}
+                      >
+                        {titleCaseLabel(item)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <p className="label mb-2">Allowed units</p>
+                  <div className="flex flex-wrap gap-2">
+                    {exerciseUnitOptions.map((item) => (
+                      <button
+                        key={item}
+                        className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${
+                          draft.allowedUnits.includes(item)
+                            ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`
+                            : "border-white/[0.1] bg-white/[0.04] text-iron-300 hover:bg-white/[0.08]"
+                        }`}
+                        onClick={() => toggleDraftUnit(item)}
+                      >
+                        {titleCaseLabel(item)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <TextField label="Tags (comma-separated)" value={draft.tags} onChange={(tags) => setDraft((value) => ({ ...value, tags }))} />
+              </div>
+            ) : null}
+          </div>
+
+          {selectedExercise ? (
+            <div>
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Actions</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button className="btn-secondary" onClick={() => setProgressExerciseId(selectedExercise.id)}><BarChart3 className="h-4 w-4" /> Progress</button>
+                <button className="btn-secondary" onClick={() => duplicateExercise(selectedExercise)}><Copy className="h-4 w-4" /> Duplicate</button>
+                <button className="btn-secondary" onClick={() => startAddVariation(selectedExercise)}><GitBranch className="h-4 w-4" /> Add Variation</button>
+                {!selectedExercise.ownerUserId && selectedExercise.userModified && builtInExercises.some((exercise) => exercise.id === selectedExercise.id) ? (
+                  <button className={`btn-secondary ${LIBRARY_BLUE_TEXT}`} onClick={() => resetExerciseToDefault(selectedExercise)}><RotateCcw className="h-4 w-4" /> Reset</button>
+                ) : null}
+                <button className="btn-secondary border-ember/40 text-orange-100" onClick={() => deleteExercise(selectedExercise)}>
+                  {selectedExercise.ownerUserId ? <Trash2 className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                  {selectedExercise.ownerUserId ? "Delete" : "Hide"}
+                </button>
+              </div>
+              {variationCount > 0 ? <p className="mt-2 text-xs text-iron-500">{variationCount} variation{variationCount === 1 ? "" : "s"} linked to this exercise.</p> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="sticky bottom-0 border-t border-white/[0.08] bg-iron-950/95 px-4 py-3 backdrop-blur">
+        {editingExerciseId ? (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={saveEditExercise}>
+              <Save className="h-4 w-4" />
+              Save changes
+            </button>
+            <button className="btn-secondary" onClick={closeInspector}>Cancel</button>
+          </div>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={addCustomExercise}>
+              <Plus className="h-4 w-4" />
+              Add Exercise
+            </button>
+            <button className="btn-secondary" onClick={closeInspector}>Cancel</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-5">
       <PageTitle eyebrow="Library" title="Exercises &amp; Splits" />
@@ -5462,350 +6942,172 @@ function LibraryScreen({
       {section === "splits" && <SplitLibraryManager db={db} user={user} updateDb={updateDb} authMode={authMode} cloudStatus={cloudStatus} />}
       {section === "exercises" && (
         <>
-          <section className="grid gap-4 xl:grid-cols-[1fr_24rem]">
-            <div className="panel p-4">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                <p className="text-sm font-semibold text-iron-300">Exercises</p>
-                <div className="flex items-center gap-2">
-                  <button
-                    className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${showVariations ? "bg-white/10 text-iron-200" : "text-iron-500 hover:bg-white/[0.07] hover:text-iron-300"}`}
-                    onClick={() => setShowVariations((v) => !v)}
-                    title={showVariations ? "Hide variations from list" : "Show variations in list"}
-                  >
-                    <GitBranch className="mr-1 inline h-3 w-3" />{showVariations ? "Variations" : "Variations"}
+          <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
+            <div className="border border-white/[0.08] bg-white/[0.02]">
+              <div className="border-b border-white/[0.08] px-4 py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-iron-500">Exercise Library</p>
+                    <h2 className="text-lg font-semibold text-white">Exercises</h2>
+                  </div>
+                  <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={startAddExercise}>
+                    <Plus className="h-4 w-4" />
+                    Add Exercise
                   </button>
-                  <p className="text-xs text-iron-500">{exercises.length}</p>
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {([["all", "All"], ["default", "Default"], ["custom", "Custom"], ["archived", "Hidden"]] as const).map(([id, label]) => (
+                    <button
+                      key={id}
+                      className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${
+                        sourceFilter === id
+                          ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`
+                          : "border-white/[0.08] bg-white/[0.03] text-iron-300 hover:bg-white/[0.06]"
+                      }`}
+                      onClick={() => setSourceFilter(id)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                  <button
+                    className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${
+                      showVariations
+                        ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`
+                        : "border-white/[0.08] bg-white/[0.03] text-iron-300 hover:bg-white/[0.06]"
+                    }`}
+                    onClick={() => setShowVariations((value) => !value)}
+                  >
+                    Variations {showVariations ? "On" : "Off"}
+                  </button>
+                </div>
+
+                <div className="mt-4">
+                  <input className="field" placeholder="Search name, muscle, or equipment..." value={query} onChange={(event) => setQuery(event.target.value)} />
+                </div>
+
+                <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-4">
+                  <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+                    {filterMuscleOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+                  </select>
+                  <select className="field" value={equipmentFilter} onChange={(event) => setEquipmentFilter(event.target.value)}>
+                    <option value="all">All equipment</option>
+                    {equipmentOptions.map((item) => <option key={item} value={item}>{formatEquipmentLabel(item)}</option>)}
+                  </select>
+                  <select className="field" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
+                    <option value="all">Any type</option>
+                    <option value="compound">Compound</option>
+                    <option value="isolation">Accessory / isolation</option>
+                  </select>
+                  <select className="field" value={gymSpecificFilter} onChange={(event) => setGymSpecificFilter(event.target.value)}>
+                    <option value="all">Gym: any</option>
+                    <option value="enabled">Gym-specific</option>
+                    <option value="disabled">Standard</option>
+                  </select>
                 </div>
               </div>
-              <div className="mb-3 flex gap-1">
-                {([["all", "All"], ["default", "Default"], ["custom", "Custom"], ["archived", "Hidden"]] as const).map(([id, label]) => (
-                  <button key={id} className={`rounded-lg px-3 py-1.5 text-xs font-bold transition ${sourceFilter === id ? "bg-volt text-iron-950" : "bg-white/10 text-iron-300 hover:bg-white/20"}`} onClick={() => setSourceFilter(id)}>{label}</button>
-                ))}
-              </div>
-              <input className="field" placeholder="Search name, muscle, or equipment..." value={query} onChange={(event) => setQuery(event.target.value)} />
-              <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
-                <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
-                  <option value="all">All muscles</option>
-                  {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-                <select className="field" value={equipmentFilter} onChange={(event) => setEquipmentFilter(event.target.value)}>
-                  <option value="all">All equipment</option>
-                  {equipmentOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-                <select className="field" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}>
-                  <option value="all">Any type</option>
-                  <option value="compound">Compound</option>
-                  <option value="isolation">Isolation/accessory</option>
-                </select>
-                <select className="field" value={gymSpecificFilter} onChange={(event) => setGymSpecificFilter(event.target.value)}>
-                  <option value="all">Gym: any</option>
-                  <option value="enabled">Gym-specific</option>
-                  <option value="disabled">Standard</option>
-                </select>
-              </div>
-              <div className="scrollbar-none mt-4 max-h-[32rem] overflow-y-auto rounded-lg border border-white/10 bg-iron-950/45 p-2">
-                <div className="space-y-2">
-                  {exercises.map((exercise) => {
-                    const childVariations = !query && !showVariations
-                      ? db.exercises.filter((e) => e.parentExerciseId === exercise.id && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id))
-                      : [];
-                    const isExpanded = expandedVariantParentIds.has(exercise.id);
-                    const parentName = exercise.isVariation && exercise.parentExerciseId
-                      ? db.exercises.find((e) => e.id === exercise.parentExerciseId)?.name
-                      : undefined;
-                    return (
-                      <div key={exercise.id}>
-                        <div
-                          className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-3 py-2.5 cursor-pointer transition hover:bg-white/[0.07] active:bg-white/[0.1]"
-                          onClick={() => startEditExercise(exercise)}
-                        >
-                          <div className="flex items-center gap-2">
-                            <div className="min-w-0 flex-1">
-                              <p className="font-semibold text-sm text-iron-100">{exercise.name}</p>
-                              {parentName && (
-                                <p className="mt-0.5 flex items-center gap-1 text-[0.68rem] font-bold text-iron-400">
-                                  <GitBranch className="h-3 w-3" /> Variation of {parentName}
-                                </p>
-                              )}
-                              <p className="mt-0.5 text-xs text-iron-500">{exercise.primaryMuscles.join(", ")} · {exercise.equipment.join(", ")} · {exercise.ownerUserId ? "custom" : isCompound(exercise) ? "compound" : "isolation"}{exercise.userModified ? " · edited" : ""}{exercise.isArchived ? " · hidden" : ""}</p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-0.5">
-                              {!exercise.ownerUserId && exercise.userModified && builtInExercises.some((b) => b.id === exercise.id) && (
-                                <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); resetExerciseToDefault(exercise); }} title="Reset to app default">
-                                  <RotateCcw className="h-3.5 w-3.5 text-volt/80" />
-                                </button>
-                              )}
-                              <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); setProgressExerciseId(exercise.id); }} title="Progress chart">
-                                <BarChart3 className="h-3.5 w-3.5 text-iron-500" />
-                              </button>
-                              <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); duplicateExercise(exercise); }} title="Duplicate">
-                                <Copy className="h-3.5 w-3.5 text-iron-500" />
-                              </button>
-                              {exercise.ownerUserId ? (
-                                <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); deleteExercise(exercise); }} title="Delete custom exercise">
-                                  <Trash2 className="h-3.5 w-3.5 text-orange-400/70" />
-                                </button>
-                              ) : !exercise.isArchived ? (
-                                <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); deleteExercise(exercise); }} title="Hide from library">
-                                  <EyeOff className="h-3.5 w-3.5 text-iron-600" />
-                                </button>
-                              ) : null}
-                              <ChevronRight className="h-4 w-4 text-iron-600" />
-                            </div>
+
+              <div className="px-4 py-3 text-xs text-iron-500">{exercises.length} exercise{exercises.length === 1 ? "" : "s"}</div>
+
+              <div className="max-h-[42rem] overflow-y-auto border-t border-white/[0.08]">
+                {exercises.length ? exercises.map((exercise) => {
+                  const childVariations = !query && !showVariations
+                    ? db.exercises.filter((item) => item.parentExerciseId === exercise.id && !item.isArchived && (!item.ownerUserId || item.ownerUserId === user.id))
+                    : [];
+                  const isExpanded = expandedVariantParentIds.has(exercise.id);
+                  const isSelected = editingExerciseId === exercise.id;
+                  const parentName = exercise.isVariation && exercise.parentExerciseId
+                    ? db.exercises.find((item) => item.id === exercise.parentExerciseId)?.name
+                    : undefined;
+                  return (
+                    <div key={exercise.id} className="border-b border-white/[0.06] last:border-b-0">
+                      <button
+                        className={`group relative flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-white/[0.04] ${isSelected ? "bg-[#0a84ff]/[0.08]" : ""}`}
+                        onClick={() => startEditExercise(exercise)}
+                      >
+                        <span className={`absolute inset-y-2 left-0 w-[2px] ${isSelected ? "bg-[#0a84ff]" : "bg-transparent group-hover:bg-[#0a84ff]/45"}`} />
+                        <div className="min-w-0 flex-1 pl-2">
+                          <p className="truncate text-sm font-semibold text-white">{exercise.name}</p>
+                          <p className="mt-1 truncate text-xs text-iron-400">
+                            {summarizeExerciseListMuscles(exercise)}
+                            {exercise.equipment[0] ? ` · ${exercise.equipment[0]}` : ""}
+                            {exercise.isVariation ? "" : ` · ${inferCompactExerciseType(exercise)}`}
+                          </p>
+                          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[0.68rem] text-iron-500">
+                            {parentName ? <span>variation of {parentName}</span> : null}
+                            {childVariations.length > 0 ? <span>{childVariations.length} variation{childVariations.length === 1 ? "" : "s"}</span> : null}
+                            {exercise.ownerUserId ? <span>custom</span> : null}
+                            {exercise.userModified ? <span>edited</span> : null}
+                            {exercise.isArchived ? <span>hidden</span> : null}
                           </div>
                         </div>
-                        {childVariations.length > 0 && (
-                          <div className="ml-4 mt-1">
-                            <button
-                              className="flex items-center gap-1 rounded px-2 py-1 text-[0.68rem] font-bold text-iron-400 hover:text-iron-200 transition"
-                              onClick={() => setExpandedVariantParentIds((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(exercise.id)) next.delete(exercise.id); else next.add(exercise.id);
-                                return next;
-                              })}
-                            >
-                              <ChevronDown className={`h-3 w-3 transition ${isExpanded ? "rotate-180" : ""}`} />
-                              {childVariations.length} variation{childVariations.length > 1 ? "s" : ""}
-                              <button className="ml-1 text-iron-500 hover:text-volt" onClick={(e) => { e.stopPropagation(); startAddVariation(exercise); }} title="Add variation">
-                                <Plus className="h-3 w-3" />
-                              </button>
-                            </button>
-                            {isExpanded && (
-                              <div className="mt-1 space-y-0.5 border-l border-white/[0.07] pl-3">
-                                {childVariations.map((child) => (
-                                  <div
-                                    key={child.id}
-                                    className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 cursor-pointer transition hover:bg-white/[0.06]"
-                                    onClick={() => startEditExercise(child)}
-                                  >
-                                    <div className="flex items-center gap-2">
-                                      <div className="min-w-0 flex-1">
-                                        <p className="text-sm font-medium text-iron-200">{child.name}</p>
-                                        {child.variationType && <p className="text-[0.68rem] text-iron-500">{child.variationType}</p>}
-                                      </div>
-                                      <div className="flex shrink-0 items-center gap-0.5">
-                                        <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); setProgressExerciseId(child.id); }} title="Progress chart"><BarChart3 className="h-3 w-3 text-iron-500" /></button>
-                                        <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); duplicateExercise(child); }} title="Duplicate"><Copy className="h-3 w-3 text-iron-500" /></button>
-                                        {child.ownerUserId ? (
-                                          <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); deleteExercise(child); }} title="Delete"><Trash2 className="h-3 w-3 text-orange-400/70" /></button>
-                                        ) : !child.isArchived ? (
-                                          <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); deleteExercise(child); }} title="Hide"><EyeOff className="h-3 w-3 text-iron-600" /></button>
-                                        ) : null}
-                                        <ChevronRight className="h-3.5 w-3.5 text-iron-600" />
-                                      </div>
-                                    </div>
+                        <MoreHorizontal className="mt-0.5 h-4 w-4 shrink-0 text-iron-600" />
+                      </button>
+
+                      {childVariations.length > 0 ? (
+                        <div className="pb-2 pl-6 pr-4">
+                          <button
+                            className="flex items-center gap-1 px-2 py-1 text-[0.68rem] font-semibold text-iron-400 transition hover:text-iron-200"
+                            onClick={() => setExpandedVariantParentIds((current) => {
+                              const next = new Set(current);
+                              if (next.has(exercise.id)) next.delete(exercise.id);
+                              else next.add(exercise.id);
+                              return next;
+                            })}
+                          >
+                            <ChevronDown className={`h-3 w-3 transition ${isExpanded ? "rotate-180" : ""}`} />
+                            {isExpanded ? "Hide variations" : "Show variations"}
+                          </button>
+                          {isExpanded ? (
+                            <div className="mt-1 border-l border-white/[0.08]">
+                              {childVariations.map((child) => (
+                                <button
+                                  key={child.id}
+                                  className={`group relative flex w-full items-start gap-3 px-4 py-3 text-left transition hover:bg-white/[0.03] ${editingExerciseId === child.id ? "bg-[#0a84ff]/[0.06]" : ""}`}
+                                  onClick={() => startEditExercise(child)}
+                                >
+                                  <span className={`absolute inset-y-2 left-0 w-[2px] ${editingExerciseId === child.id ? "bg-[#0a84ff]" : "bg-transparent group-hover:bg-[#0a84ff]/35"}`} />
+                                  <div className="min-w-0 flex-1 pl-2">
+                                    <p className="truncate text-sm font-medium text-iron-200">{child.name}</p>
+                                    <p className="mt-1 truncate text-xs text-iron-500">
+                                      {child.variationType || summarizeExerciseListMuscles(child)}
+                                    </p>
                                   </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {!exercises.length && <EmptyState title="No exercises match" detail="Clear a filter or add a new exercise." />}
-                </div>
+                                  <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-iron-600" />
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                }) : <div className="px-4 py-8"><EmptyState title="No exercises match" detail="Clear a filter or add a new exercise." /></div>}
               </div>
             </div>
-            <div className={editingExerciseId ? "fixed inset-0 z-50 overflow-y-auto bg-iron-950 xl:static xl:inset-auto xl:z-auto xl:overflow-visible xl:bg-transparent" : ""}>
-              {editingExerciseId && (
-                <div className="xl:hidden sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-white/10 bg-iron-950 px-4 py-3 mb-2">
-                  <div className="min-w-0">
-                    <p className="font-black text-sm">Edit Exercise</p>
-                    {draft.name && <p className="truncate text-xs text-iron-400">{draft.name}</p>}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <button className="rounded-lg bg-volt px-3 py-1.5 text-xs font-black text-iron-950" onClick={saveEditExercise}>Save</button>
-                    <button className="btn-ghost" onClick={() => { setEditingExerciseId(undefined); setDraft(emptyDraft); }} aria-label="Close editor">
-                      <X className="h-5 w-5" />
-                    </button>
-                  </div>
-                </div>
-              )}
-            <Panel title={editingExerciseId ? "Edit Exercise" : "Add Exercise"} icon={editingExerciseId ? Pencil : Plus}>
-              <div className="space-y-3">
-                {editingExerciseId && (() => {
-                  const editing = db.exercises.find((e) => e.id === editingExerciseId);
-                  return editing && !editing.ownerUserId ? (
-                    <p className="rounded-lg border border-volt/30 bg-volt/5 px-3 py-2 text-xs text-volt">Editing default exercise — {editSaveContext(authMode, cloudStatus)} Use Reset to restore app defaults.</p>
-                  ) : null;
-                })()}
-                <TextField label="Name" value={draft.name} onChange={(name) => setDraft((value) => ({ ...value, name }))} />
-                <TextField label="Notes / cues" value={draft.notes} onChange={(notes) => setDraft((value) => ({ ...value, notes }))} />
-                <SelectField label="Equipment" value={draft.equipment} options={equipmentOptions} onChange={(value) => setDraft((item) => ({ ...item, equipment: value as EquipmentCategory }))} />
-                <SelectField label="Exercise category" value={draft.exerciseCategory} options={exerciseCategoryOptions} onChange={(value) => setDraft((item) => ({ ...item, exerciseCategory: value as ExerciseCategoryLabel, isCompound: ["sbd", "main_compound", "secondary_compound", "machine_compound"].includes(value) || item.isCompound }))} />
-                {(() => {
-                  const effectiveLoading = getEffectiveLoading(
-                    { category: draft.equipment, loadingProfileId: draft.loadingProfileId || undefined, defaultIncrement: draft.defaultIncrement, customIncrement: draft.customIncrement, trackPerSide: false },
-                    db.loadingProfiles,
-                    user.unit as UnitPreference
-                  );
-                  const profileOptions = ["", ...(db.loadingProfiles ?? []).map((p) => p.id)];
-                  const profileLabels: Record<string, string> = { "": "Auto / Default" };
-                  (db.loadingProfiles ?? []).forEach((p) => { profileLabels[p.id] = p.name; });
-                  const fieldLabel = draft.equipment === "cable" ? "Cable Stack" : "Loading Profile";
-                  const hasProfileActive = effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default";
-                  const effectiveText = (() => {
-                    const { increment, unit, source, loadingProfileName } = effectiveLoading;
-                    const jumpStr = `${increment} ${unit} jumps`;
-                    if (source === "exercise_profile") return `Using ${loadingProfileName}: ${jumpStr}`;
-                    if (source === "equipment_default") return `Auto (${draft.equipment}): ${loadingProfileName} — ${jumpStr}`;
-                    return `Exercise-specific: ${jumpStr}`;
-                  })();
-                  return (
-                    <>
-                      {hasProfileActive ? (
-                        <p className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-iron-400">
-                          Unit controlled by <span className="font-bold text-iron-200">{effectiveLoading.loadingProfileName}</span>
-                        </p>
-                      ) : (
-                        <SelectField label="Default unit" value={draft.defaultUnit} options={exerciseUnitOptions} onChange={(defaultUnit) => setDraft((item) => ({ ...item, defaultUnit: defaultUnit as ExerciseUnit, allowedUnits: Array.from(new Set([...item.allowedUnits, defaultUnit as ExerciseUnit])) }))} />
-                      )}
-                      <div>
-                        <SelectField label={fieldLabel} value={draft.loadingProfileId} options={profileOptions} labels={profileLabels} onChange={(v) => setDraft((item) => ({ ...item, loadingProfileId: v }))} />
-                        <p className="mt-1 text-xs text-iron-500">{effectiveText}</p>
-                      </div>
-                      {!hasProfileActive && (
-                        <div className="grid grid-cols-2 gap-3">
-                          <NumberField label="Default increment" value={draft.defaultIncrement} onChange={(defaultIncrement) => setDraft((item) => ({ ...item, defaultIncrement }))} />
-                          <NumberField label="Custom increment" value={draft.customIncrement} onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement }))} />
-                        </div>
-                      )}
-                    </>
-                  );
-                })()}
-                <div>
-                  <p className="label mb-2">Primary muscles</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {muscleOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.primaryMuscles.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftMuscle("primaryMuscles", item)}>{item}</button>)}
-                  </div>
-                </div>
-                <div>
-                  <p className="label mb-2">Secondary muscles</p>
-                  <div className="grid grid-cols-2 gap-2">
-                    {muscleOptions
-                      .filter((item) => showAllSecondaryMuscles || COMMON_SECONDARY_MUSCLES.includes(item) || draft.secondaryMuscles.includes(item))
-                      .map((item) => (
-                        <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.secondaryMuscles.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftMuscle("secondaryMuscles", item)}>
-                          {item}
-                        </button>
-                      ))}
-                  </div>
-                  <button className="mt-2 text-xs text-iron-500 hover:text-iron-300 transition" onClick={() => setShowAllSecondaryMuscles((v) => !v)}>
-                    {showAllSecondaryMuscles ? "Show common muscles only" : "Show all muscles"}
-                  </button>
-                </div>
-                {/* Variation controls */}
-                <div>
-                  <button
-                    className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-300 transition hover:bg-white/[0.07]"
-                    onClick={() => setDraft((d) => ({ ...d, isVariation: !d.isVariation }))}
-                  >
-                    This is a variation of another exercise
-                    <span className={`text-[10px] font-black ${draft.isVariation ? "text-volt" : "text-iron-500"}`}>{draft.isVariation ? "ON" : "OFF"}</span>
-                  </button>
-                  {draft.isVariation && (
-                    <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-3">
-                      <div>
-                        <p className="label mb-1">Parent exercise</p>
-                        {draft.parentExerciseId ? (
-                          <div className="flex items-center gap-2 rounded-lg border border-volt/40 bg-volt/10 px-3 py-2">
-                            <span className="flex-1 text-sm font-bold text-volt">
-                              {db.exercises.find((e) => e.id === draft.parentExerciseId)?.name ?? draft.parentExerciseId}
-                            </span>
-                            <button
-                              className="text-volt/60 hover:text-volt transition"
-                              onClick={() => { setDraft((d) => ({ ...d, parentExerciseId: "" })); setParentSearch(""); }}
-                              title="Clear parent"
-                            >
-                              <X className="h-4 w-4" />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="space-y-1">
-                            <input
-                              className="field"
-                              placeholder="Search exercises..."
-                              value={parentSearch}
-                              onChange={(e) => setParentSearch(e.target.value)}
-                            />
-                            {parentSearch.trim() && (
-                              <div className="max-h-40 overflow-y-auto rounded-lg border border-white/10 bg-iron-900">
-                                {db.exercises
-                                  .filter((e) => !e.isVariation && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id) && e.id !== editingExerciseId && e.name.toLowerCase().includes(parentSearch.toLowerCase()))
-                                  .sort((a, b) => a.name.localeCompare(b.name))
-                                  .map((e) => (
-                                    <button
-                                      key={e.id}
-                                      className="w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition"
-                                      onClick={() => { setDraft((d) => ({ ...d, parentExerciseId: e.id })); setParentSearch(e.name); }}
-                                    >
-                                      {e.name}
-                                    </button>
-                                  ))
-                                }
-                                {db.exercises.filter((e) => !e.isVariation && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id) && e.id !== editingExerciseId && e.name.toLowerCase().includes(parentSearch.toLowerCase())).length === 0 && (
-                                  <p className="px-3 py-2 text-xs text-iron-500">No exercises found</p>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                      <TextField label="Variation type (e.g. Paused, Box, Deficit)" value={draft.variationType} onChange={(variationType) => setDraft((d) => ({ ...d, variationType }))} />
-                    </div>
-                  )}
-                </div>
-                {/* Advanced options */}
-                <div>
-                  <button
-                    className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-300 transition hover:bg-white/[0.07]"
-                    onClick={() => setShowAdvancedExercise((v) => !v)}
-                  >
-                    Advanced Options {draft.movementPatterns.length > 0 ? `(${draft.movementPatterns.length} patterns)` : ""}
-                    <ChevronRight className={`h-3 w-3 transition ${showAdvancedExercise ? "rotate-90" : ""}`} />
-                  </button>
-                  {showAdvancedExercise && (
-                    <div className="mt-2 rounded-lg border border-white/10 bg-white/[0.03] p-3 space-y-3">
-                      <NumberField label="Fatigue rating (1–5)" value={draft.fatigueRating} onChange={(fatigueRating) => setDraft((item) => ({ ...item, fatigueRating: Math.min(5, Math.max(1, fatigueRating)) }))} />
-                      <div>
-                        <p className="label mb-2">Movement patterns</p>
-                        <p className="mb-2 text-xs text-iron-500">Used internally for program generation suggestions.</p>
-                        <div className="grid grid-cols-2 gap-2">
-                          {movementOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.movementPatterns.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftPattern(item)}>{item}</button>)}
-                        </div>
-                      </div>
-                      <div>
-                        <p className="label mb-2">Allowed units</p>
-                        <div className="grid grid-cols-2 gap-2">
-                          {exerciseUnitOptions.map((item) => <button key={item} className={`rounded-lg border p-2 text-xs font-bold ${draft.allowedUnits.includes(item) ? "border-volt bg-volt/10 text-volt" : "border-white/10 bg-white/[0.04] text-iron-300"}`} onClick={() => toggleDraftUnit(item)}>{item}</button>)}
-                        </div>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.isCompound} onChange={(event) => setDraft((item) => ({ ...item, isCompound: event.target.checked }))} /> Compound movement</label>
-                        <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.canBeGymSpecific} onChange={(event) => setDraft((item) => ({ ...item, canBeGymSpecific: event.target.checked }))} /> Can vary by gym</label>
-                        <label className="flex items-center gap-2 text-sm text-iron-200"><input type="checkbox" checked={draft.isGymSpecificEnabled} onChange={(event) => setDraft((item) => ({ ...item, isGymSpecificEnabled: event.target.checked, canBeGymSpecific: item.canBeGymSpecific || event.target.checked }))} /> Enable gym-specific behavior</label>
-                      </div>
-                      <TextField label="Tags (comma-separated)" value={draft.tags} onChange={(tags) => setDraft((value) => ({ ...value, tags }))} />
-                    </div>
-                  )}
-                </div>
-                {editingExerciseId ? (
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <button className="btn-primary" onClick={saveEditExercise}>
-                      <Save className="h-4 w-4" /> Save Changes
-                    </button>
-                    <button className="btn-secondary" onClick={() => { setEditingExerciseId(undefined); setDraft(emptyDraft); }}>
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
-                  <button className="btn-primary w-full" onClick={addCustomExercise}>Add Exercise</button>
-                )}
-              </div>
-            </Panel>
+
+            <div className="hidden xl:block border border-white/[0.08] bg-white/[0.02]">
+              {inspectorBody}
             </div>
           </section>
+
+          {isMobileInspectorOpen ? (
+            <div className="fixed inset-0 z-[60] xl:hidden bg-iron-950">
+              {inspectorBody}
+            </div>
+          ) : null}
+
+          <LibraryMusclePicker
+            open={Boolean(musclePickerRole)}
+            roleLabel={musclePickerRole === "secondaryMuscles" ? "Secondary Muscles" : "Primary Muscles"}
+            selected={musclePickerRole ? draft[musclePickerRole] : []}
+            onToggle={(muscleValue) => {
+              if (!musclePickerRole) return;
+              toggleDraftMuscle(musclePickerRole, muscleValue);
+            }}
+            onClose={() => setMusclePickerRole(undefined)}
+          />
+
           {progressExercise && <ExerciseProgressPanel db={db} user={user} exercise={progressExercise} onClose={() => setProgressExerciseId(undefined)} />}
         </>
       )}
@@ -6046,7 +7348,7 @@ function ExerciseProgressPanel({
                   {latestEntry.reps ? ` × ${latestEntry.reps}` : ""}
                   {latestEntry.rpe ? ` @ RPE ${latestEntry.rpe}` : ""}
                 </p>
-                <p className="mt-1 text-sm text-volt">
+                <p className={`mt-1 text-sm ${LIBRARY_BLUE_TEXT}`}>
                   {latestEntryValues?.e1rm ? `e1RM ${formatWeight(latestEntryValues.e1rm, displayUnit)} ${displayUnit}` : "No e1RM available"}
                 </p>
                 <p className="mt-1 text-xs text-iron-400">
@@ -6056,9 +7358,9 @@ function ExerciseProgressPanel({
               </div>
             )}
             <div className="mt-4 flex gap-2">
-              <button className={`rounded-lg px-3 py-1.5 text-xs font-bold ${graphMode === "overall" ? "bg-volt text-iron-950" : "bg-white/10 text-iron-300"}`} onClick={() => setGraphMode("overall")}>Overall</button>
+              <button className={`rounded-sm border px-3 py-1.5 text-xs font-semibold ${graphMode === "overall" ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}` : "border-white/[0.08] bg-white/[0.03] text-iron-300"}`} onClick={() => setGraphMode("overall")}>Overall</button>
               <button
-                className={`rounded-lg px-3 py-1.5 text-xs font-bold ${graphMode === "current-block" ? "bg-volt text-iron-950" : "bg-white/10 text-iron-300"} disabled:opacity-40`}
+                className={`rounded-sm border px-3 py-1.5 text-xs font-semibold ${graphMode === "current-block" ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}` : "border-white/[0.08] bg-white/[0.03] text-iron-300"} disabled:opacity-40`}
                 onClick={() => setGraphMode("current-block")}
                 disabled={!activeBlock}
                 title={!activeBlock ? "No active block" : ""}
@@ -6067,7 +7369,7 @@ function ExerciseProgressPanel({
               </button>
               {hasVariationFamily && (
                 <button
-                  className={`rounded-lg px-3 py-1.5 text-xs font-bold ${includeVariations ? "bg-steel text-white" : "bg-white/10 text-iron-300"}`}
+                  className={`rounded-sm border px-3 py-1.5 text-xs font-semibold ${includeVariations ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}` : "border-white/[0.08] bg-white/[0.03] text-iron-300"}`}
                   onClick={() => setIncludeVariations((value) => !value)}
                 >
                   {includeVariations ? "Family view on" : "Include variations"}
@@ -6103,7 +7405,7 @@ function ExerciseProgressPanel({
                       {entry.reps ? ` × ${entry.reps}` : ""}
                       {entry.rpe ? ` @ RPE ${entry.rpe}` : ""}
                     </p>
-                    <p className="text-xs text-volt">{displayValues.e1rm ? `e1RM ${formatWeight(displayValues.e1rm, displayUnit)} ${displayUnit}` : "No e1RM available"}</p>
+                    <p className={`text-xs ${LIBRARY_BLUE_TEXT}`}>{displayValues.e1rm ? `e1RM ${formatWeight(displayValues.e1rm, displayUnit)} ${displayUnit}` : "No e1RM available"}</p>
                     <p className="mt-1 text-[0.72rem] text-iron-400">
                       {entry.sourceLabel} — {new Date(entry.date).toLocaleDateString()}
                       {entry.exerciseId !== exercise.id ? ` · ${entry.exerciseName}` : ""}
@@ -6124,7 +7426,7 @@ function ExerciseProgressPanel({
   );
 }
 
-function ExerciseE1rmChart({ points, unit, title = "e1RM trend" }: { points: { label: string; value: number }[]; unit: "lb" | "kg"; title?: string }) {
+function ExerciseE1rmChart({ points, unit, title = "e1RM trend", strokeColor = LIBRARY_BLUE }: { points: { label: string; value: number }[]; unit: "lb" | "kg"; title?: string; strokeColor?: string }) {
   const width = 560;
   const height = 220;
   const padding = 34;
@@ -6147,15 +7449,128 @@ function ExerciseE1rmChart({ points, unit, title = "e1RM trend" }: { points: { l
       <svg viewBox={`0 0 ${width} ${height}`} className="h-56 w-full overflow-visible">
         <line x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="rgba(255,255,255,0.18)" />
         <line x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="rgba(255,255,255,0.18)" />
-        <path d={path} fill="none" stroke="#a3ff12" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        <path d={path} fill="none" stroke={strokeColor} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
         {coords.map((point) => (
           <g key={`${point.label}-${point.x}`}>
-            <circle cx={point.x} cy={point.y} r="5" fill="#a3ff12" />
+            <circle cx={point.x} cy={point.y} r="5" fill={strokeColor} />
             <text x={point.x} y={height - 8} textAnchor="middle" fontSize="12" fill="#94a3b8">{point.label}</text>
             <text x={point.x} y={point.y - 10} textAnchor="middle" fontSize="12" fill="#f8fafc">{formatWeight(point.value, unit)}</text>
           </g>
         ))}
       </svg>
+    </div>
+  );
+}
+
+function LibraryMusclePicker({
+  open,
+  roleLabel,
+  selected,
+  onToggle,
+  onClose,
+}: {
+  open: boolean;
+  roleLabel: string;
+  selected: MuscleGroup[];
+  onToggle: (muscle: MuscleGroup) => void;
+  onClose: () => void;
+}) {
+  const [expandedGroupId, setExpandedGroupId] = useState<string>(LIBRARY_MUSCLE_GROUPS[0]?.id || "chest");
+
+  useEffect(() => {
+    if (!open) return;
+    const firstSelectedGroup = selected
+      .map((muscle) => getLibraryMuscleGroupForMuscle(muscle)?.id)
+      .find(Boolean);
+    if (firstSelectedGroup) setExpandedGroupId(firstSelectedGroup);
+  }, [open, selected]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-[70] bg-black/70 backdrop-blur-sm">
+      <div className="flex min-h-full items-end justify-center md:items-center md:p-6">
+        <section className="flex max-h-[92vh] w-full flex-col overflow-hidden border border-white/10 bg-iron-950 shadow-2xl md:max-w-2xl md:rounded-md">
+          <div className="flex items-center justify-between gap-3 border-b border-white/[0.08] px-4 py-3">
+            <div className="min-w-0">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-iron-500">Muscles</p>
+              <h3 className="truncate text-sm font-semibold text-white">Choose {roleLabel}</h3>
+            </div>
+            <button
+              className="tap-highlight inline-flex min-h-9 items-center justify-center rounded-sm border border-white/[0.1] px-3 text-sm font-semibold text-iron-200 transition hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Done
+            </button>
+          </div>
+
+          <div className="overflow-y-auto px-4 py-4">
+            <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Selected</p>
+              <p className="mt-2 text-sm text-iron-100">{summarizeMuscleList(selected)}</p>
+            </div>
+
+            <div className="mt-4 border-t border-white/[0.08] pt-4">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Groups</p>
+              <div className="mt-3 space-y-3">
+                {LIBRARY_MUSCLE_GROUPS.map((group) => {
+                  const isExpanded = expandedGroupId === group.id;
+                  const selectedCount = group.muscles.filter((muscle) => selected.includes(muscle)).length;
+                  return (
+                    <div key={group.id} className="border border-white/[0.08] bg-white/[0.02]">
+                      <button
+                        className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left transition hover:bg-white/[0.04]"
+                        onClick={() => setExpandedGroupId(isExpanded ? "" : group.id)}
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold text-white">{group.label}</p>
+                          <p className="mt-1 text-xs text-iron-500">
+                            {selectedCount > 0 ? `${selectedCount} selected` : `${group.muscles.length} options`}
+                          </p>
+                        </div>
+                        <ChevronRight className={`h-4 w-4 text-iron-500 transition ${isExpanded ? "rotate-90" : ""}`} />
+                      </button>
+                      {isExpanded && (
+                        <div className="border-t border-white/[0.08] px-3 py-3">
+                          <div className="flex flex-wrap gap-2">
+                            {group.broadValue ? (
+                              <button
+                                className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${
+                                  selected.includes(group.broadValue)
+                                    ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`
+                                    : "border-white/[0.1] bg-white/[0.04] text-iron-300 hover:bg-white/[0.08]"
+                                }`}
+                                onClick={() => onToggle(group.broadValue!)}
+                              >
+                                {group.label}
+                              </button>
+                            ) : null}
+                            {group.muscles
+                              .filter((muscle) => muscle !== group.broadValue)
+                              .map((muscle) => (
+                                <button
+                                  key={muscle}
+                                  className={`tap-highlight rounded-sm border px-3 py-2 text-xs font-semibold transition ${
+                                    selected.includes(muscle)
+                                      ? `${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL} ${LIBRARY_BLUE_TEXT}`
+                                      : "border-white/[0.1] bg-white/[0.04] text-iron-300 hover:bg-white/[0.08]"
+                                  }`}
+                                  onClick={() => onToggle(muscle)}
+                                >
+                                  {formatMuscleLabel(muscle)}
+                                </button>
+                              ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
@@ -6643,7 +8058,7 @@ function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: {
 }
 
 function WeekEditor({
-  db, user, program, block, weekNumber, updateDb, onClose, onResumeWorkout
+  db, user, program, block, weekNumber, updateDb, onClose, onResumeWorkout, initialDayId
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -6652,6 +8067,7 @@ function WeekEditor({
   weekNumber: number;
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   onClose: () => void;
+  initialDayId?: string;
   onResumeWorkout?: (
     sessionId?: string,
     options?: {
@@ -6664,7 +8080,8 @@ function WeekEditor({
   const week = block.weeks.find((w) => w.weekNumber === weekNumber);
   const prevWeek = block.weeks.find((w) => w.weekNumber === weekNumber - 1);
   const splitTemplate = db.splitTemplates.find((s) => s.id === block.splitTemplateId);
-  const [selectedDayIdx, setSelectedDayIdx] = useState(0);
+  const initialDayIndex = Math.max(0, week?.workouts.findIndex((day) => day.id === initialDayId) ?? 0);
+  const [selectedDayIdx, setSelectedDayIdx] = useState(initialDayIndex);
   const [copied, setCopied] = useState(false);
   const [copiedFromPrev, setCopiedFromPrev] = useState(false);
   const [reviewSessionId, setReviewSessionId] = useState<string | undefined>();
@@ -6705,6 +8122,13 @@ function WeekEditor({
     setCopied(copiedExercises || attemptedCopy);
     setCopiedFromPrev(wouldCopy);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!week?.workouts.length) return;
+    if (!initialDayId) return;
+    const nextIndex = week.workouts.findIndex((day) => day.id === initialDayId);
+    if (nextIndex >= 0) setSelectedDayIdx(nextIndex);
+  }, [initialDayId, week?.workouts]);
 
   if (!week) {
     return (
@@ -6788,60 +8212,64 @@ function WeekEditor({
   }
 
   return (
-    <div className="space-y-5">
-      {/* Context banner — clearly identifies active-block editing */}
-      <div className="rounded-lg border border-volt/30 bg-volt/5 p-4">
-        <p className="label text-volt">Editing active block</p>
-        <h2 className="mt-1 font-black">{program.name}</h2>
-        <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-iron-300">
-          <span>Week {weekNumber} of {block.lengthWeeks}</span>
-          {copiedFromPrev && prevWeek && (
-            <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-iron-400">
-              <Copy className="mr-1 inline h-3 w-3" />Copied from Week {weekNumber - 1}
-            </span>
-          )}
-          {copied && !copiedFromPrev && prevWeek && (
-            <span className="rounded-full bg-ember/20 px-2 py-0.5 text-xs text-orange-300">
-              Split days differ — exercises not copied from Week {weekNumber - 1}
-            </span>
-          )}
-        </div>
-        <p className="mt-2 text-xs text-iron-400">Changes are saved automatically. No sets are auto-applied — everything shown here is a plan.</p>
-      </div>
+    <div className="mx-auto max-w-4xl space-y-5">
+      <button className="btn-compact -ml-2" onClick={onClose}>
+        <ChevronLeft className="h-3.5 w-3.5" />
+        Back to Week
+      </button>
 
-      {/* TODO: Algorithm suggestion panel will live here in a future iteration.
-          It will call recommendNextWeekAdjustments(block, sessions) and display
-          per-exercise load/rep suggestions the user can optionally apply. */}
+      <section className="border-b border-white/[0.06] pb-4">
+        <p className="text-xs font-medium text-iron-500">Editing active block</p>
+        <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">Editing {selectedDay?.name || `Week ${weekNumber}`}</h2>
+        <p className="mt-1 text-sm text-iron-400">
+          {(selectedDay?.scheduledDay || "Day").toUpperCase()} · Day {selectedDay?.dayIndex || 1} · {selectedDay?.focus || week.workouts[0]?.focus}
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-iron-500">
+          <span>Week {weekNumber} of {block.lengthWeeks}</span>
+          {copiedFromPrev && prevWeek && <span className="text-[#8fb9ff]">Copied from Week {weekNumber - 1}</span>}
+          {copied && !copiedFromPrev && prevWeek && <span className="text-orange-300">Split days differ from Week {weekNumber - 1}</span>}
+        </div>
+      </section>
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] pb-4">
+        <button className="apollo-primary-btn" onClick={saveAndClose}>
+          <Save className="h-4 w-4" />
+          Save changes
+        </button>
+        <button className="apollo-secondary-btn" onClick={discardDraft}>
+          Cancel
+        </button>
+      </div>
 
       <WeekDayCardSelector
         db={db}
         days={week.workouts}
         selectedDayId={selectedDay?.id}
+        compact
         onSelect={(day) => setSelectedDayIdx(Math.max(0, week.workouts.findIndex((item) => item.id === day.id)))}
       />
 
-      {/* Per-day editor */}
       {selectedDay ? (
         <div className="space-y-4">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="label">{selectedCompletedSession ? "Completed Session Review" : "Planned Day Editor"}</p>
-              <h3 className="font-black">{selectedDay.name}</h3>
-              <p className="text-sm text-iron-400">
-                {selectedDaySplitDay ? `${selectedDaySplitDay.name} — ` : ""}{selectedDay.focus}
-                {splitDayMismatch ? " · different split day from prior week" : ""}
-              </p>
-            </div>
+          <div>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">
+              {selectedCompletedSession ? "Completed session review" : "Planned day editor"}
+            </p>
+            <h3 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-white">{selectedDay.name}</h3>
+            <p className="mt-1 text-sm text-iron-400">
+              {selectedDaySplitDay ? `${selectedDaySplitDay.name} · ` : ""}{selectedDay.focus}
+              {splitDayMismatch ? " · different split day from prior week" : ""}
+            </p>
           </div>
           {selectedCompletedSession ? (
-            <Panel title="Completed session is locked from plan edits" icon={CheckCircle2}>
+            <section className="border-y border-white/[0.06] py-4">
               <p className="text-sm text-iron-300">This day already has completed workout history. Review or edit the logged session without overwriting the planned day.</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                <button className="btn-secondary w-full" onClick={() => setReviewSessionId(selectedCompletedSession.id)}>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button className="apollo-secondary-btn w-full" onClick={() => setReviewSessionId(selectedCompletedSession.id)}>
                   View Summary
                 </button>
                 <button
-                  className="btn-primary w-full"
+                  className="apollo-primary-btn w-full"
                   onClick={() => void onResumeWorkout?.(selectedCompletedSession.id, {
                     previousScreen: "week",
                     completedReviewState: { sessionId: selectedCompletedSession.id, returnScreen: "week" },
@@ -6851,27 +8279,14 @@ function WeekEditor({
                   Edit Workout
                 </button>
               </div>
-            </Panel>
+            </section>
           ) : (
-            <WorkoutDayEditor db={db} user={user} program={program} day={selectedDay} updateDb={updateDb} />
+            <WorkoutDayEditor db={db} user={user} program={program} day={selectedDay} updateDb={updateDb} variant="week" />
           )}
         </div>
       ) : (
         <EmptyState title="No days in this week" detail="This week has no workout days configured." />
       )}
-
-      <div className="flex flex-wrap gap-3">
-        <button className="btn-primary flex-1" onClick={saveAndClose}>
-          <Save className="h-4 w-4" />
-          Save Week {weekNumber}
-        </button>
-        <button className="btn-secondary" onClick={onClose}>
-          Exit Editor
-        </button>
-        <button className="btn-secondary border-ember/40 text-orange-100" onClick={discardDraft}>
-          Discard Draft
-        </button>
-      </div>
     </div>
   );
 }
@@ -6904,6 +8319,9 @@ function WeekProgressScreen({
   const currentWeekNumber = (cursor?.week.weekNumber ?? block?.currentWeek) || 1;
   const [selectedWeekNumber, setSelectedWeekNumber] = useState(currentWeekNumber);
   const [inlineDayEditId, setInlineDayEditId] = useState<string | undefined>();
+  const [showOffProgramHistory, setShowOffProgramHistory] = useState(false);
+  const [reviewSessionId, setReviewSessionId] = useState<string | undefined>();
+  const [editorDayId, setEditorDayId] = useState<string | undefined>();
   // Lifted to App level via editingWeekNumber / onEditingWeekNumberChange so WeekEditor
   // state survives tab navigation without remounting.
   const setPlanningWeekNumber = (n: number | undefined) => onEditingWeekNumberChange?.(n);
@@ -6927,9 +8345,6 @@ function WeekProgressScreen({
   const skippedCount = week?.workouts.filter((day) => block?.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped").length || 0;
   const plannedWorkoutCount = week?.workouts.length || 0;
   const completionPercent = plannedWorkoutCount ? Math.round((completedSessions.length / plannedWorkoutCount) * 100) : 0;
-  const averageWorkoutScore = completedSessions.length
-    ? Math.round(completedSessions.reduce((sum, session) => sum + (session.workoutScore ?? calculateWorkoutScore(session).score), 0) / completedSessions.length)
-    : 0;
   const averageSetRating = completedSessions
     .flatMap((session) => session.loggedExercises)
     .flatMap((exercise) => exercise.sets)
@@ -6937,8 +8352,46 @@ function WeekProgressScreen({
   const averageSetFeel = averageSetRating.length
     ? Number((averageSetRating.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / averageSetRating.length).toFixed(1))
     : 0;
-  const selectedWeekComplete = week && block ? isTrainingWeekComplete(week, block, db.sessions.filter((s) => s.userId === user.id && s.blockId === block.id)) : false;
-  const selectedWeekPlanned = isWeekPlanned(week);
+  const inProgressCount = weekSessions.filter((session) => session.status === "in-progress").length;
+  const weekHeading = activeProgram?.name || (block ? `${mapBlockType(block.type)} Block` : "Training Block");
+  const reviewSession = reviewSessionId ? db.sessions.find((session) => session.id === reviewSessionId && session.userId === user.id) : undefined;
+
+  function getDayStatus(session: WorkoutSession | undefined, daySkipped: boolean, dayPlanned: boolean) {
+    if (session?.status === "completed") {
+      return {
+        label: "completed",
+        className: "text-[#8fb9ff]",
+      };
+    }
+    if (session?.status === "review") {
+      return {
+        label: "in review",
+        className: "text-[#7fb0ff]",
+      };
+    }
+    if (session?.status === "in-progress") {
+      return {
+        label: "in progress",
+        className: "text-[#0a84ff]",
+      };
+    }
+    if (daySkipped) {
+      return {
+        label: "skipped",
+        className: "text-orange-300",
+      };
+    }
+    if (session?.status) {
+      return {
+        label: session.status,
+        className: "text-iron-400",
+      };
+    }
+    return {
+      label: dayPlanned ? "planned" : "unplanned",
+      className: dayPlanned ? "text-iron-400" : "text-iron-500",
+    };
+  }
 
   function archiveCompletedBlock() {
     if (!activeProgram) return;
@@ -6987,15 +8440,33 @@ function WeekProgressScreen({
         program={activeProgram}
         block={block}
         weekNumber={planningWeekNumber}
+        initialDayId={editorDayId}
         updateDb={updateDb}
-        onClose={() => setPlanningWeekNumber(undefined)}
+        onClose={() => { setEditorDayId(undefined); setPlanningWeekNumber(undefined); }}
         onResumeWorkout={onResumeWorkout}
       />
     );
   }
 
+  if (reviewSession && reviewSession.status !== "completed") {
+    return (
+      <InProgressWorkoutReview
+        db={db}
+        user={user}
+        session={reviewSession}
+        onBack={() => setReviewSessionId(undefined)}
+        onContinue={() => void onResumeWorkout?.(reviewSession.id)}
+        onEditDay={() => {
+          setReviewSessionId(undefined);
+          setEditorDayId(reviewSession.workoutDayId);
+          setPlanningWeekNumber(reviewSession.weekNumber || selectedWeekNumber);
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="space-y-5">
+    <div className="mx-auto max-w-4xl space-y-5">
       <PageTitle eyebrow="Week" title="Block Progress" />
       {!activeProgram || !block || !week ? (
         <Panel title="No Active Block" icon={CalendarDays}>
@@ -7004,41 +8475,78 @@ function WeekProgressScreen({
         </Panel>
       ) : (
         <>
-          <section className="grid gap-3 md:grid-cols-4">
-            <Metric label="Active block" value={activeProgram.name} />
-            <Metric label="Current week" value={currentWeekNumber} unit={`/ ${block.lengthWeeks}`} />
-            <Metric label="Completion" value={completionPercent} unit="%" />
-            <Metric label="Workout score" value={averageWorkoutScore || "-"} unit={averageWorkoutScore ? "/100" : undefined} />
-          </section>
-          <section className="grid gap-3 md:grid-cols-4">
-            <Metric label="Completed" value={completedSessions.length} unit="workouts" />
-            <Metric label="Skipped" value={skippedCount} unit="days" />
-            <Metric label="In progress" value={weekSessions.filter((session) => session.status === "in-progress").length} unit="workouts" />
-            <Metric label="Set feel" value={averageSetFeel || "-"} unit={averageSetFeel ? "/5" : undefined} />
+          <section className="border-b border-white/[0.06] pb-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-[1.08rem] font-semibold tracking-[-0.02em] text-white sm:text-[1.18rem]">{weekHeading}</p>
+                <p className="mt-1 text-sm text-iron-400">
+                  Week {week.weekNumber} of {block.lengthWeeks} · {completionPercent}% complete
+                </p>
+              </div>
+              <div className="text-left sm:text-right">
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-iron-500">Selected week</p>
+                <p className="mt-1 text-sm font-medium text-iron-200">Week {selectedWeekNumber} / {block.lengthWeeks}</p>
+              </div>
+            </div>
+            <div className="mt-4 h-1 overflow-hidden rounded-sm bg-white/[0.08]">
+              <div className="h-full rounded-sm bg-[#0a84ff]" style={{ width: `${completionPercent}%` }} />
+            </div>
+            <p className="mt-4 border-t border-white/[0.06] pt-4 text-sm text-iron-300">
+              {completedSessions.length} completed · {inProgressCount} in progress · {skippedCount} skipped · avg feel {averageSetFeel || "-"}
+            </p>
           </section>
           {block.weeks.length > 1 && (
-            <div className="flex flex-wrap gap-2">
+            <div className="-mx-4 overflow-x-auto px-4 scrollbar-none">
+              <div className="flex min-w-max gap-1.5 sm:gap-2">
               {block.weeks.map((w) => {
+                const isCurrentWeek = w.weekNumber === currentWeekNumber;
                 const wComplete = isTrainingWeekComplete(w, block, db.sessions.filter((s) => s.userId === user.id && s.blockId === block.id));
-                const wPlanned = isWeekPlanned(w);
+                const hasSkippedWorkouts = w.workouts.some((day) => block?.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped");
+                let weekMarker = "·";
+                let weekMarkerClass = "text-iron-600";
+
+                if (isCurrentWeek) {
+                  weekMarker = "current";
+                  weekMarkerClass = "text-[#0a84ff]";
+                } else if (wComplete) {
+                  weekMarker = "✓";
+                  weekMarkerClass = "text-[#8aa6cc]";
+                } else if (hasSkippedWorkouts) {
+                  weekMarker = "skipped";
+                  weekMarkerClass = "text-orange-300";
+                }
+
                 return (
                   <button
                     key={w.id}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-bold ${
+                    className={`w-[4rem] shrink-0 border-b-2 px-0 py-2 text-center transition sm:w-[5.75rem] ${
                       selectedWeekNumber === w.weekNumber
-                        ? "bg-volt text-iron-950"
-                        : wComplete
-                          ? "bg-white/10 text-volt"
-                          : wPlanned
-                            ? "bg-steel/15 text-steel"
-                            : "bg-white/[0.05] text-iron-400"
+                        ? "border-[#0a84ff]"
+                        : "border-transparent"
                     }`}
                     onClick={() => setSelectedWeekNumber(w.weekNumber)}
                   >
-                    Week {w.weekNumber}{w.weekNumber === currentWeekNumber ? " ●" : wComplete ? " ✓" : wPlanned ? " Planned" : ""}
+                    <span
+                      className={`block whitespace-nowrap text-[0.76rem] font-medium sm:hidden ${
+                        selectedWeekNumber === w.weekNumber ? "text-white" : "text-iron-400"
+                      }`}
+                    >
+                      W{w.weekNumber}
+                    </span>
+                    <span
+                      className={`hidden whitespace-nowrap text-sm font-medium sm:block ${
+                        selectedWeekNumber === w.weekNumber ? "text-white" : "text-iron-300"
+                      }`}
+                    >
+                      Week {w.weekNumber}
+                    </span>
+                    <span className={`mt-1 block whitespace-nowrap text-[0.68rem] font-medium uppercase tracking-[0.08em] sm:text-[0.72rem] ${weekMarkerClass}`}>
+                      {weekMarker}
+                    </span>
                   </button>
                 );
               })}
+              </div>
             </div>
           )}
           {selectedWeekNumber === currentWeekNumber && isBlockWeekComplete(block, db.sessions.filter((s) => s.userId === user.id && s.blockId === block.id)) && (
@@ -7052,8 +8560,8 @@ function WeekProgressScreen({
               onStartNewBlock={() => setScreen("programs")}
             />
           )}
-          <Panel title={`Block Week ${week.weekNumber}${selectedWeekComplete ? " (completed)" : selectedWeekPlanned ? " (planned)" : " (unplanned)"}`} icon={ClipboardList}>
-            <div className="space-y-3">
+          <section className="border-t border-white/[0.06]">
+            <div className="divide-y divide-white/[0.06]">
               {week.workouts.map((day) => {
                 const session = db.sessions.find((item) => item.userId === user.id && item.workoutDayId === day.id && item.status !== "abandoned");
                 const actualSets = session?.loggedExercises.reduce((sum, log) => sum + log.sets.filter(isCompletedValidSet).length, 0) || 0;
@@ -7064,107 +8572,210 @@ function WeekProgressScreen({
                 const avgSetRating = completedSets.length ? completedSets.reduce((sum, set) => sum + (set.setRating ?? 3), 0) / completedSets.length : 0;
                 const score = session?.workoutScore ?? (session?.status === "completed" ? calculateWorkoutScore(session).score : undefined);
                 const daySkipped = block.skippedWorkoutDayIds?.includes(day.id) || day.status === "skipped";
+                const dayPlanned = isWorkoutDayPlanned(day);
                 const isInlineEditing = inlineDayEditId === day.id;
+                const status = getDayStatus(session, daySkipped, dayPlanned);
+                const primaryAction = session?.status === "completed"
+                  ? () => onOpenCompletedSessionReview?.(session.id, "week")
+                  : session?.status === "review" || session?.status === "in-progress"
+                    ? () => setReviewSessionId(session.id)
+                    : undefined;
+                const singleInsight = session ? getCompactSessionInsight(session) : undefined;
                 return (
-                  <div key={day.id} className="rounded-lg border border-white/10 bg-white/[0.05] p-3">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div>
-                        <p className="label">{day.scheduledDay || `Day ${day.dayIndex || ""}`}</p>
-                        <h3 className="mt-1 font-black">{day.name}</h3>
-                        <p className="mt-1 text-sm text-iron-300">{day.focus} - planned {plannedSets} sets</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {activeProgram && session?.status !== "completed" && (
-                          <button
-                            className={`btn-compact ${isInlineEditing ? "text-volt" : ""}`}
-                            onClick={() => setInlineDayEditId(isInlineEditing ? undefined : day.id)}
-                          >
-                            <Pencil className="h-3 w-3" />
-                            {isInlineEditing ? "Done" : "Edit"}
-                          </button>
-                        )}
-                        {session?.status === "review" && onResumeWorkout && (
-                          <button
-                            className="btn-ghost text-xs text-steel"
-                            onClick={() => void onResumeWorkout(session.id)}
-                          >
-                            <Timer className="h-3.5 w-3.5" />
-                            Resume
-                          </button>
-                        )}
-                        {session?.status === "completed" ? (
-                          <button
-                            className="rounded-full bg-volt px-3 py-1 text-xs font-black text-iron-950"
-                            onClick={() => onOpenCompletedSessionReview?.(session.id, "week")}
-                            aria-label={`View completed workout summary for ${day.name}`}
-                          >
-                            completed
-                          </button>
-                        ) : (
-                          <span className={`rounded-full px-3 py-1 text-xs font-black ${session?.status === "review" ? "bg-steel/20 text-steel" : session?.status === "in-progress" ? "bg-steel/20 text-steel" : daySkipped ? "bg-ember/20 text-orange-100" : isWorkoutDayPlanned(day) ? "bg-white/10 text-iron-300" : "bg-white/[0.05] text-iron-500"}`}>
-                            {session?.status === "review" ? "in review" : session?.status || (daySkipped ? "skipped" : isWorkoutDayPlanned(day) ? "planned" : "unplanned")}
-                          </span>
-                        )}
+                  <div key={day.id} className="py-3.5">
+                    <div
+                      className={`rounded-sm px-1 py-1 ${primaryAction ? "cursor-pointer transition hover:bg-white/[0.03]" : ""}`}
+                      onClick={primaryAction}
+                      onKeyDown={primaryAction ? (event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          primaryAction();
+                        }
+                      } : undefined}
+                      role={primaryAction ? "button" : undefined}
+                      tabIndex={primaryAction ? 0 : undefined}
+                      aria-label={primaryAction ? `${status.label} workout ${day.name}` : undefined}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">
+                            {(day.scheduledDay || "Day").toUpperCase()} · Day {day.dayIndex || 1}
+                          </p>
+                          <div className="mt-1 flex items-start justify-between gap-3">
+                            <h3 className="min-w-0 text-base font-semibold tracking-[-0.01em] text-white">{day.name}</h3>
+                            <span className={`shrink-0 text-xs font-semibold uppercase tracking-[0.1em] ${status.className}`}>
+                              {status.label}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm text-iron-400">{day.focus} · planned {plannedSets} sets</p>
+                          <p className="mt-1 text-sm text-iron-300">
+                            {session
+                              ? `${actualSets} hard · ${skippedSets} skipped · avg RPE ${avgRpe ? avgRpe.toFixed(1) : "-"}${avgSetRating ? ` · avg feel ${avgSetRating.toFixed(1)}` : ""}${score ? ` · score ${score}` : ""}`
+                              : daySkipped
+                                ? "Skipped manually · preserved in block history"
+                                : "No session logged yet"}
+                          </p>
+                          {singleInsight ? (
+                            <p className="mt-1 text-xs text-iron-500">{singleInsight}</p>
+                          ) : null}
+                        </div>
+                        <div className="flex shrink-0 items-center gap-1.5">
+                          {primaryAction ? <ChevronRight className="mt-1 h-3.5 w-3.5 text-iron-600" /> : null}
+                        </div>
                       </div>
                     </div>
-                    {session ? (
-                      <div className="mt-3 grid gap-2 sm:grid-cols-5">
-                        <Metric label="Hard sets" value={actualSets} />
-                        <Metric label="Skipped" value={skippedSets} />
-                        <Metric label="Avg RPE" value={avgRpe ? avgRpe.toFixed(1) : "-"} />
-                        <Metric label="Avg feel" value={avgSetRating ? avgSetRating.toFixed(1) : "-"} unit={avgSetRating ? "/5" : undefined} />
-                        <Metric label="Score" value={score || "-"} unit={score ? "/100" : undefined} />
-                      </div>
-                    ) : (
-                      <p className="mt-3 text-sm text-iron-400">{daySkipped ? "Skipped manually. It remains in the block history and Today moved on." : "No session logged yet. Readiness, feel summary, and score will appear here after completion."}</p>
-                    )}
-                    {session?.progressionSuggestions?.length ? (
-                      <div className="mt-3 rounded-lg bg-iron-950/50 p-3">
-                        <p className="label mb-1">Suggestions</p>
-                        {session.progressionSuggestions.slice(0, 2).map((item) => <p key={item} className="text-sm text-iron-300">{item}</p>)}
-                      </div>
-                    ) : null}
-                    {session?.status === "completed" && onResumeWorkout && (
-                      <button
-                        className="btn-compact mt-2"
-                        onClick={() => void onResumeWorkout(session.id, {
-                          previousScreen: "week",
-                          completedReviewState: { sessionId: session.id, returnScreen: "week" },
-                          loggerMode: "completed-edit",
-                        })}
-                      >
-                        <Pencil className="h-3 w-3" />
-                        Edit Workout
-                      </button>
-                    )}
+                    <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-iron-500">
+                      {activeProgram && session?.status !== "completed" && (
+                        <button
+                          className={`btn-compact ${isInlineEditing ? "text-[#8fb9ff]" : ""}`}
+                          onClick={() => setInlineDayEditId(isInlineEditing ? undefined : day.id)}
+                        >
+                          <Pencil className="h-3 w-3" />
+                          {isInlineEditing ? "Done" : "Edit"}
+                        </button>
+                      )}
+                      {(session?.status === "review" || session?.status === "in-progress") && (
+                        <button
+                          className="btn-compact text-[#8fb9ff]"
+                          onClick={() => setReviewSessionId(session.id)}
+                        >
+                          <Timer className="h-3.5 w-3.5" />
+                          Review
+                        </button>
+                      )}
+                      {session?.status === "completed" && onResumeWorkout && (
+                        <button
+                          className="btn-compact"
+                          onClick={() => void onResumeWorkout(session.id, {
+                            previousScreen: "week",
+                            completedReviewState: { sessionId: session.id, returnScreen: "week" },
+                            loggerMode: "completed-edit",
+                          })}
+                        >
+                          <Pencil className="h-3 w-3" />
+                          Edit Workout
+                        </button>
+                      )}
+                    </div>
                     {isInlineEditing && activeProgram && (
-                      <div className="mt-3 border-t border-white/10 pt-3">
-                        <p className="label mb-2 text-volt">Editing exercises for this day</p>
-                        <WorkoutDayEditor db={db} user={user} program={activeProgram} day={day} updateDb={updateDb} />
+                      <div className="mt-3 border-t border-white/[0.06] pt-3">
+                        <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-[#8fb9ff]">Editing exercises for this day</p>
+                        <WorkoutDayEditor db={db} user={user} program={activeProgram} day={day} updateDb={updateDb} variant="week" />
                       </div>
                     )}
                   </div>
                 );
               })}
             </div>
-          </Panel>
+          </section>
           {offProgramCompletedSessions.length > 0 && (
-            <Panel title="Off-Program History" icon={Dumbbell}>
-              <div className="space-y-2">
-                {offProgramCompletedSessions.map((session) => (
-                  <button key={session.id} className="flex w-full items-center justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2.5 text-left transition hover:bg-white/[0.07]" onClick={() => onOpenCompletedSessionReview?.(session.id, "week")}>
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium">{session.name}</span>
-                      <span className="text-xs text-iron-500">{new Date(session.completedAt || session.startedAt).toLocaleDateString()} · {countSessionCompletedSets(session)} sets</span>
-                    </span>
-                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-iron-500" />
-                  </button>
-                ))}
-              </div>
-            </Panel>
+            <section className="border-t border-white/[0.06] pt-3">
+              <button
+                className="flex w-full items-center justify-between gap-3 text-left"
+                onClick={() => setShowOffProgramHistory((value) => !value)}
+              >
+                <span className="min-w-0">
+                  <span className="block text-sm font-medium text-iron-200">Off-program history</span>
+                  <span className="mt-1 block text-xs text-iron-500">
+                    {offProgramCompletedSessions[0]?.name} · {countSessionCompletedSets(offProgramCompletedSessions[0])} sets
+                  </span>
+                </span>
+                <ChevronDown className={`h-4 w-4 shrink-0 text-iron-500 transition ${showOffProgramHistory ? "rotate-180" : ""}`} />
+              </button>
+              {showOffProgramHistory && (
+                <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
+                  {offProgramCompletedSessions.map((session) => (
+                    <button
+                      key={session.id}
+                      className="flex w-full items-center justify-between gap-3 py-3 text-left transition hover:bg-white/[0.03]"
+                      onClick={() => onOpenCompletedSessionReview?.(session.id, "week")}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium text-iron-200">{session.name}</span>
+                        <span className="text-xs text-iron-500">{new Date(session.completedAt || session.startedAt).toLocaleDateString()} · {countSessionCompletedSets(session)} sets</span>
+                      </span>
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-iron-600" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </section>
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function findWorkoutDayForSession(db: TrainingDatabase, session: WorkoutSession): WorkoutDay | undefined {
+  if (!session.workoutDayId) return undefined;
+  return db.programs
+    .flatMap((program) => program.blocks)
+    .flatMap((block) => block.weeks)
+    .flatMap((week) => week.workouts)
+    .find((day) => day.id === session.workoutDayId);
+}
+
+function getSessionSummary(session: WorkoutSession) {
+  const completedSets = session.loggedExercises.flatMap((exercise) => exercise.sets.filter(isCompletedValidSet));
+  const hardSets = session.loggedExercises.flatMap((exercise) => exercise.sets.filter(isHardSet)).length;
+  const skippedSets = session.loggedExercises.flatMap((exercise) => exercise.sets.filter((set) => set.skipped)).length;
+  const avgRpe = safeAverageRpe(completedSets);
+  const avgFeel = completedSets.length
+    ? Number((completedSets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / completedSets.length).toFixed(1))
+    : 0;
+  const score = session.workoutScore ?? (session.status === "completed" ? calculateWorkoutScore(session).score : undefined);
+  return {
+    completedSets: countSessionCompletedSets(session),
+    hardSets,
+    skippedSets,
+    avgRpe,
+    avgFeel,
+    score,
+  };
+}
+
+function getCompactSessionInsight(session: WorkoutSession) {
+  const { hardSets, skippedSets, avgFeel, score } = getSessionSummary(session);
+  if (skippedSets >= Math.max(3, Math.ceil(hardSets / 2))) return "Skipped volume was high.";
+  if (avgFeel >= 3.8) return "Avg feel was high; keep next top sets conservative.";
+  if (score !== undefined && score >= 80) return "Matched plan closely.";
+  if (score !== undefined && score < 50) return "Recovery looked strained; keep progression conservative.";
+  if (hardSets > 0 && skippedSets === 0) return "No major changes needed.";
+  return undefined;
+}
+
+function SessionReviewHeader({
+  eyebrow,
+  title,
+  session,
+  day,
+  statusText,
+  backLabel,
+  onBack,
+}: {
+  eyebrow: string;
+  title: string;
+  session: WorkoutSession;
+  day?: WorkoutDay;
+  statusText: string;
+  backLabel: string;
+  onBack: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <button className="btn-compact -ml-2" onClick={onBack}>
+        <ChevronLeft className="h-3.5 w-3.5" />
+        {backLabel}
+      </button>
+      <div>
+        <p className="text-xs font-medium text-iron-500">{eyebrow}</p>
+        <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">{title}</h2>
+        <p className="mt-1 text-sm text-iron-400">
+          {day ? `${day.scheduledDay || "Day"} · Day ${day.dayIndex || 1} · ${day.focus}` : formatDateTime(session.completedAt || session.updatedAt || session.startedAt)}
+        </p>
+        <p className="mt-3 text-sm text-iron-300">{statusText}</p>
+      </div>
     </div>
   );
 }
@@ -7184,48 +8795,54 @@ function CompletedWorkoutReview({
   onEditWorkout?: () => void;
   backLabel?: string;
 }) {
-  const score = calculateWorkoutScore(session);
-  const totalSets = countSessionCompletedSets(session);
-  const skippedSets = session.loggedExercises.flatMap((exercise) => exercise.sets).filter((set) => set.skipped).length;
+  const day = findWorkoutDayForSession(db, session);
+  const summary = getSessionSummary(session);
+  const insight = getCompactSessionInsight(session);
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <PageTitle eyebrow={session.offProgram ? "Off-Program Review" : "Completed Session Review"} title={session.name} />
-        <button className="btn-secondary" onClick={onBack}>{backLabel}</button>
-      </div>
-      <section className="grid gap-3 sm:grid-cols-4">
-        <Metric label="Status" value={session.offProgram ? "Off-program" : "Completed"} />
-        <Metric label="Sets" value={totalSets} />
-        <Metric label="Skipped" value={skippedSets} />
-        <Metric label="Score" value={score.score || "-"} unit={score.score ? "/100" : undefined} />
-      </section>
-      <Panel title="Completed Workout" icon={ClipboardList}>
-        <div className="mb-4 flex flex-wrap gap-2">
-          {onEditWorkout && (
-            <button className="btn-primary" onClick={onEditWorkout}>
-              <Pencil className="h-4 w-4" />
-              Edit Workout
-            </button>
-          )}
-          <button className="btn-secondary" onClick={onBack}>{backLabel}</button>
+    <div className="mx-auto max-w-4xl space-y-5">
+      <SessionReviewHeader
+        eyebrow={session.offProgram ? "Off-Program Review" : "Completed Session Review"}
+        title={session.name}
+        session={session}
+        day={day}
+        statusText={`completed · ${summary.hardSets} hard · ${summary.skippedSets} skipped${summary.score ? ` · score ${summary.score}` : ""}`}
+        backLabel={backLabel}
+        onBack={onBack}
+      />
+
+      <section className="border-y border-white/[0.06] py-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm text-iron-300">
+          <span>Sets {summary.completedSets}</span>
+          <span>Skipped {summary.skippedSets}</span>
+          <span>Avg RPE {summary.avgRpe ? summary.avgRpe.toFixed(1) : "-"}</span>
+          <span>Avg Feel {summary.avgFeel ? summary.avgFeel.toFixed(1) : "-"}</span>
         </div>
-        {session.notes && (
-          <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
-            <p className="label mb-1">Session notes</p>
-            <p className="text-sm text-iron-200 whitespace-pre-wrap">{session.notes}</p>
-          </div>
-        )}
-        <div className="mt-4 space-y-4">
+        {insight ? <p className="mt-3 text-xs text-iron-500">{insight}</p> : null}
+      </section>
+
+      {session.notes && (
+        <section className="border-b border-white/[0.06] pb-4">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Session notes</p>
+          <p className="mt-2 whitespace-pre-wrap text-sm text-iron-300">{session.notes}</p>
+        </section>
+      )}
+
+      <section>
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Exercises</p>
+        <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
           {session.loggedExercises.map((logged) => {
             const exercise = db.exercises.find((item) => item.id === logged.exerciseId);
             const displayUnit = exercise ? getExerciseLoadUnit(exercise, user, logged.sets.find((set) => isWeightUnit(set.unit))?.unit) : user.unit;
+            const completedSetCount = logged.sets.filter(isCompletedValidSet).length;
+            const hardSetCount = logged.sets.filter(isHardSet).length;
+            const skippedSetCount = logged.sets.filter((set) => set.skipped).length;
             return (
-              <div key={logged.id} className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+              <div key={logged.id} className="py-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <p className="font-black">{exercise?.name || "Unknown exercise"}</p>
-                    <p className="text-xs text-iron-400">{logged.offProgram || session.offProgram ? "Off-program" : "Planned"} · {logged.sets.filter(isCompletedValidSet).length} completed sets</p>
+                    <p className="text-sm font-medium text-white">{exercise?.name || "Unknown exercise"}</p>
+                    <p className="mt-1 text-sm text-iron-400">{completedSetCount} completed sets · {hardSetCount} hard · {skippedSetCount} skipped</p>
                   </div>
                 </div>
                 {exercise ? (
@@ -7237,7 +8854,103 @@ function CompletedWorkoutReview({
             );
           })}
         </div>
-      </Panel>
+      </section>
+
+      <div className="flex flex-wrap gap-2 border-t border-white/[0.06] pt-4">
+        {onEditWorkout && (
+          <button className="apollo-primary-btn" onClick={onEditWorkout}>
+            <Pencil className="h-4 w-4" />
+            Edit Workout
+          </button>
+        )}
+        <button className="apollo-secondary-btn" onClick={onBack}>{backLabel}</button>
+      </div>
+    </div>
+  );
+}
+
+function InProgressWorkoutReview({
+  db,
+  user,
+  session,
+  onBack,
+  onContinue,
+  onEditDay,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  session: WorkoutSession;
+  onBack: () => void;
+  onContinue: () => void;
+  onEditDay: () => void;
+}) {
+  const day = findWorkoutDayForSession(db, session);
+  const summary = getSessionSummary(session);
+  const plannedExercises = day?.exercises || [];
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-5">
+      <SessionReviewHeader
+        eyebrow="In Progress"
+        title={session.name}
+        session={session}
+        day={day}
+        statusText={`${summary.hardSets} hard · ${summary.skippedSets} skipped · avg RPE ${summary.avgRpe ? summary.avgRpe.toFixed(1) : "-"} · avg feel ${summary.avgFeel ? summary.avgFeel.toFixed(1) : "-"}`}
+        backLabel="Back to Week"
+        onBack={onBack}
+      />
+
+      <div className="border-b border-white/[0.06] pb-4">
+        <button className="apollo-primary-btn w-full sm:w-auto" onClick={onContinue}>
+          <Timer className="h-4 w-4" />
+          Continue workout
+        </button>
+      </div>
+
+      <section className="border-b border-white/[0.06] pb-4">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Workout</p>
+        <p className="mt-2 text-sm text-iron-300">{plannedExercises.length} exercises · {plannedExercises.reduce((sum, planned) => sum + planned.plannedSets.length, 0)} planned sets</p>
+      </section>
+
+      <div className="flex flex-wrap gap-2">
+        <button className="apollo-secondary-btn" onClick={onEditDay}>Edit day</button>
+        <button className="apollo-secondary-btn" onClick={onBack}>Back to Week</button>
+      </div>
+
+      <section>
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Exercises</p>
+        <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
+          {plannedExercises.map((planned) => {
+            const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+            const logged = session.loggedExercises.find((item) => item.exerciseId === planned.exerciseId);
+            const displayUnit = exercise ? getExerciseDisplayUnit(exercise, user) : user.unit;
+            const plannedWeightText = getPlannedExerciseBadgeText({
+              exercise,
+              displayUnit,
+              plannedWeight: planned.plannedSets[0]?.plannedWeight,
+            });
+            return (
+              <div key={planned.id} className="py-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-white">{exercise?.name || "Unknown exercise"}</p>
+                    <p className="mt-1 text-sm text-iron-400">
+                      {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps || 8} reps · RPE {planned.plannedSets[0]?.targetRpe || 7}
+                    </p>
+                    <p className="mt-1 text-sm text-iron-300">
+                      {logged
+                        ? `${logged.sets.filter(isCompletedValidSet).length} completed · ${logged.sets.filter(isCompletedValidSet).length}/${planned.plannedSets.length} planned`
+                        : `0 completed · 0/${planned.plannedSets.length} planned`}
+                    </p>
+                  </div>
+                  <span className="shrink-0 text-sm text-iron-400">{plannedWeightText || "—"}</span>
+                </div>
+                {logged && exercise ? <LoggedSetsTable logged={logged} exercise={exercise} user={user} displayUnit={displayUnit} /> : null}
+              </div>
+            );
+          })}
+        </div>
+      </section>
     </div>
   );
 }
@@ -7264,36 +8977,48 @@ function WeekReviewPanel({
   const isFinalWeek = review.weekNumber >= review.totalWeeks;
 
   return (
-    <div className="mt-4 rounded-lg border border-volt/30 bg-volt/5 p-4">
-      <div className="mb-3 flex items-center gap-2">
-        <CheckCircle2 className="h-5 w-5 text-volt" />
-        <p className="font-black text-volt">Week {review.weekNumber} Complete!</p>
-        {review.totalWeeks > 0 && <span className="text-xs text-iron-400">({review.weekNumber}/{review.totalWeeks})</span>}
+    <div className="border-y border-[#0a84ff]/20 bg-[#0a84ff]/[0.04] px-4 py-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <CheckCircle2 className="h-4.5 w-4.5 text-[#8fb9ff]" />
+        <p className="text-sm font-semibold tracking-[-0.01em] text-[#8fb9ff]">Week {review.weekNumber} complete</p>
+        {review.totalWeeks > 0 && <span className="text-xs text-iron-500">({review.weekNumber}/{review.totalWeeks})</span>}
       </div>
-      <div className="mb-4 grid gap-2 sm:grid-cols-4">
-        <Metric label="Completed" value={review.completedWorkouts} unit={`/${review.plannedWorkouts}`} />
-        <Metric label="Skipped" value={review.skippedWorkouts} />
-        <Metric label="Hard sets" value={review.hardSetsCompleted} />
-        <Metric label="Avg RPE" value={review.averageRpe ? review.averageRpe.toFixed(1) : "-"} />
+      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-3 sm:grid-cols-4">
+        <div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-iron-500">Completed</p>
+          <p className="mt-1 text-sm font-medium text-iron-100">{review.completedWorkouts} / {review.plannedWorkouts}</p>
+        </div>
+        <div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-iron-500">Skipped</p>
+          <p className="mt-1 text-sm font-medium text-iron-100">{review.skippedWorkouts}</p>
+        </div>
+        <div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-iron-500">Hard sets</p>
+          <p className="mt-1 text-sm font-medium text-iron-100">{review.hardSetsCompleted}</p>
+        </div>
+        <div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-iron-500">Avg RPE</p>
+          <p className="mt-1 text-sm font-medium text-iron-100">{review.averageRpe ? review.averageRpe.toFixed(1) : "-"}</p>
+        </div>
       </div>
-      <div className="mb-4 grid gap-2 sm:grid-cols-2">
-        <Metric label="Avg feel" value={review.averageSetRating ? `${review.averageSetRating.toFixed(1)}/5` : "-"} />
-        {review.averageReadiness !== null && <Metric label="Avg readiness" value={review.averageReadiness.toFixed(0)} unit="/10" />}
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-white/[0.06] pt-3 text-sm">
+        <span className="text-iron-300">Avg feel {review.averageSetRating ? review.averageSetRating.toFixed(1) : "-"}/5</span>
+        {review.averageReadiness !== null && <span className="text-iron-400">Avg readiness {review.averageReadiness.toFixed(0)}/10</span>}
       </div>
       {review.suggestions.length > 0 && (
-        <div className="mb-4 space-y-2 rounded-lg bg-iron-950/50 p-3">
-          <p className="label">Suggestions for next week</p>
+        <div className="mt-3 border-t border-white/[0.06] pt-3">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-iron-500">Next week notes</p>
           {review.suggestions.map((suggestion) => (
-            <p key={suggestion} className="text-sm text-iron-300">• {suggestion}</p>
+            <p key={suggestion} className="mt-1 text-sm text-iron-300">{suggestion}</p>
           ))}
-          <p className="mt-2 text-xs text-iron-400">These are suggestions only. Review them and start the next week when ready — nothing changes automatically.</p>
+          <p className="mt-2 text-xs text-iron-500">Suggestions only. Nothing changes automatically.</p>
         </div>
       )}
       {isFinalWeek ? (
-        <div className="space-y-3">
-          <div className="rounded-lg border border-volt/30 bg-volt/10 p-3 text-center">
-            <p className="font-bold text-volt">Block complete.</p>
-            <p className="mt-1 text-sm text-iron-300">There is no Week {review.weekNumber + 1} in this block. Review it, archive it, repeat it, or start a new one.</p>
+        <div className="mt-4 space-y-3 border-t border-white/[0.06] pt-4">
+          <div>
+            <p className="text-sm font-semibold text-iron-100">Block complete.</p>
+            <p className="mt-1 text-sm text-iron-400">There is no Week {review.weekNumber + 1} in this block. Review it, archive it, repeat it, or start a new one.</p>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
             {onReviewBlock && <button className="btn-secondary w-full" onClick={onReviewBlock}>Review Block</button>}
@@ -7303,7 +9028,7 @@ function WeekReviewPanel({
           </div>
         </div>
       ) : !confirmed ? (
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="mt-4 grid gap-2 border-t border-white/[0.06] pt-4 sm:grid-cols-2">
           <button className="btn-primary w-full" onClick={() => setConfirmed(true)}>
             Start Week {review.weekNumber + 1}
           </button>
@@ -7318,10 +9043,10 @@ function WeekReviewPanel({
           )}
         </div>
       ) : (
-        <div className="space-y-3">
-          <div className="rounded-lg border border-volt/30 bg-volt/10 p-3 text-center">
-            <p className="font-bold text-volt">Ready to go.</p>
-            <p className="mt-1 text-sm text-iron-300">Head to Today to begin your next training day. The block will advance automatically when you start your first session of Week {review.weekNumber + 1}.</p>
+        <div className="mt-4 space-y-3 border-t border-white/[0.06] pt-4">
+          <div>
+            <p className="text-sm font-semibold text-iron-100">Ready to go.</p>
+            <p className="mt-1 text-sm text-iron-400">Head to Today to begin your next training day. The block will advance automatically when you start your first session of Week {review.weekNumber + 1}.</p>
           </div>
           {onPlanNextWeek && (
             <button className="btn-secondary w-full" onClick={onPlanNextWeek}>
@@ -7883,9 +9608,9 @@ function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: Logg
   const bodyweightMovement = isBodyweightExercise(exercise);
   if (!logged.sets.length) return null;
   return (
-    <section className="overflow-hidden border-t border-white/[0.06]">
-      <p className="pb-1.5 pt-3 text-xs font-semibold text-iron-500">
-        Exercise History
+    <section className="overflow-hidden border-t border-white/[0.06] pt-3">
+      <p className="pb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">
+        Set log
         <span className="ml-1 font-normal text-iron-600">
           · {logged.sets.filter(isHardSet).length} hard · {logged.sets.filter(s => s.skipped).length} skipped
         </span>
@@ -7893,24 +9618,24 @@ function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: Logg
       <div className="overflow-x-auto">
         <table className="w-full min-w-[34rem] text-left text-sm">
           <thead>
-            <tr className="text-[0.68rem] text-iron-600">
-              <th className="pb-1.5 pr-4 font-medium">Set</th>
-              <th className="pb-1.5 pr-4 font-medium">{bodyweightMovement ? "Load" : `Load (${unit})`}</th>
-              <th className="pb-1.5 pr-4 font-medium">Reps</th>
-              <th className="pb-1.5 pr-4 font-medium">RPE</th>
-              <th className="pb-1.5 pr-4 font-medium">Feel</th>
-              <th className="pb-1.5 font-medium">e1RM</th>
+            <tr className="border-b border-white/[0.06] text-[0.68rem] uppercase tracking-[0.08em] text-iron-600">
+              <th className="pb-2 pr-4 font-medium">Set</th>
+              <th className="pb-2 pr-4 font-medium">{bodyweightMovement ? "Load" : `Load (${unit})`}</th>
+              <th className="pb-2 pr-4 font-medium">Reps</th>
+              <th className="pb-2 pr-4 font-medium">RPE</th>
+              <th className="pb-2 pr-4 font-medium">Feel</th>
+              <th className="pb-2 font-medium">e1RM</th>
             </tr>
           </thead>
           <tbody>
             {logged.sets.map((set, index) => (
               <tr key={set.id} className={`border-t border-white/[0.05] ${set.skipped ? "opacity-40" : ""}`}>
-                <td className="py-1.5 pr-4">{index + 1}{set.skipped ? " ↷" : ""}</td>
-                <td className="py-1.5 pr-4">{set.skipped ? "—" : formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || unit })}</td>
-                <td className="py-1.5 pr-4">{set.skipped ? "—" : set.actualReps}</td>
-                <td className="py-1.5 pr-4">{set.skipped ? "—" : set.actualRpe || "—"}</td>
-                <td className="py-1.5 pr-4">{set.skipped ? "—" : `${set.setRating}/5`}</td>
-                <td className="py-1.5">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10) || "—"}</td>
+                <td className="py-2 pr-4 text-iron-300">{index + 1}{set.skipped ? " ↷" : ""}</td>
+                <td className="py-2 pr-4 text-iron-200">{set.skipped ? "—" : formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || unit })}</td>
+                <td className="py-2 pr-4 text-iron-200">{set.skipped ? "—" : set.actualReps}</td>
+                <td className="py-2 pr-4 text-iron-200">{set.skipped ? "—" : set.actualRpe || "—"}</td>
+                <td className="py-2 pr-4 text-iron-200">{set.skipped ? "—" : `${set.setRating}/5`}</td>
+                <td className="py-2 text-iron-200">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10) || "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -8874,6 +10599,40 @@ function NumberField({ label, value, step, min, max, onChange }: { label: string
           }
         }}
       />
+    </div>
+  );
+}
+
+function WeekEditorStepper({
+  label,
+  value,
+  step = 1,
+  min = 0,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  step?: number;
+  min?: number;
+  max?: number;
+  onChange: (value: number) => void;
+}) {
+  const nextDown = Math.max(min, Number((value - step).toFixed(2)));
+  const nextUp = Math.min(max ?? Number.POSITIVE_INFINITY, Number((value + step).toFixed(2)));
+
+  return (
+    <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">{label}</p>
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <button className="logger-step-btn" onClick={() => onChange(nextDown)} aria-label={`Decrease ${label}`}>
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        <span className="text-base font-semibold text-white">{Number.isInteger(value) ? value : value.toFixed(1)}</span>
+        <button className="logger-step-btn" onClick={() => onChange(nextUp)} aria-label={`Increase ${label}`}>
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
     </div>
   );
 }

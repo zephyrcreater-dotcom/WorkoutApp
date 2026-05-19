@@ -231,6 +231,26 @@ textarea {
     @apply rounded-lg border border-white/[0.09] bg-iron-950;
   }
 
+  .apollo-primary-btn {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#2792ff] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .apollo-secondary-btn {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-sm font-medium text-iron-200 transition hover:bg-white/[0.08] active:scale-[0.97];
+  }
+
+  .apollo-danger-btn {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm border border-ember/30 bg-ember/[0.08] px-4 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] active:scale-[0.97];
+  }
+
+  .apollo-picker-sheet {
+    @apply fixed inset-0 z-50 bg-iron-950/90 backdrop-blur-sm;
+  }
+
+  .apollo-picker-panel {
+    @apply mx-auto flex h-full w-full max-w-3xl flex-col bg-[#0d1016] sm:my-6 sm:h-[min(90vh,56rem)] sm:rounded-sm sm:border sm:border-white/[0.08];
+  }
+
   /* ── Live Logger input rows ─────────────────────────────────── */
   /* iOS-settings-style: label left, value right, flat dividers   */
 
