@@ -230,4 +230,193 @@ textarea {
   .native-sheet {
     @apply rounded-lg border border-white/[0.09] bg-iron-950;
   }
+
+  /* ── Command Center visual system ───────────────────────────────── */
+
+  /* Full-bleed app shell wrapper */
+  .app-shell {
+    @apply min-h-full bg-iron-900;
+  }
+
+  /* App header bar */
+  .app-header {
+    @apply sticky top-0 z-30 flex items-center gap-3 border-b border-white/[0.06] bg-iron-950/95 px-4 py-3 backdrop-blur;
+  }
+
+  /* Sidebar rail nav item */
+  .rail-nav-item {
+    @apply tap-highlight flex w-full items-center gap-2.5 rounded-sm px-3 py-2 text-sm font-medium text-iron-400 transition hover:bg-white/[0.06] hover:text-iron-100;
+  }
+
+  .rail-nav-item-active {
+    @apply relative bg-volt/[0.06] text-volt;
+  }
+
+  /* Standard command row */
+  .command-row {
+    @apply flex items-center gap-3 px-4 py-2.5 text-sm transition;
+  }
+
+  /* Active/current row — lime left rail + subtle tint */
+  .command-row-active {
+    @apply relative bg-volt/[0.05];
+  }
+
+  /* Completed row — quiet, no heavy treatment */
+  .command-row-complete {
+    @apply opacity-70;
+  }
+
+  /* Muted/metadata row */
+  .command-row-muted {
+    @apply text-iron-500;
+  }
+
+  /* Danger row */
+  .command-row-danger {
+    @apply text-orange-300;
+  }
+
+  /* Row primary text */
+  .command-row-title {
+    @apply text-sm font-medium text-iron-100;
+  }
+
+  /* Row secondary text */
+  .command-row-subtitle {
+    @apply text-xs text-iron-500;
+  }
+
+  /* Row right-aligned value — tabular, slightly stronger */
+  .command-row-value {
+    @apply shrink-0 text-sm font-semibold text-iron-200;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Section container — flat, no card border */
+  .command-section {
+    @apply overflow-hidden bg-iron-900/40;
+  }
+
+  /* Section label */
+  .command-section-title {
+    @apply px-4 pb-1.5 pt-3 text-[0.68rem] font-semibold uppercase tracking-wide text-iron-500;
+  }
+
+  /* List container */
+  .command-list {
+    @apply overflow-hidden;
+  }
+
+  /* Thin row divider */
+  .command-divider {
+    @apply h-px bg-white/[0.05];
+  }
+
+  /* Primary action — lime, one per context */
+  .command-primary {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-volt px-4 py-2 text-sm font-bold text-iron-950 transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Secondary action */
+  .command-secondary {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97];
+  }
+
+  /* Danger action — muted orange/red */
+  .command-danger {
+    @apply tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md border border-ember/30 bg-ember/[0.07] px-4 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] active:scale-[0.97] disabled:opacity-40;
+  }
+
+  /* Small pill tag */
+  .command-pill {
+    @apply inline-flex items-center rounded-sm px-2 py-0.5 text-xs font-medium;
+  }
+
+  /* Absolute lime left rail — place inside a relative container */
+  .active-rail {
+    @apply absolute inset-y-0 left-0 w-0.5 bg-volt/80;
+  }
+
+  /* Premium numeric display — tabular, slightly stronger weight */
+  .stat-number {
+    @apply font-semibold;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Stat label under a number */
+  .stat-label {
+    @apply text-xs text-iron-500;
+  }
+
+  /* Inline numeric — tabular only */
+  .numeric {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Design Lab Concept System (Apollo Blue iteration) ──────── */
+
+  .concept-screen {
+    @apply min-h-0 bg-[#080a0e];
+  }
+
+  .concept-title {
+    @apply text-3xl font-black text-white;
+    letter-spacing: -0.025em;
+  }
+
+  .concept-subtitle {
+    @apply text-sm text-iron-500;
+  }
+
+  .concept-section-label {
+    @apply text-[0.62rem] font-semibold uppercase tracking-widest text-iron-600;
+  }
+
+  .concept-row {
+    @apply flex items-start px-4 py-3 transition active:bg-white/[0.04];
+  }
+
+  /* Apollo blue active row — replaces old volt/lime version */
+  .concept-row-active {
+    @apply bg-[#0a84ff]/[0.06];
+  }
+
+  .concept-row-title {
+    @apply text-sm font-semibold leading-tight text-white;
+  }
+
+  .concept-row-meta {
+    @apply text-xs text-iron-500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .concept-row-value {
+    @apply shrink-0 text-sm font-bold text-iron-200;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .concept-divider {
+    @apply h-px bg-white/[0.07];
+  }
+
+  /* Apollo blue primary action — strong but native */
+  .concept-primary {
+    @apply tap-highlight inline-flex items-center justify-center gap-1.5 rounded-[3px] bg-[#0a84ff] px-5 py-2 text-sm font-bold text-white transition active:scale-[0.97] disabled:opacity-50;
+  }
+
+  .concept-danger {
+    @apply tap-highlight inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium text-orange-400 transition hover:text-orange-300 active:scale-[0.97];
+  }
+
+  .concept-input {
+    @apply w-full border border-white/[0.1] bg-iron-900/60 px-2 py-3 text-center text-2xl font-black text-white outline-none focus:border-[#0a84ff]/50;
+    border-radius: 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .concept-number {
+    @apply text-2xl font-black leading-none text-white;
+    font-variant-numeric: tabular-nums;
+  }
 }

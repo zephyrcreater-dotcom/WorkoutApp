@@ -19,6 +19,7 @@ import {
   Library,
   LogOut,
   MoreHorizontal,
+  Palette,
   Pencil,
   Plus,
   RefreshCcw,
@@ -186,7 +187,8 @@ type Screen =
   | "library"
   | "week"
   | "progress"
-  | "settings";
+  | "settings"
+  | "design-lab";
 
 type CompletedReviewState = {
   sessionId: string;
@@ -205,7 +207,8 @@ const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "programs", label: "Block", icon: CalendarDays },
   { id: "library", label: "Library", icon: Library },
   { id: "progress", label: "Analytics", icon: BarChart3 },
-  { id: "settings", label: "Settings", icon: Settings }
+  { id: "settings", label: "Settings", icon: Settings },
+  { id: "design-lab", label: "Lab", icon: Palette }
 ];
 
 const muscleOptions: MuscleGroup[] = [
@@ -962,11 +965,12 @@ function App() {
           {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
+          {screen === "design-lab" && <DesignLabScreen />}
         </section>
       </main>
 
       <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-iron-950/95 px-2 py-1.5 backdrop-blur-xl lg:hidden">
-        <div className="grid grid-cols-6 gap-0.5">
+        <div className="grid grid-cols-7 gap-0.5">
           {navItems.map((item) => (
             <button
               key={item.id}
@@ -3049,12 +3053,13 @@ function LiveLogger({
               const hardSets = logged.sets.filter(isHardSet).length;
               const skippedSets = logged.sets.filter(s => s.skipped).length;
               return (
-                <div key={logged.id}>
+                <div key={logged.id} className="relative overflow-hidden">
                   {loggedIndex > 0 && <div className="list-divider" />}
+                  {isActive && <div className="active-rail" />}
                 <button
                   className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition ${
                     isActive
-                      ? "bg-white/[0.08] text-white"
+                      ? "bg-volt/[0.05] text-white"
                       : "text-iron-300 hover:bg-white/[0.05] hover:text-iron-100"
                   }`}
                   onClick={() => {
@@ -3085,8 +3090,8 @@ function LiveLogger({
                 >
                   <span className="min-w-0">
                     <span className={`block truncate text-sm ${isActive ? "font-semibold text-white" : "font-medium"}`}>{item?.name}</span>
-                    <span className="text-xs text-iron-500">
-                      {hardSets} hard{skippedSets > 0 ? ` · ${skippedSets} skipped` : ""} · {logged.sets.length} total
+                    <span className="numeric text-xs text-iron-500">
+                      {hardSets} hard{skippedSets > 0 ? ` · ${skippedSets} skip` : ""} · {logged.sets.length} total
                     </span>
                   </span>
                   {isActive && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-volt/60" />}
@@ -3259,7 +3264,7 @@ function LiveLogger({
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0 flex-1">
                             <div className="flex items-baseline gap-2">
-                              <span className="text-sm font-semibold">Set {lineupItem.displayIndex + 1}</span>
+                              <span className="numeric text-sm font-semibold">Set {lineupItem.displayIndex + 1}</span>
                               <span className={`text-xs font-medium ${isSelected && !isEditingThisRow ? "text-volt/80" : actual?.skipped ? "text-orange-400/70" : actual ? "text-iron-400" : "text-iron-600"}`}>{statusLabel}</span>
                               {(set?.kind || actual?.kind) && (set?.kind || actual?.kind) !== "working" && (
                                 <span className="text-xs text-iron-600">{set?.kind || actual?.kind}</span>
@@ -3267,11 +3272,11 @@ function LiveLogger({
                             </div>
                             <div className="mt-0.5 flex items-center gap-2 text-xs">
                               {set && !actual && (
-                                <span className="text-iron-500">{plannedWeightText} × {set.targetReps}{set.targetRpe ? ` @ ${set.targetRpe}` : ""}</span>
+                                <span className="numeric text-iron-500">{plannedWeightText} × {set.targetReps}{set.targetRpe ? ` @ ${set.targetRpe}` : ""}</span>
                               )}
                               {!set && !actual && <span className="text-iron-600">Extra set</span>}
                               {actual && !actual.skipped && (
-                                <span className={isLoggedSet && !isEditingThisRow ? "text-volt/90 font-medium" : "text-iron-400"}>
+                                <span className={`numeric ${isLoggedSet && !isEditingThisRow ? "font-medium text-volt/90" : "text-iron-400"}`}>
                                   {actualWeightText || getBodyweightPreviewLabel(liveExercise)} × {actual.actualReps}{actual.actualRpe ? ` @ ${actual.actualRpe}` : ""}
                                 </span>
                               )}
@@ -3312,14 +3317,14 @@ function LiveLogger({
             </div>
             <p className="mt-1 text-xs text-iron-600">{bodyweightMovement ? `Added-load increment: ${exerciseIncrement} ${exerciseUnit}` : `Increment: ${exerciseIncrement} ${exerciseUnit}`}</p>
             <div className="mt-4">
-              <p className="mb-2 text-xs font-medium text-iron-500">Difficulty <span className="text-iron-600">· 1 harder · 3 as planned · 5 easy</span></p>
+              <p className="mb-1.5 text-[0.62rem] font-semibold uppercase tracking-wider text-iron-500">Difficulty <span className="font-normal normal-case tracking-normal text-iron-600">· 1 harder · 3 as planned · 5 easy</span></p>
             </div>
-            <div className="grid grid-cols-5 gap-1.5">
+            <div className="grid grid-cols-5 gap-1">
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
-                const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nA bit hard", 3: "3\nAs planned", 4: "4\nA bit easy", 5: "5\nEasy" };
+                const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nHard", 3: "3\nPlanned", 4: "4\nEasy", 5: "5\nEasier" };
                 return (
-                  <button key={rating} className={`min-h-10 rounded-lg text-[0.62rem] font-semibold leading-tight transition ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/[0.06] text-iron-400 hover:bg-white/10 hover:text-iron-200"}`} onClick={() => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
-                    {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-xs" : "block opacity-70"}>{line}</span>)}
+                  <button key={rating} className={`min-h-9 rounded text-[0.6rem] font-semibold leading-tight transition ${setDraft.setRating === rating ? "bg-volt text-iron-950" : "bg-white/[0.06] text-iron-400 hover:bg-white/[0.1] hover:text-iron-200"}`} onClick={() => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
+                    {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-xs font-bold" : "block opacity-60"}>{line}</span>)}
                   </button>
                 );
               })}
@@ -5382,9 +5387,9 @@ function LibraryScreen({
                   <option value="disabled">Standard</option>
                 </select>
               </div>
-              <div className="scrollbar-none mt-4 max-h-[32rem] overflow-y-auto rounded-lg border border-white/10 bg-iron-950/45 p-2">
-                <div className="space-y-2">
-                  {exercises.map((exercise) => {
+              <div className="scrollbar-none mt-4 max-h-[32rem] overflow-y-auto list-section">
+                <div>
+                  {exercises.map((exercise, exerciseIndex) => {
                     const childVariations = !query && !showVariations
                       ? db.exercises.filter((e) => e.parentExerciseId === exercise.id && !e.isArchived && (!e.ownerUserId || e.ownerUserId === user.id))
                       : [];
@@ -5394,21 +5399,23 @@ function LibraryScreen({
                       : undefined;
                     return (
                       <div key={exercise.id}>
+                        {exerciseIndex > 0 && <div className="list-divider" />}
                         <div
-                          className="rounded-lg border border-white/[0.07] bg-white/[0.04] px-3 py-2.5 cursor-pointer transition hover:bg-white/[0.07] active:bg-white/[0.1]"
+                          className="group tap-highlight flex cursor-pointer items-center gap-3 px-3 py-2.5 transition hover:bg-white/[0.05] active:bg-white/[0.07]"
                           onClick={() => startEditExercise(exercise)}
                         >
-                          <div className="flex items-center gap-2">
-                            <div className="min-w-0 flex-1">
-                              <p className="font-semibold text-sm text-iron-100">{exercise.name}</p>
-                              {parentName && (
-                                <p className="mt-0.5 flex items-center gap-1 text-[0.68rem] font-bold text-iron-400">
-                                  <GitBranch className="h-3 w-3" /> Variation of {parentName}
-                                </p>
-                              )}
-                              <p className="mt-0.5 text-xs text-iron-500">{exercise.primaryMuscles.join(", ")} · {exercise.equipment.join(", ")} · {exercise.ownerUserId ? "custom" : isCompound(exercise) ? "compound" : "isolation"}{exercise.userModified ? " · edited" : ""}{exercise.isArchived ? " · hidden" : ""}</p>
-                            </div>
-                            <div className="flex shrink-0 items-center gap-0.5">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-iron-100">{exercise.name}</p>
+                            {parentName && (
+                              <p className="mt-0.5 flex items-center gap-1 text-[0.68rem] font-bold text-iron-400">
+                                <GitBranch className="h-3 w-3" /> Variation of {parentName}
+                              </p>
+                            )}
+                            <p className="mt-0.5 text-xs text-iron-500">{exercise.primaryMuscles.slice(0, 2).join(", ")} · {exercise.equipment[0]} · {exercise.ownerUserId ? "custom" : isCompound(exercise) ? "compound" : "isolation"}{exercise.userModified ? " · edited" : ""}{exercise.isArchived ? " · hidden" : ""}</p>
+                          </div>
+                          <div className="flex shrink-0 items-center gap-0.5">
+                            {/* Desktop-only hover actions */}
+                            <span className="hidden items-center gap-0.5 sm:group-hover:flex">
                               {!exercise.ownerUserId && exercise.userModified && builtInExercises.some((b) => b.id === exercise.id) && (
                                 <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); resetExerciseToDefault(exercise); }} title="Reset to app default">
                                   <RotateCcw className="h-3.5 w-3.5 text-volt/80" />
@@ -5429,46 +5436,46 @@ function LibraryScreen({
                                   <EyeOff className="h-3.5 w-3.5 text-iron-600" />
                                 </button>
                               ) : null}
-                              <ChevronRight className="h-4 w-4 text-iron-600" />
-                            </div>
+                            </span>
+                            <ChevronRight className="h-4 w-4 text-iron-600" />
                           </div>
                         </div>
                         {childVariations.length > 0 && (
-                          <div className="ml-4 mt-1">
-                            <button
-                              className="flex items-center gap-1 rounded px-2 py-1 text-[0.68rem] font-bold text-iron-400 hover:text-iron-200 transition"
-                              onClick={() => setExpandedVariantParentIds((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(exercise.id)) next.delete(exercise.id); else next.add(exercise.id);
-                                return next;
-                              })}
-                            >
-                              <ChevronDown className={`h-3 w-3 transition ${isExpanded ? "rotate-180" : ""}`} />
-                              {childVariations.length} variation{childVariations.length > 1 ? "s" : ""}
-                              <button className="ml-1 text-iron-500 hover:text-volt" onClick={(e) => { e.stopPropagation(); startAddVariation(exercise); }} title="Add variation">
+                          <div className="border-l border-white/[0.06] ml-3">
+                            <div className="flex items-center">
+                              <button
+                                className="flex flex-1 items-center gap-1 px-3 py-1.5 text-[0.68rem] font-bold text-iron-500 hover:text-iron-300 transition"
+                                onClick={() => setExpandedVariantParentIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(exercise.id)) next.delete(exercise.id); else next.add(exercise.id);
+                                  return next;
+                                })}
+                              >
+                                <ChevronDown className={`h-3 w-3 transition ${isExpanded ? "rotate-180" : ""}`} />
+                                {childVariations.length} variation{childVariations.length > 1 ? "s" : ""}
+                              </button>
+                              <button className="px-2 py-1.5 text-iron-600 hover:text-volt transition" onClick={(e) => { e.stopPropagation(); startAddVariation(exercise); }} title="Add variation">
                                 <Plus className="h-3 w-3" />
                               </button>
-                            </button>
+                            </div>
                             {isExpanded && (
-                              <div className="mt-1 space-y-0.5 border-l border-white/[0.07] pl-3">
-                                {childVariations.map((child) => (
-                                  <div
-                                    key={child.id}
-                                    className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 cursor-pointer transition hover:bg-white/[0.06]"
-                                    onClick={() => startEditExercise(child)}
-                                  >
-                                    <div className="flex items-center gap-2">
+                              <div>
+                                {childVariations.map((child, childIndex) => (
+                                  <div key={child.id}>
+                                    {childIndex > 0 && <div className="list-divider" />}
+                                    <div
+                                      className="tap-highlight flex cursor-pointer items-center gap-3 px-3 py-2 transition hover:bg-white/[0.04]"
+                                      onClick={() => startEditExercise(child)}
+                                    >
                                       <div className="min-w-0 flex-1">
                                         <p className="text-sm font-medium text-iron-200">{child.name}</p>
                                         {child.variationType && <p className="text-[0.68rem] text-iron-500">{child.variationType}</p>}
                                       </div>
                                       <div className="flex shrink-0 items-center gap-0.5">
-                                        <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); setProgressExerciseId(child.id); }} title="Progress chart"><BarChart3 className="h-3 w-3 text-iron-500" /></button>
-                                        <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); duplicateExercise(child); }} title="Duplicate"><Copy className="h-3 w-3 text-iron-500" /></button>
                                         {child.ownerUserId ? (
-                                          <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); deleteExercise(child); }} title="Delete"><Trash2 className="h-3 w-3 text-orange-400/70" /></button>
+                                          <button className="btn-ghost p-1 opacity-0 transition hover:opacity-100 group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); deleteExercise(child); }} title="Delete"><Trash2 className="h-3 w-3 text-orange-400/70" /></button>
                                         ) : !child.isArchived ? (
-                                          <button className="btn-ghost p-1.5" onClick={(e) => { e.stopPropagation(); deleteExercise(child); }} title="Hide"><EyeOff className="h-3 w-3 text-iron-600" /></button>
+                                          <button className="btn-ghost p-1 opacity-0 transition hover:opacity-100 group-hover:opacity-100" onClick={(e) => { e.stopPropagation(); deleteExercise(child); }} title="Hide"><EyeOff className="h-3 w-3 text-iron-600" /></button>
                                         ) : null}
                                         <ChevronRight className="h-3.5 w-3.5 text-iron-600" />
                                       </div>
@@ -7722,29 +7729,29 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
             recommendationWeight: recommendation?.recommendedWeight,
             plannedWeight: planned.plannedSets[0]?.plannedWeight,
           });
-          const previewReasonParts = recommendation?.reasonParts.filter((part) => !part.startsWith("Recent:")) || [];
+          const roleLabel = planned.exerciseRole
+            ? ({ main_lift: "Main", primary_compound: "Primary", secondary_compound: "Secondary", accessory_compound: "Compound", isolation: "Accessory", pump_accessory: "Pump", technique_variation: "Technique", hypertrophy_accessory: "Hypertrophy", support_stability: "Support", timed_core: "Core" } as Record<string, string>)[planned.exerciseRole]
+            : undefined;
           return (
             <div key={planned.id}>
               {index > 0 && <div className="list-divider" />}
-              <div className="flex items-start justify-between gap-3 px-4 py-2.5 transition hover:bg-white/[0.04]">
+              <div className="flex items-center gap-3 px-4 py-2.5 transition hover:bg-white/[0.04]">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-iron-100">{exercise?.name}</p>
                   <p className="mt-0.5 text-xs text-iron-500">
-                    {planned.plannedSets.length} × {planned.plannedSets[0]?.targetReps} @ {planned.plannedSets[0]?.targetRpe}
-                    {planned.exerciseRole && <span className="ml-1.5 text-iron-600">{planned.exerciseRole.replaceAll("_", " ")}</span>}
-                    {planned.fatigueTag === "high" && <span className="ml-1.5 text-amber-400/70">high fatigue</span>}
+                    <span className="numeric">{planned.plannedSets.length} × {planned.plannedSets[0]?.targetReps} @ {planned.plannedSets[0]?.targetRpe}</span>
+                    {roleLabel && <span className="ml-1.5 text-iron-600">{roleLabel}</span>}
+                    {planned.fatigueTag === "high" && <span className="ml-1.5 text-amber-400/70">High fatigue</span>}
                   </p>
-                  {(recentHistory?.reps || recommendation?.recommendedWeight) && (
+                  {recentHistory?.reps && (
                     <p className="mt-0.5 text-xs text-iron-600">
-                      {recentHistory?.reps
-                        ? `Recent: ${formatExerciseLoadText({ exercise, user, weight: recentHistory.weight, unit: displayUnit, bodyweightEmptyLabel: "BW" })} × ${recentHistory.reps}${recentHistory.rpe ? ` @ ${recentHistory.rpe}` : ""}`
-                        : previewReasonParts[0] || ""}
+                      Recent: <span className="numeric">{formatExerciseLoadText({ exercise, user, weight: recentHistory.weight, unit: displayUnit, bodyweightEmptyLabel: "BW" })} × {recentHistory.reps}{recentHistory.rpe ? ` @ ${recentHistory.rpe}` : ""}</span>
                     </p>
                   )}
                   {planned.notes && <p className="mt-0.5 text-xs text-iron-600">{planned.notes}</p>}
                 </div>
                 {badgeText && (
-                  <span className="shrink-0 text-xs font-medium text-volt/80">
+                  <span className="shrink-0 text-sm font-semibold numeric text-volt/90">
                     {badgeText}
                   </span>
                 )}
@@ -8782,8 +8789,8 @@ function SelectField({
 function BigInput({ label, value, onChange, step = "1", disabled = false, placeholder }: { label: string; value: string; onChange: (value: string) => void; step?: string; disabled?: boolean; placeholder?: string }) {
   return (
     <div>
-      <label className="label">{label}</label>
-      <input className="field mt-2 min-h-14 text-2xl font-black disabled:opacity-60" inputMode="decimal" type="number" step={step} value={value} disabled={disabled} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+      <label className="mb-0.5 block text-[0.62rem] font-semibold uppercase tracking-wider text-iron-500">{label}</label>
+      <input className="field min-h-12 text-2xl font-black numeric disabled:opacity-60" inputMode="decimal" type="number" step={step} value={value} disabled={disabled} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
@@ -9939,6 +9946,282 @@ function ImportExercisesFlow({
           Parse &amp; Review
         </button>
         <button className="btn-secondary w-full" onClick={onClose}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DesignLabScreen — Minimal Today + Readiness iteration, no logic wired
+// ---------------------------------------------------------------------------
+
+type ConceptReadinessLevel = "low" | "normal" | "high";
+type ConceptReadinessState = {
+  sleep: ConceptReadinessLevel;
+  stress: ConceptReadinessLevel;
+  soreness: ConceptReadinessLevel;
+  motivation: ConceptReadinessLevel;
+};
+
+const CONCEPT_READINESS_VARS: { key: keyof ConceptReadinessState; label: string }[] = [
+  { key: "sleep",      label: "Sleep"      },
+  { key: "stress",     label: "Stress"     },
+  { key: "soreness",   label: "Soreness"   },
+  { key: "motivation", label: "Motivation" },
+];
+
+const CONCEPT_READINESS_DEFAULT: ConceptReadinessState = {
+  sleep:      "normal",
+  stress:     "low",
+  soreness:   "low",
+  motivation: "normal",
+};
+
+const CONCEPT_LOG_EXERCISES: { name: string; abbr: string }[] = [
+  { name: "Incline Barbell Press", abbr: "Incline BP" },
+  { name: "Tempo Bench Press", abbr: "Tempo Bench" },
+  { name: "Cable Lateral Raise", abbr: "Cable Lat" },
+];
+
+const CONCEPT_SETS: { num: number; status: "current" | "pending" }[] = [
+  { num: 1, status: "current" },
+  { num: 2, status: "pending" },
+  { num: 3, status: "pending" },
+];
+
+const CONCEPT_DIFFICULTIES: { value: number; label: string }[] = [
+  { value: 1, label: "Harder" },
+  { value: 2, label: "Bit hard" },
+  { value: 3, label: "As planned" },
+  { value: 4, label: "Bit easy" },
+  { value: 5, label: "Easy" },
+];
+
+function DesignLabScreen() {
+  const [tab, setTab] = useState<"today" | "logger">("today");
+
+  return (
+    <div className="space-y-4">
+      {/* Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-sm border border-[#0a84ff]/20 bg-[#0a84ff]/[0.04] px-4 py-2.5">
+        <div>
+          <p className="text-sm font-bold text-[#0a84ff]">Design Lab</p>
+          <p className="text-xs text-iron-500">Apollo Blue iteration · static mock data · no logic wired</p>
+        </div>
+        <div className="flex items-center gap-0.5 rounded-sm border border-white/[0.08] bg-iron-900 p-0.5">
+          <button
+            className={`rounded-sm px-3 py-1 text-xs font-semibold transition ${tab === "today" ? "bg-iron-700 text-white" : "text-iron-500 hover:text-iron-300"}`}
+            onClick={() => setTab("today")}
+          >
+            Today
+          </button>
+          <button
+            className={`rounded-sm px-3 py-1 text-xs font-semibold transition ${tab === "logger" ? "bg-iron-700 text-white" : "text-iron-500 hover:text-iron-300"}`}
+            onClick={() => setTab("logger")}
+          >
+            Logger
+          </button>
+        </div>
+      </div>
+
+      {/* Mobile preview frame */}
+      <div className="mx-auto w-full max-w-[390px] overflow-hidden rounded-sm border border-white/[0.08] shadow-2xl">
+        {tab === "today" ? <ConceptTodayView /> : <ConceptLoggerView />}
+      </div>
+
+      <p className="text-center text-[0.62rem] text-iron-700">Mobile frame · 390 px · Tap to open · Swipe for actions</p>
+    </div>
+  );
+}
+
+function ConceptTodayView() {
+  const [readiness, setReadiness] = useState<ConceptReadinessState>(CONCEPT_READINESS_DEFAULT);
+
+  function setVar(key: keyof ConceptReadinessState, val: ConceptReadinessLevel) {
+    setReadiness((r) => ({ ...r, [key]: val }));
+  }
+
+  return (
+    <div className="concept-screen">
+      {/* Workout launch */}
+      <div className="px-4 pb-4 pt-5">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-xl font-black text-white" style={{ letterSpacing: "-0.02em" }}>Push B</p>
+            <p className="mt-0.5 text-xs text-iron-500">Week 1 · Day 4 · Hypertrophy · ~39 min</p>
+          </div>
+          <button className="concept-primary shrink-0">Resume</button>
+        </div>
+        {/* Quiet secondary actions */}
+        <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1">
+          {["Back", "Next Day", "Skip", "Edit", "Off Program"].map((action) => (
+            <button key={action} className="text-[0.72rem] text-iron-600 transition hover:text-iron-400">
+              {action}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Readiness */}
+      <div className="border-t border-white/[0.07] px-4 py-3">
+        {/* Header row: label + score */}
+        <div className="mb-3 flex items-baseline justify-between gap-2">
+          <p className="concept-section-label">Readiness</p>
+          <p className="tabular-nums">
+            <span className="text-sm font-bold text-iron-100">70</span>
+            <span className="text-xs text-iron-500">/100</span>
+            <span className="ml-1.5 text-[0.67rem] text-iron-600">· baseline</span>
+          </p>
+        </div>
+
+        {/* Variable rows */}
+        <div className="space-y-2">
+          {CONCEPT_READINESS_VARS.map(({ key, label }) => (
+            <div key={key} className="flex items-center justify-between gap-2">
+              <p className="w-[4.5rem] shrink-0 text-xs text-iron-400">{label}</p>
+              {/* Segmented control */}
+              <div className="flex overflow-hidden border border-white/[0.07]" style={{ borderRadius: "2px" }}>
+                {(["low", "normal", "high"] as ConceptReadinessLevel[]).map((level, li) => (
+                  <button
+                    key={level}
+                    className={`px-3 py-1 text-[0.7rem] font-medium capitalize transition ${
+                      readiness[key] === level
+                        ? "bg-[#0a84ff]/[0.14] text-[#0a84ff]"
+                        : "bg-iron-900/50 text-iron-600 hover:text-iron-400"
+                    } ${li < 2 ? "border-r border-white/[0.07]" : ""}`}
+                    onClick={() => setVar(key, level)}
+                  >
+                    {level}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <p className="mt-3 text-[0.68rem] text-iron-600">Run the plan as written.</p>
+      </div>
+    </div>
+  );
+}
+
+function ConceptLoggerView() {
+  const [activeExIdx, setActiveExIdx] = useState(0);
+  const [difficulty, setDifficulty] = useState<number | null>(null);
+
+  return (
+    <div className="concept-screen">
+      {/* Top bar — workout name left, Skip Set right */}
+      <div className="flex items-center justify-between border-b border-white/[0.07] px-4 py-3">
+        <p className="text-xs font-medium text-iron-600">Push B</p>
+        <button className="text-xs font-medium text-orange-400 transition hover:text-orange-300">Skip Set</button>
+      </div>
+
+      {/* Exercise tabs — Apollo blue active state, no redundant header */}
+      <div className="flex overflow-x-auto border-b border-white/[0.06] scrollbar-none">
+        {CONCEPT_LOG_EXERCISES.map((ex, i) => (
+          <button
+            key={i}
+            className={`-mb-px shrink-0 border-b-2 px-4 py-2.5 text-left transition ${
+              activeExIdx === i
+                ? "border-[#0a84ff] bg-[#0a84ff]/[0.05] text-white"
+                : "border-transparent text-iron-500 hover:text-iron-300"
+            }`}
+            style={{ minWidth: "33%" }}
+            onClick={() => setActiveExIdx(i)}
+          >
+            <span className="block truncate text-xs font-semibold">{ex.abbr}</span>
+            <span className="mt-0.5 block text-[0.62rem] font-normal text-iron-600">0 hard · 0 total</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Set lineup — subtle text status, no pills */}
+      <div>
+        <p className="concept-section-label px-4 pt-2.5 pb-1">Sets</p>
+        {CONCEPT_SETS.map((set, i) => (
+          <div key={i}>
+            <div
+              className={`relative flex cursor-pointer items-center justify-between px-4 py-3 transition ${
+                set.status === "current"
+                  ? "bg-[#0a84ff]/[0.06] hover:bg-[#0a84ff]/[0.09]"
+                  : "hover:bg-white/[0.03]"
+              }`}
+            >
+              {set.status === "current" && (
+                <span className="absolute inset-y-0 left-0 w-[3px] bg-[#0a84ff]" />
+              )}
+              <div className="flex items-baseline gap-2">
+                <span className="text-xs font-semibold tabular-nums text-iron-300">Set {set.num}</span>
+                <span className={`text-[0.67rem] font-medium ${
+                  set.status === "current" ? "text-[#0a84ff]" : "text-iron-600"
+                }`}>
+                  {set.status}
+                </span>
+              </div>
+              <span className="text-xs tabular-nums text-iron-500">155 × 10 @ 7</span>
+            </div>
+            {i < CONCEPT_SETS.length - 1 && <div className="mx-4 h-px bg-white/[0.04]" />}
+          </div>
+        ))}
+        <p className="px-4 pb-2 pt-1 text-[0.6rem] text-iron-700">Tap set to edit · Swipe for actions</p>
+      </div>
+
+      {/* Inputs — iOS-settings-style flat rows */}
+      <div className="border-t border-white/[0.07]">
+        <p className="concept-section-label px-4 pb-0 pt-2.5">Inputs</p>
+        {([
+          { label: "Weight", value: "155", unit: "lb" },
+          { label: "Reps",   value: "10",  unit: ""   },
+          { label: "RPE",    value: "7",   unit: ""   },
+        ] as const).map((field, fi) => (
+          <div key={field.label}>
+            {fi > 0 && <div className="mx-4 h-px bg-white/[0.05]" />}
+            <div className="flex items-center justify-between px-4 py-3">
+              <p className="text-sm text-iron-400">{field.label}</p>
+              <p className="tabular-nums">
+                <span className="text-sm font-bold text-iron-100">{field.value}</span>
+                {field.unit && <span className="ml-1 text-xs font-normal text-iron-500">{field.unit}</span>}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Difficulty — flat square buttons */}
+      <div className="border-t border-white/[0.07] px-4 py-3">
+        <p className="concept-section-label mb-2">Difficulty</p>
+        <div className="flex gap-1">
+          {CONCEPT_DIFFICULTIES.map((d) => (
+            <button
+              key={d.value}
+              className={`flex-1 border py-2 text-center transition ${
+                difficulty === d.value
+                  ? "border-[#0a84ff]/40 bg-[#0a84ff]/[0.08] text-[#0a84ff]"
+                  : "border-white/[0.07] bg-iron-900/40 text-iron-500 hover:border-white/[0.14] hover:text-iron-300"
+              }`}
+              style={{ borderRadius: "2px" }}
+              onClick={() => setDifficulty(d.value === difficulty ? null : d.value)}
+            >
+              <span className="block text-[0.68rem] font-bold tabular-nums">{d.value}</span>
+              <span className="mt-0.5 block text-[0.55rem] leading-tight">{d.label}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Floating action bar — translucent, Save Set + Add Set only */}
+      <div
+        className="flex items-center justify-end gap-2 border-t border-white/[0.06] px-4 py-3"
+        style={{ background: "rgba(8,10,14,0.92)", backdropFilter: "blur(16px)" }}
+      >
+        <button
+          className="border border-white/[0.1] bg-white/[0.05] px-4 py-2 text-sm font-medium text-iron-300 transition hover:bg-white/[0.08]"
+          style={{ borderRadius: "3px" }}
+        >
+          + Set
+        </button>
+        <button className="concept-primary">Save Set</button>
       </div>
     </div>
   );
