@@ -1,5 +1,117 @@
 # ROADMAP.md
 
+## Library UI Redesign: Exercise Inspector + Condensed Muscle Picker — Completed (Session 36)
+
+### Delivered
+- Rebuilt the Library exercises view into a cleaner two-pane list-plus-inspector layout on desktop, with a full-screen inspector flow on mobile.
+- Replaced the long add/edit form with a compact Exercise Inspector that summarizes primary and secondary muscles instead of showing giant button grids inline.
+- Added a UI-only grouped muscle picker with top-level categories and expandable sub-muscle sections while preserving existing stored muscle values.
+- Moved most exercise actions out of list rows and into the inspector so the list reads more like a compact library and less like an action dashboard.
+- Updated Library-related save/selection/progress accents to Apollo blue instead of the older lime-leaning style.
+
+### Next steps
+- Manually verify the Library flow on real phone and desktop widths once a local browser session can run.
+- Decide later whether the new grouped muscle picker should become a shared primitive for other exercise-selection/editing surfaces.
+
+## Week Flow Phase 2: In-Progress + Picker Cleanup — Completed (Session 35)
+
+### Delivered
+- Tightened the in-progress Week review into a more useful continue/edit handoff screen.
+- Added Week-specific Apollo-blue button styles so the child Week screens no longer show green-leaning primary actions.
+- Moved Week add/swap exercise selection into a dedicated sheet-style picker with compact list rows and lighter filters.
+- Removed the last inline swap-picker clutter from the Week editor rows.
+
+### Next steps
+- Manually verify the Week picker sheet on mobile and desktop widths.
+- Decide later whether the Apollo sheet/button treatment should be generalized into shared reusable primitives after the Week flow settles.
+
+## Week Flow Redesign: Review + Edit Pass — Completed (Session 34)
+
+### Delivered
+- Replaced the remaining Week overview stat mini-grid with one compact summary line.
+- Added a dedicated in-progress Week review surface instead of routing that flow into a weak status summary.
+- Rebuilt completed session review into a flatter Apollo-style logbook layout with cleaner exercise sections and summary strips.
+- Added a Week-only compact editor variant so Week/day editing now matches the new visual system without redesigning unrelated screens that still use the older editor.
+
+### Next steps
+- Manually verify completed and in-progress Week review layouts on smaller phone widths.
+- Revisit later whether the Week editor’s compact stepper and picker patterns should become reusable for other planning/editing flows.
+
+## Week / Block Progress Apollo Redesign — Completed (Session 33)
+
+### Delivered
+- Replaced the Week tab’s old dashboard stat-card layout with one compact Apollo-style block summary.
+- Restyled the week selector into a flatter horizontal strip with blue active state and quieter non-active states.
+- Rebuilt workout progress cards into compact list rows with slimmer status treatment, denser metrics, and no large suggestion boxes.
+- Collapsed Off-Program History by default and slimmed the week-complete review surface to match the new Week language.
+
+### Next steps
+- Manually verify the Week layout on narrow phone widths and desktop widths to tune row density if needed.
+- Decide later whether the compact Week summary and list-row treatment should become a reusable pattern for other summary screens.
+
+## Today Edit Flow Fix + Exercise Detail View — Completed (Session 32)
+
+### Delivered
+- Removed the duplicate nested save/cancel command area from Today edit mode.
+- Changed edit-mode exercise rows to expand inline controls instead of rendering a second editing header.
+- Wired normal Today exercise rows and expanded-details rows into a dedicated exercise detail view.
+- Added an exercise detail screen that shows planned context, recent performance, history, ratings, and e1RM trend data when available.
+
+### Next steps
+- Manually verify the detail view and inline edit-row behavior on touch devices.
+- Revisit whether the exercise detail history table should eventually get a more mobile-compressed presentation.
+
+## Today Style Alignment With Logger — Completed (Session 31)
+
+### Delivered
+- Tightened Today page spacing and hierarchy so it feels closer to the logger rather than a sparse dashboard.
+- Added a clearer Workout section treatment and refined the summary/toggle row.
+- Polished exercise rows with slightly tighter spacing, softer active fill, stronger weight emphasis, and subtler chevrons.
+- Redesigned readiness into a compact snapshot grid while keeping the same logic and placement.
+
+### Next steps
+- Manually compare Today and the logger side by side on phone and desktop to tune any remaining spacing drift.
+- Revisit whether Completed Today should eventually receive the same tighter list language as the workout section.
+
+## Today Details Toggle + Inline Edit Mode — Completed (Session 30)
+
+### Delivered
+- Fixed the Today details toggle so it only shows the correct current action and disappears during inline editing.
+- Replaced the old expanded Workout Plan UI on Today with compact Apollo-style detailed rows.
+- Replaced the old Today-launched workout editor flow with a local inline draft editor that saves explicitly.
+- Polished the readiness section into a more refined compact row treatment without changing readiness logic.
+
+### Next steps
+- Manually verify the inline edit controls on narrow mobile widths.
+- Decide later whether swap/reorder should join the Today inline editor, but keep the current edit scope focused for now.
+- Revisit whether the readiness chip styling should become a shared compact-summary pattern elsewhere.
+
+## Today Workout-First Apollo Layout — Completed (Session 29)
+
+### Delivered
+- Reordered Today into the approved workout-first Apollo flow: title/meta, blue primary CTA, inline secondary actions, workout list, then readiness.
+- Flattened the exercise list into cleaner list rows with thin dividers, right-aligned load targets, and a subtle active blue rail.
+- Moved readiness below the workout list and simplified it into a compact row-based summary with no repeated icons or filler copy.
+- Kept desktop as one intentional main column with no right-side workout summary replacement.
+
+### Next steps
+- Manually verify the updated Today flow on iPhone Safari and desktop viewports.
+- Decide later whether the compact readiness row styling should become the shared pattern for any other lightweight summary surfaces.
+- Re-check the main-column width after the Week page receives its next visual pass so the two screens still feel like part of one system.
+
+## Today Screen Apollo Pass — Completed (Session 28)
+
+### Delivered
+- Redesigned the main Today state into a stronger mobile-first layout with distinct header, workout metadata, readiness overview, one primary CTA, quieter secondary actions, and a cleaner exercise list.
+- Added a desktop Today adaptation that keeps the left sidebar and uses a wider intentional single main column with no redundant right summary rail.
+- Updated the top bar styling for Today and replaced the mobile bottom nav treatment with a floating five-item version that matches the sharper Apollo-inspired direction.
+- Kept logger behavior and training logic untouched.
+
+### Next steps
+- Manually verify the new Today layout on real iPhone Safari and desktop browser viewports.
+- Check whether the new floating mobile nav treatment should be generalized further across other screens after the Week redesign pass.
+- Revisit exact desktop content width after the Week screen is refined so the two tabs feel intentionally related without reintroducing filler panels.
+
 ## Logger Smart Finish + Skip Entire Exercise Hold — Completed (Session 27)
 
 ### Delivered

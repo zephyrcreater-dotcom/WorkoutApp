@@ -8,6 +8,460 @@ The app uses a local-first training database with an explicit local-only mode an
 
 ---
 
+## Current Handoff — Library UI Redesign: Exercise Inspector + Condensed Muscle Picker (Session 36)
+
+### What changed
+
+**Exercise Library is now a cleaner two-pane flow**
+- Rebuilt the Library exercises view into a denser Apollo-style layout:
+  - compact filter/header area
+  - flatter exercise rows with thin dividers
+  - blue active rail/highlight for the selected row
+  - row metadata focused on muscles, equipment, type, and variation count
+- Removed the always-visible action-icon strip from exercise rows. Exercise actions now live primarily in the inspector.
+
+**Add/Edit now uses a compact Exercise Inspector**
+- Replaced the long add/edit form with a shorter inspector-style panel that keeps the main fields visible first:
+  - name
+  - equipment
+  - category
+  - loading profile
+  - primary/secondary muscle summaries
+  - notes
+- Save/Add actions now use Apollo blue in the Library flow instead of the older green-leaning primary treatment.
+- On mobile, the inspector now opens as a full-screen detail layer. On desktop, it stays as the right-side pane.
+
+**Muscles are now grouped and refined in a dedicated picker**
+- Added a UI-only muscle grouping layer for:
+  - Chest
+  - Back
+  - Shoulders
+  - Arms
+  - Legs
+  - Core
+  - Conditioning
+- Primary and secondary muscles now show compact summaries in the inspector instead of giant button walls.
+- `Edit` opens a dedicated grouped muscle picker that expands one top-level group at a time and preserves the existing stored muscle string values.
+
+**Advanced exercise controls are still present but quieter**
+- Variations, parent exercise linking, movement patterns, allowed units, tags, fatigue rating, and gym-specific flags are now tucked into a collapsible Advanced section.
+- Inspector actions preserve progress, duplicate, add variation, reset, and hide/delete flows.
+
+**Exercise progress visuals now match the blue Library direction better**
+- Updated the Library-linked exercise progress chart/buttons away from lime-accented states and onto the Apollo blue treatment.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Confirm the new mobile inspector and grouped muscle picker feel good on iPhone-sized widths.
+- Confirm saving edits and new exercises behaves as expected with real local exercise data.
+- Confirm hidden/default/custom filters and variation expand/collapse feel clear with a larger real library.
+
+### Browser verification status
+- Live browser verification was blocked in this environment:
+  - `npm run dev -- --host 127.0.0.1 --port 5174 --strictPort` failed with `EPERM`
+  - direct built-app `file://.../dist/index.html` verification was blocked by the in-app browser URL policy
+
+---
+
+## Current Handoff — Week Flow Phase 2: In-Progress + Picker Cleanup (Session 35)
+
+### What changed
+
+**In-progress review now feels like a real workout handoff**
+- Tightened the Week in-progress review into a more useful screen with:
+  - one blue `Continue workout` action
+  - compact workout summary
+  - explicit workout/exercise count
+  - clearer per-exercise planned/completed progress
+- Removed the leftover “sparse dashboard” feel from this surface.
+
+**Week flow buttons now use Apollo blue instead of lime**
+- Added Week-specific Apollo action styles so Week child screens no longer depend on the older green-leaning primary button treatment.
+- Updated:
+  - `Continue workout`
+  - `Edit workout`
+  - `Save changes`
+  - Week completed-session edit actions
+  - Week extra-exercise confirmation
+
+**Week editor picker is now a dedicated sheet**
+- The Week editor no longer renders the add/swap picker inline as old rounded cards.
+- Add/swap now opens a dedicated Week-style picker sheet with:
+  - compact header
+  - cancel in the top bar
+  - search at the top
+  - compact filter row
+  - list-style results instead of card grids
+- This Week-only picker cleanup does not redesign other unrelated picker uses elsewhere in the app.
+
+**Week editor rows are cleaner**
+- Removed the inline swap-picker block from exercise rows.
+- Kept compact list rows and logger-style steppers, but made add/swap flows cleaner and less visually noisy.
+- Back-to-Week in the Week editor now exits the editor directly instead of forcing the discard-confirm path.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Confirm the Week picker sheet feels good on phone widths and that add/swap flows are obvious.
+- Confirm the new Apollo-blue Week actions feel right next to Today/logger without drawing too much attention.
+- Confirm Back to Week vs Cancel behavior in the Week editor matches the intended draft flow for real usage.
+
+---
+
+## Current Handoff — Week Flow Redesign: Review + Edit Pass (Session 34)
+
+### What changed
+
+**Week overview is now even lighter**
+- Replaced the quick-stat mini-grid with a single compact summary line:
+  - completed
+  - in progress
+  - skipped
+  - avg feel
+- Kept the Apollo-style progress header, week tabs, and compact workout rows from the prior pass.
+- In-progress workouts no longer jump straight into a vague status state from the Week list.
+
+**Week now has a useful in-progress review**
+- Clicking an in-progress or review-state workout from Week now opens a dedicated in-progress review surface.
+- The review shows:
+  - workout/day context
+  - useful summary metrics
+  - `Continue workout`
+  - `Edit day`
+  - planned/logged exercise details
+- `Continue workout` still resumes the existing logger flow unchanged.
+
+**Completed session review now matches the Apollo direction**
+- Removed the old metric-card grid and the older boxed `Completed Workout` shell.
+- Rebuilt completed review into a flatter session screen with:
+  - back link
+  - session header/context
+  - compact summary strip
+  - optional short insight
+  - cleaner exercise log sections
+- The set tables were restyled to read more like a compact logbook than dashboard cards.
+
+**Week edit mode now uses a dedicated Week-style editor**
+- The Week editor shell was redesigned with:
+  - back to Week
+  - one save/cancel command row
+  - compact horizontal day selector
+  - flatter section structure
+- The shared workout day editor now has a Week-specific variant used only in the Week flow.
+- Week editing now shows:
+  - subtle requirement tags
+  - compact exercise rows
+  - inline stepper-style controls for sets/reps/RPE
+  - quiet swap/remove actions
+  - subdued add/choose controls
+- The older editor path remains intact for other screens that still use it.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Confirm in-progress review feels useful on phone widths and that `Continue workout` resumes exactly as expected.
+- Confirm the Week editor’s compact stepper controls still feel comfortable on touch devices.
+- Confirm completed review table scrolling feels clean on smaller screens with no awkward overflow.
+
+---
+
+## Current Handoff — Week / Block Progress Apollo Redesign (Session 33)
+
+### What changed
+
+**Week now uses one compact block summary instead of dashboard cards**
+- Replaced the old two-row metric-card grid with a single text-led header summary.
+- Added:
+  - block/week heading
+  - completion line
+  - thin Apollo-blue progress bar
+  - compact quick-stats row for completed, skipped, in-progress, and set feel
+- Removed the heavier “old dashboard” visual rhythm from the Week tab.
+
+**Week selector is flatter and cleaner**
+- Restyled week switching into a compact horizontal tab strip.
+- Active week now uses Apollo-blue underline/text instead of lime/fill-heavy pills.
+- Completed/planned/draft states stay visible, but in a quieter text-first treatment.
+
+**Workout cards became compact progress rows**
+- Replaced the large rounded workout cards and nested metric tiles with flatter list rows.
+- Each row now emphasizes:
+  - day line
+  - workout name
+  - subtle right-aligned status
+  - compact planned/focus line
+  - one dense metrics sentence
+- Completed status is now subdued blue, in-progress uses Apollo blue, skipped uses muted orange, and planned/unplanned stay gray.
+- Existing click behavior is preserved:
+  - completed rows open completed review
+  - in-progress/review rows resume
+  - edit workout actions remain available
+  - inline day editing remains available
+
+**Suggestions and off-program history are quieter**
+- Removed the large per-row suggestions box treatment.
+- Suggestions now show as a single compact insight line only when useful.
+- Off-program history is now collapsed by default behind one compact row and can expand inline.
+
+**Week-complete review was also slimmed down**
+- Reduced the heavy metric-card feel in the week-complete panel.
+- Kept all existing review actions and computed values, but presented them with flatter spacing and lighter hierarchy.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Confirm the Week tab spacing and typography on iPhone Safari and desktop feel aligned with Today/logger.
+- Confirm completed rows, in-progress rows, and edit actions still feel clear on touch devices.
+- Confirm the collapsed off-program history pattern feels discoverable enough in real use.
+
+---
+
+## Current Handoff — Today Edit Flow Fix + Exercise Detail View (Session 32)
+
+### What changed
+
+**Today edit mode now has one command area**
+- Removed the duplicate nested `Save changes / Cancel` controls from the inline workout editor.
+- Edit mode now keeps a single global command row in the Workout section header.
+- The per-exercise edit area no longer re-renders a second editing header.
+
+**Exercise rows now open a dedicated detail view**
+- In normal Today mode, tapping an exercise row now opens a dedicated exercise detail screen within the Today flow.
+- Expanded-details rows now open that same detail view instead of bouncing back into Today or resuming the workout.
+- The detail view has a back link that returns to Today cleanly.
+
+**Edit mode row interaction is now safer**
+- While editing, row taps no longer navigate away and risk losing the draft.
+- Instead, each exercise row expands inline controls for that exercise:
+  - sets
+  - reps
+  - RPE
+  - target weight
+  - remove
+- The explicit save/cancel flow remains unchanged.
+
+**Exercise detail uses real existing data**
+- The new exercise detail view shows:
+  - exercise heading
+  - Today workout context
+  - planned prescription
+  - recent performance
+  - history table
+  - ratings summary
+  - e1RM trend chart when enough data exists
+  - placeholder when chart/history data is sparse
+- It reuses existing history/e1RM helpers rather than creating a new analytics model.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Confirm normal Today row taps always open Exercise Detail instead of any logger/today loop.
+- Confirm edit-mode row expansion feels clear on touch devices.
+- Confirm the detail view reads well on smaller mobile widths, especially the history table.
+
+---
+
+## Current Handoff — Today Style Alignment With Logger (Session 31)
+
+### What changed
+
+**Today now sits closer to the logger’s visual language**
+- Tightened the vertical rhythm so the page feels less sparse and less like floating dashboard sections.
+- Kept the same workout-first structure, but made the title, subtitle, metadata, CTA, and section spacing more compact and app-like.
+- Preserved the single-column desktop layout with no right-side summary rail.
+
+**Workout area now reads as a clearer section**
+- Added a cleaner `Workout` section label above the exercise area.
+- Refined the summary/toggle row so it feels more intentional and less like loose utility text.
+- Kept the details toggle and inline edit mode behavior unchanged.
+
+**Exercise rows got a logger-style polish pass**
+- Reduced the heavy active-row fill while keeping the blue left rail.
+- Tightened row height and spacing slightly.
+- Strengthened the right-aligned target weight and softened the chevron.
+- Kept the flat list treatment with thin dividers and no icon clutter.
+
+**Readiness now feels more like a compact snapshot**
+- Reworked readiness from row-by-row table styling into a tighter 2x2/4-across compact grid.
+- Kept the same values and placement below the workout area.
+- Removed the plainer settings-table feel while avoiding giant metric cards or dashboard styling.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Compare Today against the logger on actual phone and desktop viewports for spacing consistency.
+- Confirm the updated readiness grid feels balanced on narrow mobile widths.
+- Confirm the slightly tighter row sizing still feels comfortably tappable on touch devices.
+
+---
+
+## Current Handoff — Today Details Toggle + Inline Edit Mode (Session 30)
+
+### What changed
+
+**Details toggle now behaves correctly**
+- The Today summary row now shows only one state at a time:
+  - `Show details` when details are collapsed
+  - `Hide details` when details are expanded
+- The toggle is hidden during inline editing and replaced with quiet edit actions instead.
+
+**Expanded details no longer use the old Workout Plan UI**
+- Removed the old `WorkoutDayView`-style expanded panel from Today.
+- Expanded details now render as Apollo-style rows in the same visual system as the collapsed list:
+  - exercise name
+  - right-aligned target weight
+  - compact sets/reps/RPE line
+  - optional recent-history line
+  - short role/fatigue context when available
+- Removed the verbose role-based prescription paragraphs and the older boxed/card-heavy presentation.
+
+**Edit now stays inline on Today**
+- The old Today-launched `WorkoutDayEditor` mount was removed from this flow.
+- `Edit` now switches the workout area into an inline draft editor inside the Today page.
+- The draft editor supports:
+  - sets
+  - reps
+  - RPE
+  - target weight
+  - remove exercise
+  - add exercise
+- Save is explicit. Changes are not written to the program until `Save changes`.
+- `Cancel` discards the local draft and returns to the normal Today list/details view.
+
+**Readiness got a compact polish pass**
+- Kept readiness below the workout area.
+- Added subtler row polish and compact state chips so it feels less like a plain table while staying lightweight.
+- Kept values and readiness logic unchanged.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+
+### Manual verification still recommended
+- Confirm the inline editor comfortably fits smaller phone widths with no horizontal overflow.
+- Confirm add/remove exercise flows feel right inside Today on touch devices.
+- Confirm `Save changes` / `Cancel` behavior on real device/browser flows.
+
+---
+
+## Current Handoff — Today Workout-First Apollo Layout (Session 29)
+
+### What changed
+
+**Today now follows the approved workout-first hierarchy**
+- Reordered the real Today screen so the main flow is now:
+  - `Today`
+  - workout name + compact metadata
+  - blue `Resume` CTA
+  - inline secondary actions
+  - workout list summary + exercise rows
+  - readiness summary
+- Kept all existing Today handlers in place for resume, back, next day, skip, edit, off-program, exercise-row tap, and details expansion.
+
+**The exercise list is now the center of the page**
+- Flattened the exercise presentation into a cleaner Apollo-style list with:
+  - thin dividers
+  - right-aligned target weight
+  - chevrons
+  - a subtle blue active/next rail
+- Removed the heavier card feel and kept the logger launch behavior unchanged.
+
+**Readiness moved below the workout list**
+- Replaced the larger readiness-overview card treatment with a more compact section below the exercise list.
+- The readiness block now shows one header line plus four simple metric rows for sleep, stress, soreness, and motivation.
+- Removed extra icon noise and helper copy that made the section feel more like a dashboard card.
+
+**Desktop stays single-column with no right rail**
+- Kept the existing left sidebar and compact top header.
+- Preserved the stronger centered main column and did not reintroduce any right-side workout summary or readiness panel.
+- Let desktop keep intentional empty space to the right instead of filling it with duplicate content.
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+- Manual browser/device verification not run in this environment
+
+### Manual verification still recommended
+- Mobile Today spacing, tap targets, and bottom-nav feel on iPhone Safari
+- Desktop main-column balance after the workout-first reorder
+- Today action row behavior in the new placement
+- Exercise row launch/resume behavior and `Show details` expansion
+
+---
+
+## Current Handoff — Today Screen Apollo Pass (Session 28)
+
+### What changed
+
+**Today now has a dedicated identity instead of a generic training card**
+- Reworked the main Today state into a mobile-first layout with a stronger hierarchy:
+  - dominant `Today` heading
+  - secondary workout title
+  - compact metadata line
+  - one clear blue `Resume` CTA
+- Kept navigation and logger wiring intact. The main action still routes into the existing logger/start flow.
+
+**Readiness is now a compact overview card**
+- Added a tighter readiness summary directly under the workout header.
+- The card shows:
+  - readiness score
+  - small baseline/helper copy
+  - four compact metrics for sleep, stress, soreness, and motivation
+- If no readiness check-in exists yet, the card stays present with a quiet placeholder state instead of disappearing.
+
+**Exercise plan is now a cleaner tappable list**
+- Replaced the older expandable Today card feel with sharper list rows that show:
+  - exercise name
+  - compact prescription line
+  - right-aligned planned/recommended load
+  - chevron affordance
+- Added a subtle blue rail/highlight for the current or next exercise when a resumable session exists.
+- Preserved the optional workout-detail expansion below the new summary row instead of redesigning the logger itself.
+
+**Desktop Today is now a widened single-column layout**
+- Removed the redundant desktop right-side workout summary panel entirely.
+- Kept the existing left sidebar.
+- Widened the main Today content into a cleaner single content column so desktop feels like an expanded premium mobile view instead of a dashboard.
+- Kept completed-today history in the main flow rather than a separate rail.
+
+**Top chrome now matches the Today direction more closely**
+- Today uses a more compact brand/settings treatment in the top bar.
+- The mobile bottom nav was updated to a floating Apollo-style treatment with five items:
+  - Today
+  - Week
+  - Library
+  - Analytics
+  - Settings
+
+### Validation
+- `npx eslint src/App.tsx` ✓
+- `npm run build` ✓
+- `npm run lint` ✗ still blocked by pre-existing generated `.claude/.../dist` files and service-worker global linting
+
+### Manual verification still recommended
+- Mobile Today layout on iPhone Safari sizing/tap comfort
+- Desktop width/balance of the widened single content column
+- Resume CTA and exercise-row navigation into the logger
+- Floating bottom nav feel on-device
+- Real browser verification was blocked in this environment:
+  - local dev server still failed with `listen EPERM` on `127.0.0.1:5174`
+  - the in-app browser would not open the built `file://.../dist/index.html` due to browser URL policy
+
+---
+
 ## Current Handoff — Logger Smart Finish + Skip Entire Exercise Hold (Session 27)
 
 ### What changed

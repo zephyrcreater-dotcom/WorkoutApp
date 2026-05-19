@@ -2,6 +2,98 @@
 
 ## Known Bugs
 
+## Library UI Redesign: Exercise Inspector + Condensed Muscle Picker (Session 36)
+
+- The Library redesign is implemented in code, but manual UI verification is still recommended for:
+  - mobile inspector open/close flow
+  - grouped muscle picker comfort on narrow screens
+  - variation expand/collapse readability in larger real libraries
+  - save behavior after editing default vs custom exercises
+  - no-overflow confirmation on phone-width layouts
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+- Live browser verification was blocked in this environment because:
+  - the local dev server could not bind to `127.0.0.1:5174` and returned `EPERM`
+  - the in-app browser blocked direct `file://.../dist/index.html` verification by URL policy
+
+## Week Flow Phase 2: In-Progress + Picker Cleanup (Session 35)
+
+- The Week Phase 2 cleanup is implemented in code, but manual UI verification is still recommended for:
+  - Week add/swap picker sheet sizing and scroll behavior
+  - in-progress review density on narrow mobile widths
+  - Week editor back/cancel expectations in real user flow
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+
+## Week Flow Redesign: Review + Edit Pass (Session 34)
+
+- The full Week flow redesign is implemented in code, but manual UI verification is still recommended for:
+  - in-progress review usefulness and navigation
+  - completed review table behavior on narrow screens
+  - Week editor touch comfort for the compact stepper controls
+  - save/cancel confidence in the redesigned Week editor shell
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+
+## Week / Block Progress Apollo Redesign (Session 33)
+
+- The Week redesign is implemented in code, but manual UI verification is still recommended for:
+  - mobile row density and tap comfort
+  - desktop balance of the single-column Week layout
+  - completed/in-progress row click behavior
+  - collapsed off-program history discoverability
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+
+## Today Edit Flow Fix + Exercise Detail View (Session 32)
+
+- The duplicate save row is fixed in code and the new exercise detail view is wired, but manual verification is still recommended for:
+  - normal Today row taps
+  - edit-mode row expansion
+  - history-table readability on narrow phones
+  - detail back-navigation after add/remove/edit activity
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+
+## Today Style Alignment With Logger (Session 31)
+
+- The visual alignment pass is implemented in code, but manual verification is still recommended for:
+  - Today-vs-logger spacing consistency on real phone screens
+  - readiness grid balance at narrow widths
+  - tappability of the slightly tighter workout rows
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+
+## Today Details Toggle + Inline Edit Mode (Session 30)
+
+- The new Today inline editor is working in code, but manual verification is still recommended for:
+  - touch comfort of the inline set/reps/RPE/weight controls
+  - add/remove exercise flow inside Today
+  - canceling after multiple draft edits
+  - expanded-details spacing on smaller mobile screens
+- Save/cancel is explicit draft behavior in this pass. There is no autosave in Today edit mode.
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+
+## Today Workout-First Apollo Layout (Session 29)
+
+- The workout-first Today redesign is implemented in code, but manual UI verification is still recommended for:
+  - mobile spacing and tap comfort with the action row directly under `Resume`
+  - desktop width/balance of the single main column
+  - exercise-row launch behavior and active-rail clarity
+  - `Show details` expansion placement under the flatter list treatment
+- `npx eslint src/App.tsx` and `npm run build` both pass for this change.
+- Full repo lint still has the same pre-existing non-Today blockers:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+
+## Today Screen Apollo Pass (Session 28)
+
+- The Today redesign is implemented in code, but manual browser/device verification is still recommended for:
+  - mobile vertical rhythm and tap comfort
+  - desktop column width/balance after removing the right-side summary rail
+  - exercise-row navigation into the logger
+  - floating bottom-nav feel on smaller phones
+- Full repo lint still fails for pre-existing non-app-source reasons:
+  - generated `.claude/.../dist` artifacts
+  - service worker globals in copied/generated service-worker files
+- Manual live-browser verification was blocked again in this environment because:
+  - the local dev server could not bind to `127.0.0.1:5174` and returned `EPERM`
+  - the in-app browser rejected direct `file://.../dist/index.html` loading under its URL policy
+
 ## Logger Smart Finish + Skip Entire Exercise Hold (Session 27)
 
 - The smart primary-action and skip-entire-exercise flows are updated in code, but manual logger verification is still recommended for:

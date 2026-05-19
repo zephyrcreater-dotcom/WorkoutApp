@@ -1,5 +1,78 @@
 # DECISIONS.md
 
+## Library UI Redesign: Exercise Inspector + Condensed Muscle Picker Decisions (Session 36)
+
+- The Library exercise list should behave like a compact training library, not a row of tiny tools. Rows now prioritize scan speed, selection, and status, while higher-impact actions live in the inspector.
+- Exercise editing should follow the newer Apollo direction already used in Today and the logger: short main panel, clear hierarchy, thin dividers, restrained surfaces, and blue emphasis instead of lime.
+- Muscle grouping is a UI helper layer only. Stored exercise muscle values remain unchanged so existing data, filters, and training logic are not broken.
+- Primary and secondary muscle editing should share one grouped picker pattern instead of rendering two always-open button walls in the main form.
+- Mobile Library should not force a cramped faux two-pane layout. The list stays primary, and the inspector/picker open as full-screen layers.
+- Advanced exercise fields are still important, but they should be collapsed by default so the main add/edit flow stays short and scannable.
+
+## Week Flow Phase 2: In-Progress + Picker Cleanup Decisions (Session 35)
+
+- Week flow now has its own Apollo-blue button treatment so we can remove green styling there without changing global buttons that Today/logger may still rely on.
+- The Week add/swap picker should feel like a dedicated sheet, not an inline stack of old cards. Add/swap selection now lives in a Week-only sheet flow.
+- Compact list results are preferred over exercise cards inside the Week picker. Extra metadata is less helpful than fast scanning and clean selection.
+- The Week editor should keep the inline stepper model from Phase 1, but the picker itself should be pulled out of the exercise row to reduce clutter and visual nesting.
+
+## Week Flow Redesign: Review + Edit Decisions (Session 34)
+
+- The Week flow should not stop at a polished overview. The review and edit surfaces must share the same Apollo language or the tab still feels stitched together from old and new UI.
+- In-progress workouts on Week deserve a useful review surface before resuming the logger. Jumping straight from a compact row into the logger misses important context.
+- Completed session review should read like a training logbook: session header, compact summary, then exercise-by-exercise logs. Metric cards and large card shells add noise without helping review.
+- The shared day editor should not be globally redesigned just because Week needs a new look. Week now uses a dedicated editor variant so the visual pass stays scoped.
+- Week edit actions should be explicit and singular: one save/cancel command row, quiet row-level actions, and no duplicate save bars.
+
+## Week / Block Progress Apollo Redesign Decisions (Session 33)
+
+- The Week tab should read as a compact training log overview, not as a dashboard. Typography, dividers, and row structure should carry the hierarchy instead of stacked metric cards.
+- Week summary is now one concise header area with a thin blue progress bar and inline quick stats, rather than separate bordered boxes for every value.
+- Week switching should stay horizontally scannable and mobile-friendly, with Apollo-blue emphasis for the active week and no lime/green state styling.
+- Workout progress belongs in dense list rows, not rounded cards with nested stat tiles. The metrics should collapse into one compact line unless the user drills deeper later.
+- Suggestions are useful, but they should stay hidden or compressed by default. One short insight line is preferred over a dedicated “Suggestions” block for every workout.
+- Off-program history should remain available on Week, but collapsed by default so it does not compete with the main programmed-workout list.
+
+## Today Edit Flow Fix + Exercise Detail View Decisions (Session 32)
+
+- Today edit mode keeps exactly one save/cancel command row at the workout-section level.
+- Normal Today rows should open a dedicated exercise detail view; edit-mode rows should stay local and expand inline controls instead of navigating away.
+- Exercise detail is implemented inside the Today flow so back navigation preserves the surrounding Today state without adding risk to the logger or global nav.
+- The detail view should prefer real existing history/e1RM utilities and graceful empty states over generated filler.
+
+## Today Style Alignment With Logger Decisions (Session 31)
+
+- Today should share the logger’s visual language even when the structure differs: tighter rhythm, flatter sections, thinner dividers, restrained fills, and stronger type hierarchy.
+- The workout area benefits from a quiet section label; the page should feel intentionally grouped without reintroducing dashboard cards.
+- Readiness on Today works better as a compact snapshot grid than as table rows or oversized metric cards.
+- Exercise rows should stay flat and tappable, with weight emphasis coming from typography rather than louder backgrounds.
+
+## Today Details Toggle + Inline Edit Mode Decisions (Session 30)
+
+- Today expanded details must not reuse the old workout-plan surface. Details should stay in the same list language as the collapsed workout rows.
+- Today editing is now an explicit local draft flow. `Save changes` commits; `Cancel` discards the draft. No silent autosave was added.
+- The inline editor is intentionally scoped to practical same-day changes: sets, reps, RPE, target weight, add, and remove. Broader workout-editing features remain outside this pass.
+- The details toggle should never fight the edit state. While editing, quiet save/cancel controls replace the show/hide affordance.
+- Readiness on Today should feel polished, but still compact and subordinate to the workout itself.
+
+## Today Workout-First Apollo Layout Decisions (Session 29)
+
+- The approved Today flow is workout-first, not readiness-first. The exercise plan must come before readiness on both mobile and desktop.
+- The secondary action row sits directly below the primary CTA and stays inline/low-emphasis: `Back | Next Day | Skip | Edit | Off Program`.
+- Today should feel like a premium launch surface, not a dashboard. Extra summary rails, duplicate overview cards, and filler sections are worse than clean empty space.
+- Exercise rows should remain icon-light and card-light. Weight stays right-aligned and the active/next state is shown with a subtle Apollo-blue rail.
+- Readiness on Today is a compact summary only. No giant metric boxes, no motivational helper sentence, and no duplicate readiness surface elsewhere on the page.
+
+## Today Screen Apollo Pass Decisions (Session 28)
+
+- The Today screen should read as its own premium dashboard, not as a generic card stack or a preview of the logger.
+- The logger flow and workout logic remain untouched in this pass. Today may change hierarchy, spacing, and navigation affordances, but not set logging behavior or prescription math.
+- Today gets one dominant primary action only. Secondary navigation and planning actions stay intentionally quiet and inline.
+- Readiness belongs near the top of Today as an overview card, not as the full check-in form. If no readiness entry exists yet, the layout should still reserve that space with a calm placeholder state.
+- Exercise rows should stay icon-light and list-like. The active/next movement is indicated with subtle blue structure rather than louder badges or oversized cards.
+- Desktop Today should use a wider centered content column with no duplicate right-side workout summary panel. Clean empty space is preferable to repetitive filler.
+- The mobile bottom nav should move toward a floating five-item treatment for this design pass, while the left sidebar remains the desktop navigation model.
+
 ## Logger Smart Finish + Skip Entire Exercise Hold Decisions (Session 27)
 
 - The live logger should expose one primary completion action, not a separate always-visible `Finish Exercise` button competing with `Save Set` / `Next Set`.
