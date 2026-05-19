@@ -239,7 +239,7 @@ textarea {
   }
 
   .logger-input-row {
-    @apply flex items-center justify-between gap-4 py-3 transition;
+    @apply flex items-center justify-between gap-4 py-3 transition cursor-text;
   }
 
   .logger-input-label {
@@ -251,7 +251,7 @@ textarea {
   }
 
   .logger-input-value {
-    @apply w-16 bg-transparent text-right text-xl font-black text-iron-100 outline-none border-b border-white/[0.12] focus:border-[#0a84ff]/60 transition-colors;
+    @apply w-16 bg-transparent text-right text-xl font-black text-iron-100 outline-none border-b-2 border-white/[0.18] focus:border-[#0a84ff]/70 transition-colors;
     font-variant-numeric: tabular-nums;
     -moz-appearance: textfield;
   }
@@ -274,10 +274,16 @@ textarea {
     @apply text-xs text-iron-600;
   }
 
+  /* ── Logger step buttons (+/-) ─────────────────────────────── */
+
+  .logger-step-btn {
+    @apply tap-highlight flex h-7 w-7 shrink-0 items-center justify-center rounded bg-white/[0.06] text-iron-500 transition hover:bg-white/[0.11] hover:text-iron-200 active:scale-[0.93];
+  }
+
   /* ── Logger exercise tabs (mobile) ──────────────────────────── */
 
   .logger-tab {
-    @apply tap-highlight flex shrink-0 flex-col items-start gap-0.5 border-b-2 px-4 py-2.5 text-left transition;
+    @apply tap-highlight flex shrink-0 flex-col items-start gap-0.5 border-b-2 px-3 py-2 text-left transition;
   }
 
   .logger-tab-active {

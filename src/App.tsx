@@ -4,6 +4,7 @@ import {
   CalendarDays,
   Check,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   ChevronDown,
   ClipboardList,
@@ -18,6 +19,7 @@ import {
   EyeOff,
   Library,
   LogOut,
+  Minus,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -839,44 +841,46 @@ function App() {
   }
 
   return (
-    <div className="min-h-dvh max-w-full pb-32 text-white lg:pb-0">
-      <header className="safe-top sticky top-0 z-30 border-b border-white/[0.08] bg-iron-950/90 px-4 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 py-3">
-          <button className="flex min-w-0 items-center gap-2.5 text-left" onClick={() => setScreen("today")}>
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-volt text-iron-950">
-              <Dumbbell className="h-4 w-4" />
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-bold">Iron Orbit</p>
-              <p className="truncate text-xs text-iron-500">
-                {authMode === "cloud" && cloud.userEmail ? `${currentUser.displayName} · ${cloud.userEmail}` : "Local only"}
-              </p>
-            </div>
-          </button>
-          <div className="flex items-center gap-2">
-            <button
-              className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
-                cloud.status === "synced"
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                  : cloud.status === "syncing" || cloud.status === "hydrating"
-                    ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
-                    : cloud.status === "failed"
-                      ? "border-ember/30 bg-ember/10 text-orange-100"
-                      : "border-white/10 bg-white/5 text-iron-300"
-              }`}
-              onClick={() => setScreen("settings")}
-              title={cloud.message}
-            >
-              {renderCloudStatusLabel(cloud.status)}
+    <div className={`min-h-dvh max-w-full text-white ${screen !== "logger" ? "pb-32 lg:pb-0" : ""}`}>
+      <header className={`safe-top sticky top-0 z-30 backdrop-blur-xl ${screen === "logger" ? "bg-iron-950/95" : "border-b border-white/[0.08] bg-iron-950/90 px-4"}`}>
+        {screen !== "logger" && (
+          <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 py-3">
+            <button className="flex min-w-0 items-center gap-2.5 text-left" onClick={() => setScreen("today")}>
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-volt text-iron-950">
+                <Dumbbell className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-bold">Iron Orbit</p>
+                <p className="truncate text-xs text-iron-500">
+                  {authMode === "cloud" && cloud.userEmail ? `${currentUser.displayName} · ${cloud.userEmail}` : "Local only"}
+                </p>
+              </div>
             </button>
-            {activeSession && (
-              <button className="btn-primary hidden sm:inline-flex" onClick={() => void resumeWorkoutSession(activeSession.id)}>
-                <Timer className="h-4 w-4" />
-                Live
+            <div className="flex items-center gap-2">
+              <button
+                className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
+                  cloud.status === "synced"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                    : cloud.status === "syncing" || cloud.status === "hydrating"
+                      ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+                      : cloud.status === "failed"
+                        ? "border-ember/30 bg-ember/10 text-orange-100"
+                        : "border-white/10 bg-white/5 text-iron-300"
+                }`}
+                onClick={() => setScreen("settings")}
+                title={cloud.message}
+              >
+                {renderCloudStatusLabel(cloud.status)}
               </button>
-            )}
+              {activeSession && (
+                <button className="btn-primary hidden sm:inline-flex" onClick={() => void resumeWorkoutSession(activeSession.id)}>
+                  <Timer className="h-4 w-4" />
+                  Live
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
       </header>
 
       <main className="mx-auto grid w-full max-w-7xl gap-5 px-4 py-5 lg:grid-cols-[14rem_minmax(0,1fr)]">
@@ -965,7 +969,7 @@ function App() {
         </section>
       </main>
 
-      <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-iron-950/95 px-2 py-1.5 backdrop-blur-xl lg:hidden">
+      <nav className={`safe-bottom fixed inset-x-0 bottom-0 z-40 border-t border-white/[0.08] bg-iron-950/95 px-2 py-1.5 backdrop-blur-xl lg:hidden ${screen === "logger" ? "hidden" : ""}`}>
         <div className="grid grid-cols-6 gap-0.5">
           {navItems.map((item) => (
             <button
@@ -1668,7 +1672,6 @@ function LiveLogger({
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
   const [showSkipExerciseConfirm, setShowSkipExerciseConfirm] = useState(false);
-  const [showMachineSelector, setShowMachineSelector] = useState(false);
   const [showSetNotes, setShowSetNotes] = useState(false);
   const [showCompletionSummary, setShowCompletionSummary] = useState(false);
   const [completionSummary, setCompletionSummary] = useState<{ score: number; status: string; hardSets: number; skippedSets: number; completedSets: number; suggestions: string[] } | null>(null);
@@ -1694,9 +1697,8 @@ function LiveLogger({
   const [pendingOffProgramExercise, setPendingOffProgramExercise] = useState<Exercise | undefined>();
   const [recentlyAppliedRecommendationKey, setRecentlyAppliedRecommendationKey] = useState<string | null>(null);
   const setLineupRef = useRef<HTMLDivElement | null>(null);
-  const skipSetHoldTimerRef = useRef<number | null>(null);
   const skipSetLongPressTriggeredRef = useRef(false);
-  const skipSetHoldStartPosRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeSkipHoldTimerRef = useRef<number | null>(null);
   const [setContextMenuId, setSetContextMenuId] = useState<string | null>(null);
   const [exerciseContextMenuId, setExerciseContextMenuId] = useState<string | null>(null);
   const exerciseLongPressTimerRef = useRef<number | null>(null);
@@ -1740,10 +1742,9 @@ function LiveLogger({
   }, [draftDirty, selectionDraftSeed]);
 
   useEffect(() => {
+    const ref = swipeSkipHoldTimerRef;
     return () => {
-      if (skipSetHoldTimerRef.current !== null) {
-        window.clearTimeout(skipSetHoldTimerRef.current);
-      }
+      if (ref.current !== null) window.clearTimeout(ref.current);
     };
   }, []);
 
@@ -1758,7 +1759,6 @@ function LiveLogger({
     setDraftDirty(false);
     setPendingDeleteTarget(null);
     setShowSetNotes(false);
-    setShowMachineSelector(false);
     setShowSkipExerciseConfirm(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
@@ -2196,50 +2196,6 @@ function LiveLogger({
     };
   }
 
-  function clearSkipSetHold() {
-    if (skipSetHoldTimerRef.current !== null) {
-      window.clearTimeout(skipSetHoldTimerRef.current);
-      skipSetHoldTimerRef.current = null;
-    }
-  }
-
-  function startSkipSetHold(e: React.PointerEvent) {
-    if (isPastLastPlannedSet || isEditingLoggedSet) return;
-    clearSkipSetHold();
-    skipSetLongPressTriggeredRef.current = false;
-    skipSetHoldStartPosRef.current = { x: e.clientX, y: e.clientY };
-    skipSetHoldTimerRef.current = window.setTimeout(() => {
-      skipSetLongPressTriggeredRef.current = true;
-      skipSetHoldTimerRef.current = null;
-      setShowSkipExerciseConfirm(true);
-      setShowFinishConfirm(false);
-    }, 600);
-  }
-
-  // Only cancel on move when pointer has drifted more than 10px — prevents mobile micro-tremors from cancelling a valid hold.
-  function cancelSkipSetHoldOnMove(e: React.PointerEvent) {
-    if (!skipSetHoldStartPosRef.current) return;
-    const dx = Math.abs(e.clientX - skipSetHoldStartPosRef.current.x);
-    const dy = Math.abs(e.clientY - skipSetHoldStartPosRef.current.y);
-    if (dx > 10 || dy > 10) {
-      clearSkipSetHold();
-      skipSetHoldStartPosRef.current = null;
-    }
-  }
-
-  function cancelSkipSetHold() {
-    clearSkipSetHold();
-    skipSetHoldStartPosRef.current = null;
-  }
-
-  function handleSkipSetPress() {
-    if (skipSetLongPressTriggeredRef.current) {
-      skipSetLongPressTriggeredRef.current = false;
-      return;
-    }
-    skipSet();
-  }
-
   function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-exercise" | "finish-workout" = "stay") {
     const actualWeight = Number(setDraft.actualWeight) || 0;
     const actualReps = Number(setDraft.actualReps) || 0;
@@ -2506,6 +2462,78 @@ function LiveLogger({
     }
   }
 
+  // Skips a specific planned set by index — used by swipe-to-skip on set rows.
+  // Targets the swiped row regardless of which set is currently selected.
+  function skipAtPlannedIndex(targetIndex: number) {
+    const targetPlannedSet = plannedSets[targetIndex];
+    if (!targetPlannedSet || loggedPlannedSetIds.has(targetPlannedSet.id)) return;
+    const remainingUncovered = uncoveredPlannedSets.filter((ps) => ps.id !== targetPlannedSet.id);
+    const wouldCompleteExercise = remainingUncovered.length === 0;
+    const wouldFinishWorkout = wouldCompleteExercise && !hasMoreExercises;
+    const wouldAdvanceExercise = wouldCompleteExercise && hasMoreExercises;
+    const skippedSet: LoggedSet = {
+      id: createId("set"),
+      kind: targetPlannedSet.kind || "working",
+      setNumber: targetIndex + 1,
+      plannedSetId: targetPlannedSet.id,
+      plannedWeight: targetPlannedSet.plannedWeight,
+      plannedReps: targetPlannedSet.targetReps,
+      actualWeight: 0,
+      unit: exerciseUnit,
+      actualReps: 0,
+      targetRpe: targetPlannedSet.targetRpe,
+      setRating: 1 as SetRating,
+      skipped: true,
+      notes: "Skipped set.",
+      completedAt: nowIso()
+    };
+    const performance = calculateSetPerformanceScore(targetPlannedSet, skippedSet);
+    skippedSet.performanceScore = performance.score;
+    skippedSet.performanceStatus = performance.status;
+    void updateDb((draft) => {
+      const target = draft.sessions.find((item) => item.id === liveSession.id);
+      const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
+      if (log) log.sets.push(skippedSet);
+      if (target) {
+        if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
+        if (wouldAdvanceExercise) {
+          target.currentExerciseIndex = activeExerciseIndex + 1;
+          target.currentSetIndex = 0;
+        } else {
+          target.currentExerciseIndex = activeExerciseIndex;
+          target.currentSetIndex = log ? getResumeSetIndex(log, plannedSets) : 0;
+        }
+        target.updatedAt = nowIso();
+        if (wouldFinishWorkout) finishWorkoutInDraft(draft, user, target);
+      }
+      return draft;
+    });
+    setOpenSwipeSetId(undefined);
+    setSwipeDrag(null);
+    swipeGestureRef.current = null;
+    setSelectedLoggingIndex(null);
+    setEditingSetId(null);
+    const nextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, skippedSet] }, plannedSets);
+    setSetDraft(emptySetDraft(plannedSets[nextUncoveredIndex] ?? null, skippedSet, `${liveExerciseLog.id}:${nextUncoveredIndex}`));
+    if (wouldAdvanceExercise) {
+      const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
+      const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
+      if (nextLog) setActiveExerciseId(nextLog.id);
+    }
+    if (wouldFinishWorkout) {
+      const summarySession = buildSessionPreviewForSummary(
+        liveSession.loggedExercises.map((logged) => (
+          logged.id === liveExerciseLog.id
+            ? { ...logged, sets: [...logged.sets, skippedSet] }
+            : logged
+        ))
+      );
+      const summary = buildCompletionSummary(summarySession);
+      setCompletionSummary(summary);
+      setShowCompletionSummary(true);
+    }
+  }
+
   function addSet() {
     const base = currentPlannedSet || plannedSets.at(-1);
     const extra: PlannedSet = {
@@ -2533,6 +2561,22 @@ function LiveLogger({
     });
   }
 
+
+  function adjustWeight(delta: number) {
+    setDraftDirty(true);
+    setRecentlyAppliedRecommendationKey(null);
+    setSetDraft((d) => ({ ...d, actualWeight: String(Math.max(0, Math.round(((Number(d.actualWeight) || 0) + delta) * 1000) / 1000)) }));
+  }
+  function adjustReps(delta: number) {
+    setDraftDirty(true);
+    setRecentlyAppliedRecommendationKey(null);
+    setSetDraft((d) => ({ ...d, actualReps: String(Math.max(0, (Number(d.actualReps) || 0) + delta)) }));
+  }
+  function adjustRpe(delta: number) {
+    setDraftDirty(true);
+    setRecentlyAppliedRecommendationKey(null);
+    setSetDraft((d) => ({ ...d, actualRpe: String(Math.max(0, Math.min(10, Number(((Number(d.actualRpe) || 0) + delta).toFixed(1))))) }));
+  }
 
   function navigateToNextExercise() {
     // Route to the earliest INCOMPLETE exercise, not simply the next in sequence.
@@ -2805,7 +2849,7 @@ function LiveLogger({
             </p>
             <div className="grid grid-cols-2 gap-3">
               <button className="btn-secondary" onClick={() => setShowFinishConfirm(false)}>Cancel</button>
-              <button className="btn-primary" onClick={skipRemainingAndNavigate}>Skip & Finish</button>
+              <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={skipRemainingAndNavigate}>Skip & Finish</button>
             </div>
           </div>
         </div>
@@ -3026,7 +3070,42 @@ function LiveLogger({
           </div>
         </div>
       )}
-      <PageTitle eyebrow="Live Logger" title={session.name} />
+      {/* Compact logger header — replaces Iron Orbit app header during logging */}
+      <div className="flex items-start justify-between gap-3 pb-2">
+        <div className="min-w-0 flex-1">
+          <button
+            className="tap-highlight mb-1 flex items-center gap-0.5 text-xs text-iron-500 transition hover:text-iron-300 active:scale-[0.97]"
+            onClick={backToToday}
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+            {navigation.previousScreen === "week" ? "Week" : "Today"}
+          </button>
+          <h1 className="truncate text-lg font-black leading-tight">{session.name}</h1>
+          {session.readiness && (
+            <p className="mt-0.5 text-xs text-iron-500">
+              Readiness <span className="font-medium text-iron-400">{session.readiness.readinessScore}/100</span>
+              {" · "}{readinessAdjustment(session.readiness).explanation}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-0.5 mt-1">
+          {!isPastLastPlannedSet && !isEditingLoggedSet && (
+            <button
+              className="tap-highlight px-2 py-1 text-xs font-medium text-orange-400/70 transition hover:text-orange-300 active:scale-[0.97]"
+              onClick={() => { setShowSkipExerciseConfirm(true); setShowFinishConfirm(false); }}
+            >
+              Skip Exercise
+            </button>
+          )}
+          <button
+            className="tap-highlight rounded-md p-1.5 text-iron-500 transition hover:bg-white/[0.07] hover:text-iron-300 active:scale-[0.97]"
+            onClick={() => setScreen("settings")}
+            title="Settings"
+          >
+            <Settings className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
       {editingCompletedWorkout && (
         <section className="rounded-lg border border-[#0a84ff]/30 bg-[#0a84ff]/[0.08] p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -3048,16 +3127,10 @@ function LiveLogger({
         </section>
       )}
       {!session.readiness && <ReadinessCard onSubmit={addReadiness} user={user} />}
-      {session.readiness && (
-        <p className="text-xs text-iron-600">
-          Readiness <span className="text-iron-400 font-medium">{session.readiness.readinessScore}/100</span>
-          {" · "}{readinessAdjustment(session.readiness).explanation}
-        </p>
-      )}
 
-      {/* Mobile: horizontal exercise tab strip */}
+      {/* Exercise tab strip — all screen sizes */}
       {session.loggedExercises.length > 1 && (
-        <div className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4 xl:hidden">
+        <div className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4">
           {session.loggedExercises.map((logged) => {
             const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
             const isActive = activeExerciseLog.id === logged.id;
@@ -3087,75 +3160,18 @@ function LiveLogger({
                 onPointerLeave={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
                 onPointerCancel={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
               >
-                <span className={`block max-w-[9rem] truncate text-sm font-medium ${isActive ? "text-white" : ""}`}>{item?.name}</span>
-                <span className={`text-xs ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets} hard · {totalSets} total</span>
+                <span className={`block min-h-[2.2rem] max-w-[7rem] line-clamp-2 text-xs font-medium leading-snug ${isActive ? "text-white" : "text-iron-300"}`}>{item?.name}</span>
+                <span className={`text-[0.65rem] ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets}/{totalSets}</span>
               </button>
             );
           })}
         </div>
       )}
 
-      <section className="grid min-w-0 gap-4 xl:grid-cols-[16rem_minmax(0,1fr)]">
-        {/* Desktop sidebar — hidden on mobile */}
-        <div className="hidden h-fit min-w-0 xl:block">
-          <div className="list-section">
-            <p className="list-section-header">Exercises</p>
-            <div>
-              {session.loggedExercises.map((logged, loggedIndex) => {
-                const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
-                const isActive = activeExerciseLog.id === logged.id;
-                const hardSets = logged.sets.filter(isHardSet).length;
-                const skippedSets = logged.sets.filter(s => s.skipped).length;
-                return (
-                  <div key={logged.id}>
-                    {loggedIndex > 0 && <div className="list-divider" />}
-                    <button
-                      className={`flex w-full items-center justify-between px-3 py-2.5 text-left transition ${
-                        isActive
-                          ? "bg-white/[0.08] text-white"
-                          : "text-iron-300 hover:bg-white/[0.05] hover:text-iron-100"
-                      }`}
-                      onClick={() => {
-                        setActiveExerciseId(logged.id);
-                        setSelectedLoggingIndex(null);
-                        setEditingSetId(null);
-                        setOpenSwipeSetId(undefined);
-                        swipeGestureRef.current = null;
-                        setSwipeDrag(null);
-                        setPendingDeleteTarget(null);
-                      }}
-                      onPointerDown={() => {
-                        if (exerciseLongPressTimerRef.current) clearTimeout(exerciseLongPressTimerRef.current);
-                        exerciseLongPressTimerRef.current = window.setTimeout(() => {
-                          exerciseLongPressTimerRef.current = null;
-                          setExerciseContextMenuId(logged.id);
-                        }, 500);
-                      }}
-                      onPointerUp={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
-                      onPointerLeave={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
-                      onPointerCancel={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
-                    >
-                      <span className="min-w-0">
-                        <span className={`block truncate text-sm ${isActive ? "font-semibold text-white" : "font-medium"}`}>{item?.name}</span>
-                        <span className="text-xs text-iron-500">
-                          {hardSets} hard{skippedSets > 0 ? ` · ${skippedSets} skipped` : ""} · {logged.sets.length} total
-                        </span>
-                      </span>
-                      {isActive && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[#0a84ff]/60" />}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        <div className="min-w-0 space-y-4 pb-6">
-          <section className="min-w-0">
-            <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] py-2">
-              <div className="min-w-0 flex-1">
-                {/* Show name only on desktop where tabs are hidden */}
-                <h3 className="hidden text-base font-bold leading-tight xl:block">{exercise.name}</h3>
+      <section className="min-w-0 space-y-4 pb-6 max-xl:pb-24">
+        <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] py-2">
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold leading-tight text-iron-200">{exercise.name}</h3>
                 {exercise.setupCues.length > 0 && (
                   <p className="text-xs text-iron-400">{exercise.setupCues.slice(0, 2).join(" · ")}</p>
                 )}
@@ -3164,52 +3180,33 @@ function LiveLogger({
                 )}
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {!isPastLastPlannedSet && !isEditingLoggedSet && (
-                  <button
-                    className="tap-highlight inline-flex min-h-8 items-center justify-center gap-1.5 rounded-sm px-2.5 py-1 text-xs font-medium text-orange-400/70 transition hover:bg-orange-500/[0.08] hover:text-orange-300 active:scale-[0.97]"
-                    onPointerDown={startSkipSetHold}
-                    onPointerMove={cancelSkipSetHoldOnMove}
-                    onPointerUp={cancelSkipSetHold}
-                    onPointerLeave={cancelSkipSetHold}
-                    onPointerCancel={cancelSkipSetHold}
-                    onClick={handleSkipSetPress}
-                  >
-                    Skip Set
-                  </button>
-                )}
                 <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
               </div>
             </div>
             {compatibleMachines.length > 0 && (
-              <div className="mt-3">
-                <button
-                  className="text-xs font-bold text-iron-500 underline-offset-2 hover:text-iron-300"
-                  onClick={() => setShowMachineSelector((v) => !v)}
+              <div className="flex items-center justify-between gap-4 border-b border-white/[0.06] py-2.5">
+                <span className="shrink-0 text-sm text-iron-400">Machine</span>
+                <select
+                  className="cursor-pointer appearance-none bg-transparent text-right text-sm text-iron-200 outline-none"
+                  value={activeExerciseLog.machineId || ""}
+                  onChange={(event) =>
+                    updateDb((draft) => {
+                      const target = draft.sessions.find((item) => item.id === liveSession.id);
+                      const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
+                      if (log) log.machineId = event.target.value || undefined;
+                      return draft;
+                    })
+                  }
                 >
-                  {showMachineSelector ? "Hide machine selector" : "Select machine / station"}
-                </button>
-                {showMachineSelector && (
-                  <select
-                    className="field mt-2"
-                    value={activeExerciseLog.machineId || ""}
-                    onChange={(event) =>
-                      updateDb((draft) => {
-                        const target = draft.sessions.find((item) => item.id === liveSession.id);
-                        const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
-                        if (log) log.machineId = event.target.value || undefined;
-                        return draft;
-                      })
-                    }
-                  >
-                    <option value="">No machine selected</option>
-                    {compatibleMachines.map((machine) => (
-                      <option key={machine.id} value={machine.id}>{machine.name}</option>
-                    ))}
-                  </select>
-                )}
+                  <option value="">Select station ›</option>
+                  {compatibleMachines.map((machine) => (
+                    <option key={machine.id} value={machine.id}>{machine.name}</option>
+                  ))}
+                </select>
               </div>
             )}
-            <div className="mt-4">
+            <div className="xl:grid xl:grid-cols-[minmax(0,1fr)_21rem] xl:gap-6 xl:items-start">
+              <div>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <p className="text-xs font-semibold text-iron-400">Set lineup</p>
                 <p className="text-xs font-medium text-iron-500">{completedPlannedCount} / {totalPlannedCount || lineupItems.length} planned</p>
@@ -3222,7 +3219,8 @@ function LiveLogger({
                   const isSelected = isEditingThisRow || (!isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
                   const isLoggedSet = !!actual;
                   const statusLabel = isEditingThisRow ? "Editing" : actual?.skipped ? "Skipped" : actual ? "Done" : isSelected ? "Current" : "Pending";
-                  const swipeRowId = actual?.id;
+                  // Pending rows use planned set id so they can also be swiped.
+                  const swipeRowId = actual?.id ?? set?.id;
                   const isSwipeOpen = isSwipeEnabled && !!swipeRowId && openSwipeSetId === swipeRowId;
                   // translateX is derived solely from confirmed drag or snapped-open state —
                   // never from touch start, press, or hold.
@@ -3232,9 +3230,12 @@ function LiveLogger({
                     : isSwipeOpen
                       ? -SWIPE_DELETE_WIDTH
                       : 0;
-                  // Delete opacity and pointer-events are fully derived from translateX.
+                  // Reveal opacity and pointer-events are fully derived from translateX.
                   const deleteOpacity = Math.min(1, Math.abs(translateX) / SWIPE_DELETE_WIDTH);
-                  const showSwipeDeleteReveal = isSwipeEnabled && !!actual && !actual.skipped;
+                  // Pending (unlogged) non-extra rows reveal Skip; logged rows reveal Delete.
+                  const isPendingRow = !actual && !!set && !lineupItem.isExtra;
+                  const showSwipeSkipReveal = isSwipeEnabled && isPendingRow;
+                  const showSwipeDeleteReveal = isSwipeEnabled && !!actual;
                   const plannedWeightText = bodyweightMovement
                     ? formatExerciseLoadText({ exercise: liveExercise, user, weight: set?.plannedWeight, unit: exerciseUnit })
                     : set?.plannedWeight && set.plannedWeight > 0
@@ -3262,21 +3263,45 @@ function LiveLogger({
                       {lineupIndex > 0 && (
                         <div className="absolute inset-x-0 top-0 h-px bg-white/[0.05]" style={{ transform: isSwipeEnabled && translateX !== 0 ? `translateX(${translateX}px)` : undefined }} />
                       )}
-                      {showSwipeDeleteReveal && (
+                      {(showSwipeSkipReveal || showSwipeDeleteReveal) && (
                         <div
-                          className="absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center bg-ember/90"
+                          className={`absolute inset-y-0 right-0 z-0 flex w-24 items-stretch justify-center ${showSwipeSkipReveal ? "bg-orange-600/80" : "bg-ember/90"}`}
                           style={{ opacity: deleteOpacity, pointerEvents: isSwipeOpen ? "auto" : "none" }}
                         >
-                          <button
-                            className="flex w-full items-center justify-center px-4 text-sm font-black text-orange-50"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setPendingDeleteTarget({ actualSetId: actual?.id, plannedSetId: set?.id, lineupKey: lineupItem.key });
-                            }}
-                            title="Delete this set (entry mistake only)"
-                          >
-                            Delete
-                          </button>
+                          {showSwipeSkipReveal ? (
+                            <button
+                              className="flex w-full items-center justify-center px-4 text-sm font-black text-orange-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (lineupItem.plannedIndex !== undefined) skipAtPlannedIndex(lineupItem.plannedIndex);
+                              }}
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                if (swipeSkipHoldTimerRef.current) clearTimeout(swipeSkipHoldTimerRef.current);
+                                swipeSkipHoldTimerRef.current = window.setTimeout(() => {
+                                  swipeSkipHoldTimerRef.current = null;
+                                  setPendingDeleteTarget({ plannedSetId: set?.id, lineupKey: lineupItem.key });
+                                }, 600);
+                              }}
+                              onPointerUp={() => { if (swipeSkipHoldTimerRef.current) { clearTimeout(swipeSkipHoldTimerRef.current); swipeSkipHoldTimerRef.current = null; } }}
+                              onPointerLeave={() => { if (swipeSkipHoldTimerRef.current) { clearTimeout(swipeSkipHoldTimerRef.current); swipeSkipHoldTimerRef.current = null; } }}
+                              onPointerCancel={() => { if (swipeSkipHoldTimerRef.current) { clearTimeout(swipeSkipHoldTimerRef.current); swipeSkipHoldTimerRef.current = null; } }}
+                              title="Skip this set · hold to delete"
+                            >
+                              Skip
+                            </button>
+                          ) : (
+                            <button
+                              className="flex w-full items-center justify-center px-4 text-sm font-black text-orange-50"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setPendingDeleteTarget({ actualSetId: actual?.id, plannedSetId: set?.id, lineupKey: lineupItem.key });
+                              }}
+                              title="Delete this set (entry mistake only)"
+                            >
+                              Delete
+                            </button>
+                          )}
                         </div>
                       )}
                       {(isEditingThisRow || isSelected) && (
@@ -3326,7 +3351,9 @@ function LiveLogger({
                           <div className="min-w-0 flex-1">
                             <div className="flex items-baseline gap-2">
                               <span className="text-sm font-semibold">Set {lineupItem.displayIndex + 1}</span>
-                              <span className={`text-xs font-medium ${isSelected && !isEditingThisRow ? "text-[#0a84ff]" : actual?.skipped ? "text-orange-400/70" : actual ? "text-iron-400" : "text-iron-600"}`}>{statusLabel}</span>
+                              {!(actual && !actual.skipped && !isEditingThisRow) && (
+                                <span className={`text-xs font-medium ${isSelected && !isEditingThisRow ? "text-[#0a84ff]" : actual?.skipped ? "text-orange-400/70" : "text-iron-600"}`}>{statusLabel}</span>
+                              )}
                               {(set?.kind || actual?.kind) && (set?.kind || actual?.kind) !== "working" && (
                                 <span className="text-xs text-iron-600">{set?.kind || actual?.kind}</span>
                               )}
@@ -3347,9 +3374,11 @@ function LiveLogger({
                               )}
                             </div>
                           </div>
-                          {!isSwipeEnabled && (
+                          {actual && !actual.skipped && !isEditingThisRow ? (
+                            <Check className="h-3.5 w-3.5 shrink-0 text-[#0a84ff]/60" />
+                          ) : !isSwipeEnabled ? (
                             <button
-                              className="shrink-0 rounded-md p-1 text-iron-600 transition hover:bg-white/[0.08] hover:text-iron-300 active:scale-95"
+                              className="shrink-0 rounded p-1 text-iron-600 transition hover:bg-white/[0.08] hover:text-iron-300 active:scale-95"
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setSetContextMenuId(menuRowId);
@@ -3358,7 +3387,7 @@ function LiveLogger({
                             >
                               <MoreHorizontal className="h-4 w-4" />
                             </button>
-                          )}
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -3370,54 +3399,67 @@ function LiveLogger({
                   </div>
                 )}
               </div>
-            </div>
+              </div>
+              <div>
             <div className="logger-input-list">
               <div className="logger-input-row">
                 <label className="logger-input-label" htmlFor="li-weight">
                   {bodyweightMovement ? "Added load" : "Weight"}
                 </label>
-                <div className="logger-input-control">
-                  <input
-                    id="li-weight"
-                    className="logger-input-value"
-                    inputMode="decimal"
-                    type="number"
-                    step="1"
-                    value={setDraft.actualWeight}
-                    placeholder={bodyweightMovement ? "BW" : undefined}
-                    onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualWeight: e.target.value })); }}
-                  />
-                  <span className="logger-input-unit">{exerciseUnit}</span>
+                <div className="flex items-center gap-2">
+                  <button className="logger-step-btn" onClick={() => adjustWeight(-exerciseIncrement)}><Minus className="h-3.5 w-3.5" /></button>
+                  <div className="logger-input-control">
+                    <input
+                      id="li-weight"
+                      className="logger-input-value"
+                      inputMode="decimal"
+                      type="number"
+                      step="1"
+                      value={setDraft.actualWeight}
+                      placeholder={bodyweightMovement ? "BW" : undefined}
+                      onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualWeight: e.target.value })); }}
+                    />
+                    <span className="logger-input-unit">{exerciseUnit}</span>
+                  </div>
+                  <button className="logger-step-btn" onClick={() => adjustWeight(exerciseIncrement)}><Plus className="h-3.5 w-3.5" /></button>
                 </div>
               </div>
               <div className="logger-input-divider" />
               <div className="logger-input-row">
                 <label className="logger-input-label" htmlFor="li-reps">Reps</label>
-                <div className="logger-input-control">
-                  <input
-                    id="li-reps"
-                    className="logger-input-value"
-                    inputMode="decimal"
-                    type="number"
-                    step="1"
-                    value={setDraft.actualReps}
-                    onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualReps: e.target.value })); }}
-                  />
+                <div className="flex items-center gap-2">
+                  <button className="logger-step-btn" onClick={() => adjustReps(-1)}><Minus className="h-3.5 w-3.5" /></button>
+                  <div className="logger-input-control">
+                    <input
+                      id="li-reps"
+                      className="logger-input-value"
+                      inputMode="decimal"
+                      type="number"
+                      step="1"
+                      value={setDraft.actualReps}
+                      onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualReps: e.target.value })); }}
+                    />
+                  </div>
+                  <button className="logger-step-btn" onClick={() => adjustReps(1)}><Plus className="h-3.5 w-3.5" /></button>
                 </div>
               </div>
               <div className="logger-input-divider" />
               <div className="logger-input-row">
                 <label className="logger-input-label" htmlFor="li-rpe">RPE</label>
-                <div className="logger-input-control">
-                  <input
-                    id="li-rpe"
-                    className="logger-input-value"
-                    inputMode="decimal"
-                    type="number"
-                    step="0.5"
-                    value={setDraft.actualRpe}
-                    onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualRpe: e.target.value })); }}
-                  />
+                <div className="flex items-center gap-2">
+                  <button className="logger-step-btn" onClick={() => adjustRpe(-0.5)}><Minus className="h-3.5 w-3.5" /></button>
+                  <div className="logger-input-control">
+                    <input
+                      id="li-rpe"
+                      className="logger-input-value"
+                      inputMode="decimal"
+                      type="number"
+                      step="0.5"
+                      value={setDraft.actualRpe}
+                      onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualRpe: e.target.value })); }}
+                    />
+                  </div>
+                  <button className="logger-step-btn" onClick={() => adjustRpe(0.5)}><Plus className="h-3.5 w-3.5" /></button>
                 </div>
               </div>
             </div>
@@ -3461,13 +3503,43 @@ function LiveLogger({
                 )
               }
             </div>
-            <div className="safe-bottom sticky bottom-0 z-10 -mx-3 mt-4 border-t border-white/[0.06] bg-iron-950/90 px-3 py-3 backdrop-blur sm:-mx-4 sm:px-4">
-              <div className="flex items-center gap-2">
+            {lastSetWasSkipped && (
+              <p className="mt-3 text-xs text-iron-600">Last set skipped — no recommendation.</p>
+            )}
+            {!showRecommendationCard && !selectedActualSet && recommendationFeedbackText && (
+              <p className="mt-3 text-xs text-iron-500">{recommendationFeedbackText}</p>
+            )}
+            {showRecommendationCard && !selectedActualSet && recommendation && (() => {
+              const suggestedWeight = recommendation.action?.suggestedWeight;
+              const sourceSetNum = sourceSet?.setNumber;
+              if (!suggestedWeight && !recommendation.title) return null;
+              return (
+                <div className="mt-3 flex items-center justify-between gap-3 border-t border-white/[0.05] pt-2">
+                  <p className="text-xs text-iron-500">
+                    <span className="text-iron-400">Suggested:</span>{" "}
+                    {suggestedWeight
+                      ? `${formatExerciseLoadText({ exercise: liveExercise, user, weight: suggestedWeight, unit: exerciseUnit })} · based on ${sourceSetNum ? `set ${sourceSetNum}` : "history"}`
+                      : recommendation.title}
+                  </p>
+                  {suggestedWeight && (
+                    <button
+                      className="shrink-0 text-xs font-semibold text-[#0a84ff] transition hover:text-[#0a84ff]/70 active:scale-95"
+                      onClick={() => applySuggestion(recommendation)}
+                    >
+                      Apply
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+            {/* Truly floating bottom action bar: fixed on mobile, sticky on desktop */}
+            <div className="safe-bottom max-xl:fixed max-xl:bottom-0 max-xl:left-0 max-xl:right-0 max-xl:z-20 max-xl:border-t max-xl:border-white/[0.08] max-xl:bg-iron-950/90 max-xl:px-4 max-xl:py-3 max-xl:backdrop-blur-xl xl:mt-5 xl:border-t xl:border-white/[0.06] xl:pt-4">
+              <div className="mx-auto flex max-w-7xl items-center gap-2 xl:max-w-none">
                 {isEditingLoggedSet && (
-                  <button className="btn-ghost shrink-0" onClick={() => setEditingSetId(null)}>Cancel</button>
+                  <button className="tap-highlight shrink-0 inline-flex min-h-10 items-center justify-center rounded px-3 py-2 text-sm font-medium text-iron-400 transition hover:text-iron-200 active:scale-[0.97]" onClick={() => setEditingSetId(null)}>Cancel</button>
                 )}
                 <button
-                  className="tap-highlight flex flex-1 items-center justify-center gap-2 rounded-md bg-[#0a84ff] px-4 py-2.5 text-sm font-bold text-white transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="tap-highlight flex flex-1 items-center justify-center gap-2 rounded bg-[#0a84ff] px-4 py-2.5 text-sm font-bold text-white transition active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={() => {
                     if (isEditingLoggedSet) {
                       logSet(setDraft.setRating, "stay");
@@ -3499,46 +3571,23 @@ function LiveLogger({
                 >
                   <Check className="h-4 w-4" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : finishWorkoutLabel) : primaryActionLabel}
                 </button>
-                <button className="btn-secondary shrink-0" onClick={addSet}>+ Set</button>
+                <button className="tap-highlight shrink-0 inline-flex min-h-10 items-center justify-center gap-2 rounded border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]" onClick={addSet}>+ Set</button>
               </div>
             </div>
-          </section>
-
-          {lastSetWasSkipped && (
-            <p className="text-xs text-iron-600">Last set skipped — no recommendation.</p>
-          )}
-          {!showRecommendationCard && !selectedActualSet && recommendationFeedbackText && (
-            <p className="text-xs text-iron-500">{recommendationFeedbackText}</p>
-          )}
-          {showRecommendationCard && !selectedActualSet && recommendation && (() => {
-            const suggestedWeight = recommendation.action?.suggestedWeight;
-            const sourceSetNum = sourceSet?.setNumber;
-            if (!suggestedWeight && !recommendation.title) return null;
-            return (
-              <div className="flex items-center justify-between gap-3 border-t border-white/[0.05] pt-2">
-                <p className="text-xs text-iron-500">
-                  <span className="text-iron-400">Suggested:</span>{" "}
-                  {suggestedWeight
-                    ? `${formatExerciseLoadText({ exercise: liveExercise, user, weight: suggestedWeight, unit: exerciseUnit })} · based on ${sourceSetNum ? `set ${sourceSetNum}` : "history"}`
-                    : recommendation.title}
-                </p>
-                {suggestedWeight && (
-                  <button
-                    className="shrink-0 text-xs font-semibold text-[#0a84ff] transition hover:text-[#0a84ff]/70 active:scale-95"
-                    onClick={() => applySuggestion(recommendation)}
-                  >
-                    Apply
-                  </button>
-                )}
               </div>
-            );
-          })()}
+            </div>
 
           <LoggedSetsTable logged={activeExerciseLog} exercise={exercise} user={user} displayUnit={exerciseUnit} />
-          <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-3">
-            <button className="btn-secondary" onClick={() => setShowAddExercisePicker(true)}>+ Add Exercise</button>
-            <button className="btn-danger" onClick={abandonWorkout}>Abandon</button>
-            <button className="btn-primary ml-auto" onClick={finishWorkout} disabled={!allExercisesComplete}>{finishWorkoutLabel}</button>
+          <div className="mt-4 flex items-center gap-2 border-t border-white/[0.06] pt-3">
+            <button className="tap-highlight inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded border border-white/[0.1] bg-white/[0.07] px-3 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]" onClick={() => setShowAddExercisePicker(true)}>+ Add Exercise</button>
+            <button className="tap-highlight inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded border border-ember/30 bg-ember/[0.07] px-3 py-2 text-sm font-medium text-orange-300 transition hover:bg-ember/[0.14] active:scale-[0.97]" onClick={abandonWorkout}>Abandon</button>
+            <button
+              className="tap-highlight ml-auto inline-flex min-h-9 shrink-0 items-center justify-center gap-1.5 rounded border border-[#0a84ff]/40 bg-[#0a84ff]/[0.09] px-3 py-2 text-sm font-semibold text-[#0a84ff] transition hover:bg-[#0a84ff]/[0.16] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={finishWorkout}
+              disabled={!allExercisesComplete}
+            >
+              {finishWorkoutLabel}
+            </button>
           </div>
           {showAddExercisePicker && (
             <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
@@ -3565,7 +3614,7 @@ function LiveLogger({
                 <p className="text-sm text-iron-300">Where should this exercise be added?</p>
                 <div className="space-y-2">
                   <button
-                    className="btn-primary w-full"
+                    className="tap-highlight w-full inline-flex min-h-10 items-center justify-center gap-2 rounded-md bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]"
                     onClick={() => confirmAddOffProgramExercise(pendingOffProgramExercise)}
                   >
                     This session only
@@ -3584,7 +3633,6 @@ function LiveLogger({
               </div>
             </div>
           )}
-        </div>
       </section>
     </div>
   );
@@ -7835,31 +7883,34 @@ function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: Logg
   const bodyweightMovement = isBodyweightExercise(exercise);
   if (!logged.sets.length) return null;
   return (
-    <section className="panel-soft overflow-hidden">
-      <div className="border-b border-white/[0.07] px-3 py-2.5">
-        <p className="text-sm font-medium text-iron-200">{exercise.name} <span className="text-iron-500">· {logged.sets.filter(isHardSet).length} hard · {logged.sets.filter(s => s.skipped).length} skipped</span></p>
-      </div>
+    <section className="overflow-hidden border-t border-white/[0.06]">
+      <p className="pb-1.5 pt-3 text-xs font-semibold text-iron-500">
+        Exercise History
+        <span className="ml-1 font-normal text-iron-600">
+          · {logged.sets.filter(isHardSet).length} hard · {logged.sets.filter(s => s.skipped).length} skipped
+        </span>
+      </p>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[34rem] text-left text-sm">
-          <thead className="text-xs uppercase text-iron-500">
-            <tr>
-              <th className="p-3">Set</th>
-              <th className="p-3">{bodyweightMovement ? "Load" : `Load (${unit})`}</th>
-              <th className="p-3">Reps</th>
-              <th className="p-3">RPE</th>
-              <th className="p-3">Feel</th>
-              <th className="p-3">{bodyweightMovement ? "e1RM" : `e1RM (${unit})`}</th>
+          <thead>
+            <tr className="text-[0.68rem] text-iron-600">
+              <th className="pb-1.5 pr-4 font-medium">Set</th>
+              <th className="pb-1.5 pr-4 font-medium">{bodyweightMovement ? "Load" : `Load (${unit})`}</th>
+              <th className="pb-1.5 pr-4 font-medium">Reps</th>
+              <th className="pb-1.5 pr-4 font-medium">RPE</th>
+              <th className="pb-1.5 pr-4 font-medium">Feel</th>
+              <th className="pb-1.5 font-medium">e1RM</th>
             </tr>
           </thead>
           <tbody>
             {logged.sets.map((set, index) => (
-              <tr key={set.id} className={`border-t border-white/10 ${set.skipped ? "opacity-40" : ""}`}>
-                <td className="p-3">{index + 1}{set.skipped ? " (skip)" : ""}</td>
-                <td className="p-3">{set.skipped ? "—" : formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || unit })}</td>
-                <td className="p-3">{set.skipped ? "—" : set.actualReps}</td>
-                <td className="p-3">{set.skipped ? "—" : set.actualRpe || "-"}</td>
-                <td className="p-3">{set.skipped ? "—" : `${set.setRating}/5`}</td>
-                <td className="p-3">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10) || "—"}</td>
+              <tr key={set.id} className={`border-t border-white/[0.05] ${set.skipped ? "opacity-40" : ""}`}>
+                <td className="py-1.5 pr-4">{index + 1}{set.skipped ? " ↷" : ""}</td>
+                <td className="py-1.5 pr-4">{set.skipped ? "—" : formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || unit })}</td>
+                <td className="py-1.5 pr-4">{set.skipped ? "—" : set.actualReps}</td>
+                <td className="py-1.5 pr-4">{set.skipped ? "—" : set.actualRpe || "—"}</td>
+                <td className="py-1.5 pr-4">{set.skipped ? "—" : `${set.setRating}/5`}</td>
+                <td className="py-1.5">{set.skipped ? "—" : estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10) || "—"}</td>
               </tr>
             ))}
           </tbody>
