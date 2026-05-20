@@ -2558,6 +2558,8 @@ function LiveLogger({
   const setLineupRef = useRef<HTMLDivElement | null>(null);
   const skipSetLongPressTriggeredRef = useRef(false);
   const swipeSkipHoldTimerRef = useRef<number | null>(null);
+  // Prevents the synthesized click that fires after touchend from immediately closing a just-opened swipe row.
+  const swipeJustOpenedRef = useRef(false);
   const [setContextMenuId, setSetContextMenuId] = useState<string | null>(null);
   const [exerciseContextMenuId, setExerciseContextMenuId] = useState<string | null>(null);
   const exerciseLongPressTimerRef = useRef<number | null>(null);
@@ -2690,13 +2692,18 @@ function LiveLogger({
 
   useEffect(() => {
     if (!openSwipeSetId) return;
-    const openRowStillExists = activeExerciseLog?.sets.some((set) => set.id === openSwipeSetId) ?? false;
+    // swipeRowId is actual?.id ?? plannedSet?.id — check both so pending rows (no actual yet)
+    // are not incorrectly closed because their planned-set id never appears in activeExerciseLog.sets.
+    const openRowStillExists = lineupItems.some((item) => {
+      const rowId = item.actualSet?.id ?? item.plannedSet?.id;
+      return rowId === openSwipeSetId;
+    });
     if (!openRowStillExists) {
       setOpenSwipeSetId(undefined);
       swipeGestureRef.current = null;
       setSwipeDrag(null);
     }
-  }, [activeExerciseLog, openSwipeSetId]);
+  }, [lineupItems, openSwipeSetId]);
 
   useEffect(() => {
     if (!editingSetId) return;
@@ -3032,6 +3039,9 @@ function LiveLogger({
     setSwipeDrag(null);
     if (finalOffset <= -SWIPE_OPEN_THRESHOLD) {
       setOpenSwipeSetId(g.setId);
+      // Suppress the synthesized click that browsers fire after touchend — it would
+      // otherwise immediately re-close the row via the onClick handler.
+      swipeJustOpenedRef.current = true;
     } else {
       setOpenSwipeSetId((current) => current === g.setId ? undefined : current);
     }
@@ -3112,8 +3122,12 @@ function LiveLogger({
       void updateDb((draft) => {
         const target = draft.sessions.find((item) => item.id === liveSession.id);
         const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
-        if (log && editingActualIndex >= 0 && log.sets[editingActualIndex]) {
-          log.sets[editingActualIndex] = updatedSet;
+        // Skipped-set edits must target exactly this set by id — never bulk-apply to all skipped sets.
+        // Double-check by id in case editingActualIndex is stale relative to the current DB state.
+        const exactDbIndex = log?.sets.findIndex((s) => s.id === editingActualSet.id) ?? -1;
+        const safeIndex = exactDbIndex >= 0 ? exactDbIndex : editingActualIndex;
+        if (log && safeIndex >= 0 && log.sets[safeIndex]) {
+          log.sets[safeIndex] = updatedSet;
           log.weakPointTags = detectWeakPointTags(log);
         }
         if (target) {
@@ -3135,8 +3149,14 @@ function LiveLogger({
           const el = setLineupRef.current?.querySelector<HTMLElement>('[data-is-current-set="true"]');
           el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
         }, 80);
+      } else if (editingActualSet.skipped && liveExerciseLog.sets.some((s, i) => s.skipped && i !== editingActualIndex)) {
+        // This was a skipped set being converted to logged. Other skipped sets remain in this exercise —
+        // stay so the user can address them rather than navigating away mid-exercise.
+        // (loggedPlannedSetIds is stale here: skipped sets are counted as "covered", so firstUncoveredIdx
+        //  is always -1 when all planned positions have a logged or skipped set.)
+        setSelectedLoggingIndex(null);
       } else {
-        // All sets covered — navigate to next exercise (exercise is done).
+        // All sets covered and no remaining skipped sets — navigate to next exercise (exercise is done).
         setTimeout(() => navigateToNextExercise(), 50);
       }
       return;
@@ -3457,10 +3477,42 @@ function LiveLogger({
   }
 
   function skipRemainingAndNavigate() {
+    const activeDraftWeight = Number(setDraft.actualWeight) || 0;
+    const activeDraftReps = Number(setDraft.actualReps) || 0;
+    const isWeightBased = liveExercise.category !== "bodyweight" && !liveExercise.bestTrackedBy.includes("time");
+    // Determine if the active pending set draft has saveable data that should be
+    // committed before the remaining sets are skipped.
+    const shouldSaveActiveDraft = !isEditingLoggedSet
+      && !isPastLastPlannedSet
+      && currentPendingSetIsUncovered
+      && (activeDraftWeight > 0 || (!isWeightBased && activeDraftReps > 0));
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === liveExerciseLog.id);
       if (log && plannedSets.length) {
+        // Save the active set first if it has valid data — no entered data should be lost on Finish.
+        if (shouldSaveActiveDraft && currentPlannedSet) {
+          const savedSet: LoggedSet = {
+            id: createId("set"),
+            kind: setDraft.kind,
+            setNumber: log.sets.length + 1,
+            plannedSetId: currentPlannedSet.id,
+            plannedWeight: currentPlannedSet.plannedWeight,
+            plannedReps: currentPlannedSet.targetReps,
+            actualWeight: activeDraftWeight,
+            unit: exerciseUnit,
+            actualReps: activeDraftReps,
+            targetRpe: currentPlannedSet.targetRpe,
+            actualRpe: setDraft.actualRpe ? Math.min(10, Math.max(0, Number(setDraft.actualRpe))) || undefined : undefined,
+            setRating: setDraft.setRating,
+            notes: setDraft.notes,
+            completedAt: nowIso()
+          };
+          const perf = calculateSetPerformanceScore(currentPlannedSet, savedSet);
+          savedSet.performanceScore = perf.score;
+          savedSet.performanceStatus = perf.status;
+          log.sets.push(savedSet);
+        }
         // Skip only planned sets that have no logged set yet (supports out-of-order completion).
         const loggedPlannedSetIds = new Set(log.sets.map((s) => s.plannedSetId).filter(Boolean));
         const setsToSkip = plannedSets.filter((ps) => !loggedPlannedSetIds.has(ps.id));
@@ -3575,6 +3627,11 @@ function LiveLogger({
   }
 
   function finishExercise() {
+    // If the user is mid-edit of a logged/skipped set with unsaved changes, save first.
+    if (isEditingLoggedSet && draftDirty) {
+      logSet(setDraft.setRating, "stay");
+      return;
+    }
     // Hard guard: if the current on-screen pending set has valid draft values, save it first.
     // This fires from the smart primary action and from past-the-end navigation.
     const currentDraftWeight = Number(setDraft.actualWeight) || 0;
@@ -3583,8 +3640,9 @@ function LiveLogger({
       && currentPendingSetIsUncovered
       && (currentDraftWeight > 0 || (!liveExercise.bestTrackedBy.includes("time") && currentDraftReps > 0));
     if (hasValidUnsavedValues) {
-      // If this is the last uncovered set, save-and-navigate in one action.
-      // Otherwise save-and-stay so user can deal with remaining uncovered sets.
+      // Save the active set first, then navigate after the save resolves.
+      // Use next-exercise/finish-workout only when this is the sole remaining uncovered set;
+      // otherwise save-and-stay so the user can address remaining uncovered sets.
       const afterSave = uncoveredPlannedSets.length <= 1
         ? (hasMoreExercises ? "next-exercise" : "finish-workout")
         : "stay";
@@ -4132,7 +4190,10 @@ function LiveLogger({
                               className="flex w-full items-center justify-center px-4 text-sm font-black text-orange-50"
                               onClick={(e) => {
                                 e.stopPropagation();
-                                if (lineupItem.plannedIndex !== undefined) skipAtPlannedIndex(lineupItem.plannedIndex);
+                                if (lineupItem.plannedIndex !== undefined) {
+                                  skipAtPlannedIndex(lineupItem.plannedIndex);
+                                  setOpenSwipeSetId(undefined);
+                                }
                               }}
                               onPointerDown={(e) => {
                                 e.stopPropagation();
@@ -4176,6 +4237,11 @@ function LiveLogger({
                           transition: isDraggingThisRow ? undefined : "transform 200ms ease",
                         }}
                         onClick={() => {
+                          // Ignore the synthesized click that fires immediately after a swipe gesture ends.
+                          if (swipeJustOpenedRef.current) {
+                            swipeJustOpenedRef.current = false;
+                            return;
+                          }
                           if (isSwipeOpen) {
                             setOpenSwipeSetId(undefined);
                             return;
