@@ -11,7 +11,7 @@ import type {
   SplitLoopMode,
   TrainingGoal
 } from "../types/domain";
-import { getPrescriptionForExerciseSlot } from "./trainingIntelligence";
+import { classifyExerciseRole, getPrescriptionForExerciseSlot, inferWorkoutDayType, type WorkoutDayType } from "./trainingIntelligence";
 
 export const defaultCompoundSettings: CompoundSettings = {
   mode: "normal",
@@ -91,6 +91,102 @@ const lowBackPatterns = new Set<MovementPattern>(["squat", "hinge", "carry"]);
 const pressPatterns = new Set<MovementPattern>(["horizontal-press", "vertical-press"]);
 const pullPatterns = new Set<MovementPattern>(["horizontal-pull", "vertical-pull"]);
 
+function getDayTypeFromSplitDay(splitDay?: Pick<SplitDay, "name" | "muscleGroups" | "movementPatterns">): WorkoutDayType {
+  return inferWorkoutDayType({
+    name: splitDay?.name,
+    targetMuscles: splitDay?.muscleGroups,
+    movementPatterns: splitDay?.movementPatterns,
+  });
+}
+
+function isPressExercise(exercise: Exercise): boolean {
+  return pressPatterns.has(exercise.movementPattern) || exercise.name.toLowerCase().includes("press");
+}
+
+function isPullExercise(exercise: Exercise): boolean {
+  return pullPatterns.has(exercise.movementPattern) || exercise.name.toLowerCase().includes("row") || exercise.name.toLowerCase().includes("pull");
+}
+
+function getRoleBucket(role: ExerciseRole | undefined, exercise: Exercise, dayType: WorkoutDayType, blockType: BlockType): number {
+  const name = exercise.name.toLowerCase();
+  const roleName = role ?? "secondary_compound";
+  const hitsRearDelts = exercise.primaryMuscles.includes("rear-delts");
+  const hitsArms = exercise.primaryMuscles.includes("biceps") || exercise.primaryMuscles.includes("triceps");
+  const hitsCalves = exercise.primaryMuscles.includes("calves");
+  const hitsCore = exercise.primaryMuscles.includes("abs") || exercise.primaryMuscles.includes("obliques") || exercise.movementPattern === "brace" || exercise.movementPattern === "trunk-stability";
+  const isQuadCompound = exercise.primaryMuscles.includes("quads") && (exercise.movementPattern === "squat" || exercise.movementPattern === "single-leg" || name.includes("leg press") || name.includes("hack squat") || name.includes("belt squat"));
+  const isHinge = exercise.movementPattern === "hinge" || name.includes("deadlift") || name.includes("rdl");
+  const isSecondaryPressOrChest = isPressExercise(exercise) || exercise.primaryMuscles.includes("chest");
+  const isSecondaryPull = isPullExercise(exercise) || exercise.primaryMuscles.includes("lats") || exercise.primaryMuscles.includes("upper-back");
+  const strengthLowerDeadliftLead = (dayType === "lower" || dayType === "full_body") && (blockType === "strength" || blockType === "intensification" || blockType === "peaking");
+
+  if (dayType === "push") {
+    if (roleName === "main_strength_lift" || roleName === "main_hypertrophy_compound") return 10;
+    if (roleName === "secondary_compound" || roleName === "machine_compound" || isSecondaryPressOrChest) return 20;
+    if (roleName === "delt_accessory") return 30;
+    if (roleName === "arm_accessory" && exercise.primaryMuscles.includes("triceps")) return 40;
+    return 50;
+  }
+  if (dayType === "pull") {
+    if (roleName === "main_strength_lift" || roleName === "main_hypertrophy_compound" || isSecondaryPull) return 10;
+    if (roleName === "secondary_compound" || roleName === "machine_compound") return 20;
+    if (roleName === "rear_delt_accessory" || hitsRearDelts) return 30;
+    if (roleName === "arm_accessory" && exercise.primaryMuscles.includes("biceps")) return 40;
+    return 50;
+  }
+  if (dayType === "legs" || dayType === "lower") {
+    if (strengthLowerDeadliftLead && (roleName === "main_strength_lift" && isHinge)) return 10;
+    if (isQuadCompound || roleName === "main_hypertrophy_compound" || (roleName === "machine_compound" && exercise.primaryMuscles.includes("quads"))) return 10;
+    if (roleName === "main_strength_lift" || roleName === "heavy_hinge" || isHinge) return 20;
+    if (exercise.primaryMuscles.includes("hamstrings") || exercise.primaryMuscles.includes("quads") || exercise.primaryMuscles.includes("glutes") || roleName === "secondary_compound" || roleName === "machine_compound") return 30;
+    if (roleName === "calf_accessory" || hitsCalves) return 40;
+    if (roleName === "core_accessory" || hitsCore) return 50;
+    return 35;
+  }
+  if (dayType === "upper") {
+    if ((roleName === "main_strength_lift" || roleName === "main_hypertrophy_compound") && isPressExercise(exercise)) return 10;
+    if ((roleName === "main_strength_lift" || roleName === "main_hypertrophy_compound") && isPullExercise(exercise)) return 20;
+    if (roleName === "secondary_compound" || roleName === "machine_compound") return 30;
+    if (roleName === "delt_accessory" || roleName === "rear_delt_accessory") return 40;
+    if (roleName === "arm_accessory") return 50;
+    return 60;
+  }
+  if (dayType === "full_body") {
+    if (strengthLowerDeadliftLead && roleName === "main_strength_lift" && isHinge) return 10;
+    if (isQuadCompound || roleName === "main_strength_lift") return 10;
+    if (roleName === "main_hypertrophy_compound" || roleName === "secondary_compound" || roleName === "machine_compound") return isPressExercise(exercise) || isPullExercise(exercise) ? 20 : 30;
+    return hitsCore || roleName === "core_accessory" ? 50 : 40;
+  }
+  if (roleName === "main_strength_lift" || roleName === "main_hypertrophy_compound") return 10;
+  if (roleName === "secondary_compound" || roleName === "machine_compound" || roleName === "heavy_hinge") return 20;
+  if (hitsArms || hitsRearDelts || hitsCalves || hitsCore) return 40;
+  return 30;
+}
+
+export function orderExercisesForDay<T extends { exercise: Exercise; exerciseRole?: ExerciseRole }>(items: T[], params: {
+  splitDay?: Pick<SplitDay, "name" | "muscleGroups" | "movementPatterns">;
+  blockType: BlockType;
+}): T[] {
+  const dayType = getDayTypeFromSplitDay(params.splitDay);
+  return [...items]
+    .map((item, index) => {
+      const role = classifyExerciseRole({
+        exercise: item.exercise,
+        dayType,
+        blockType: params.blockType,
+        orderHint: index + 1,
+        explicitRole: item.exerciseRole,
+      });
+      return {
+        item,
+        bucket: getRoleBucket(role, item.exercise, dayType, params.blockType),
+        tieBreak: index,
+      };
+    })
+    .sort((a, b) => a.bucket - b.bucket || a.tieBreak - b.tieBreak)
+    .map((entry) => entry.item);
+}
+
 export function isCompound(exercise: Exercise): boolean {
   return exercise.kind.includes("compound") || exercise.kind.includes("competition-lift") || exercise.kind.includes("variation");
 }
@@ -135,17 +231,28 @@ export function getExercisePrescription(params: {
   isPriority: boolean;
   exerciseRole?: ExerciseRole;
   dayFocus?: DayFocus;
+  splitDay?: Pick<SplitDay, "name" | "muscleGroups" | "movementPatterns">;
   requirementSlotIndex?: number;
   totalRequiredForMuscle?: number;
 }): { sets: number; reps: number; rpe: number; restSeconds: number; required: boolean; note: string } {
-  const role = params.exerciseRole
-    ?? (params.exercise.isSBDMainLift || params.isPriority || params.order === 1 ? "main_lift" : params.exercise.kind.includes("isolation") ? "isolation" : "secondary_compound");
+  const dayType = getDayTypeFromSplitDay(params.splitDay);
+  const role = classifyExerciseRole({
+    exercise: params.exercise,
+    dayType,
+    blockType: params.blockType,
+    dayFocus: params.dayFocus,
+    orderHint: params.order,
+    explicitRole: params.exerciseRole,
+    isPriority: params.isPriority,
+  });
   const prescription = getPrescriptionForExerciseSlot({
     goalType: params.goal,
     blockType: params.blockType,
     dayFocus: params.dayFocus || "hypertrophy",
+    dayType,
     exercise: params.exercise,
     exerciseRole: role,
+    orderHint: params.order,
     requirementSlotIndex: params.requirementSlotIndex ?? Math.max(0, params.order - 1),
     totalRequiredForMuscle: params.totalRequiredForMuscle ?? 1,
     isPriority: params.isPriority,
@@ -207,19 +314,30 @@ export function getBlockExercisePrescription(params: {
   isPriority: boolean;
   dayFocus?: DayFocus;
   exerciseRole?: ExerciseRole;
+  splitDay?: Pick<SplitDay, "name" | "muscleGroups" | "movementPatterns">;
   requirementSlotIndex?: number;
   totalRequiredForMuscle?: number;
 }): { plannedSets: PlannedSet[]; restSeconds: number; required: boolean; note: string } {
   const { weekNumber, blockLengthWeeks } = params;
-  const role = params.exerciseRole
-    ?? (params.exercise.isSBDMainLift || params.isPriority || params.order === 1 ? "main_lift" : params.exercise.kind.includes("isolation") ? "isolation" : "secondary_compound");
+  const dayType = getDayTypeFromSplitDay(params.splitDay);
+  const role = classifyExerciseRole({
+    exercise: params.exercise,
+    dayType,
+    blockType: params.blockType,
+    dayFocus: params.dayFocus,
+    orderHint: params.order,
+    explicitRole: params.exerciseRole,
+    isPriority: params.isPriority,
+  });
   const prescription = getPrescriptionForExerciseSlot({
     goalType: params.goal,
     blockType: params.blockType,
     dayFocus: params.dayFocus || "hypertrophy",
+    dayType,
     exercise: params.exercise,
     exerciseRole: role,
     requirementSlotIndex: params.requirementSlotIndex ?? Math.max(0, params.order - 1),
+    orderHint: params.order,
     totalRequiredForMuscle: params.totalRequiredForMuscle ?? 1,
     weekNumber: params.weekNumber,
     blockLengthWeeks: params.blockLengthWeeks,
@@ -227,7 +345,7 @@ export function getBlockExercisePrescription(params: {
   });
   const plannedSets = Array.from({ length: Math.max(1, prescription.sets) }, (_, index) => ({
     id: `placeholder_${index + 1}`,
-    kind: (index === 0 && (role === "main_lift" || params.isPriority) ? "top" : "working") as PlannedSet["kind"],
+    kind: (index === 0 && (role === "main_strength_lift" || params.isPriority) ? "top" : "working") as PlannedSet["kind"],
     setNumber: index + 1,
     targetReps: prescription.reps,
     repRange: prescription.repRange,

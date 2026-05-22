@@ -2,6 +2,35 @@
 
 ## Known Bugs
 
+## Universal Workout Prescription + Ordering Pass (Session 57)
+
+- The updated prescription and ordering logic builds successfully, but manual in-app verification is still recommended for:
+  - PPL hypertrophy Week 2 prescriptions across push, pull, and legs
+  - machine quad compounds as lead quad movements
+  - conservative heavy hinge volume/RPE in hypertrophy contexts
+  - Push/Pull/Legs/Upper/Lower/Full Body exercise ordering after auto-fill
+  - preservation of manual set/rep/RPE edits after later swaps or auto-fill actions
+- `npm run build` passes for this change.
+- `npm run lint` still fails for pre-existing repo issues outside this pass, especially generated `.claude/.../dist` artifacts plus older unused-variable warnings/errors in unrelated files.
+
+## Requirement Picker Filter Interaction Fix (Session 56)
+
+- The filter interaction bug is fixed in code and `npm run build` passes.
+- Manual UI verification is still recommended for:
+  - requirement-scoped picker presentation
+  - `Change filter` switching into manual mode
+  - manual `Add Exercise` filter interactivity
+  - requirement auto-advance after adding an exercise
+
+## Week Planning Role-Aware Prescriptions (Session 55)
+
+- The prescription logic update builds successfully, but manual in-app verification is still recommended for:
+  - Week 2 Push/Pull/Legs hypertrophy prescriptions
+  - visible Week 1 vs Week 2 progression quality
+  - rep-range display clarity anywhere the UI still emphasizes only one anchor rep number
+  - manual edit persistence after changing sets/reps/RPE in the day editor
+- `npm run build` passes for this change.
+
 ## Library UI Redesign: Exercise Inspector + Condensed Muscle Picker (Session 36)
 
 - The Library redesign is implemented in code, but manual UI verification is still recommended for:
