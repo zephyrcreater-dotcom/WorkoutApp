@@ -4,7 +4,397 @@
 
 Iron Orbit Training is a local-first PWA for workout programming and tracking across powerlifting, hypertrophy/bodybuilding, powerbuilding, conditioning, and general health. It is meant to replace an Excel workout tracking system and eventually become an adaptive training coach.
 
+## Current Handoff — Universal Workout Prescription + Ordering Pass (Session 57)
+
+- Workout prescription logic should apply across all workouts and muscles. Prescriptions must be role-aware using day type, block type, movement pattern, muscle, equipment, fatigue, and week number. Machine quad compounds like hack squat/leg press/belt squat should be treated as hypertrophy-friendly main quad movements, not heavy hinges. Exercise ordering should place main compounds first, secondary compounds next, and accessories after, while preserving manual user order and manual prescription edits.
+
+## Current Handoff — Week Planning Role-Aware Prescriptions (Session 55)
+
+- Week planning exercise prescriptions should be role-aware. Sets/reps/RPE must vary by movement role, fatigue, muscle group, equipment, and week number. Week 2 hypertrophy should progress slightly from Week 1 without increasing everything at once. Compounds should be moderate volume/effort; isolations can use higher reps/RPE; heavy hinges should stay conservative. Manual user edits must not be overwritten.
+
+## Current Handoff — Block Builder Template-First Manual Fill Flow (Session 52)
+
+- Block Builder flow should be template-first but manual-fill friendly. Selecting a template should populate weekly split, day names/focus, and muscle requirement slots without auto-filling all exercises. The user should then fill requirements manually through the inline picker or use Choose for me contextually. Top-level builder actions should be Save Draft and Deploy/Save Block, not Generate Weeks. New Block should start a clean draft; Resume Draft should resume existing draft.
+
+## Current Handoff — Blocks Home Template Launchpad + Recommendations (Session 53)
+
+- Blocks home templates should explain what they do: split preview, days/week, goal/focus, suitability, and good-for copy. Add a rule-based Recommended for you section, especially recommending Powerbuilding 4-Day when SBD/powerbuilding history exists. Use Template should populate split/day/requirements but not autofill exercises. Custom Block starts blank.
+
+## Current Handoff — Requirement Picker Sync Fix (Session 54)
+
+- Week/Block requirement-fill picker must derive its effective muscle filter from the selected requirement. After adding an exercise, recompute requirement counts and auto-advance to the next missing requirement. Picker title, active chip, filter, and results must always stay in sync.
+- Requirement-fill picker should derive its effective muscle filter from the selected requirement, but the manual Add Exercise picker must keep editable filters. Do not show disabled dropdowns as if they are interactive. In requirement mode, either show a scoped chip or provide Change filter that switches to manual mode.
+- Requirement-scoped exercise pickers should start filtered to the selected requirement but allow manual muscle filter override. The selected requirement remains the target slot unless changed; manual override only changes search results. After adding, clear override and auto-advance to the next missing requirement.
+
 The app uses a local-first training database with an explicit local-only mode and an optional Supabase account mode. It works well on iPhone Safari, is installable as a PWA, and is now wired for cloud snapshot sync.
+
+---
+
+## Current Handoff — Logger Set/Action Loop Diagnostic Rule (Session 51)
+
+- Logger set/action bugs must be diagnosed by tracing state mutations before patching.
+- Logger actual sets are source of truth during a session; planned sets are recommendations only.
+- No effect/render path may regenerate set IDs or rebuild actual sets after user edits/adds/deletes.
+- Active set/exercise changes should come from explicit user actions, not repeated hydration effects.
+- Logger set mutations must be atomic optimistic updates. Save/Skip/Delete/+Set/Next should compute one next workout state, update local UI immediately, persist that exact state, and block/defer stale Supabase/localStorage hydration from overwriting pending local changes. Next Set must commit the active set before advancing.
+
+---
+
+## Current Handoff — Logger Set Edit + Finish Exercise Save Fix (Session 47)
+
+- Logger Finish Exercise must save the active dirty/valid set before finishing or advancing. Edit Set actions must load and update only the exact selected set by id/index, never by status.
+
+### What changed
+
+- Logger set-row targeting now resolves through the exact lineup item (actual set id, planned set id/index, or lineup key fallback) before loading edit/select state.
+- Set action-sheet "Edit Set / Jump to Set" now uses the same exact lineup targeting path as direct set-row taps.
+- Set action-sheet "Skip Set" now targets the exact selected set's planned index instead of relying on whichever set was currently active.
+- Finish Exercise now has an additional dirty-draft guard for selected pending sets so valid unsaved values are saved first, then finish/advance behavior runs.
+
+### Validation
+
+- `npm run build` ✓
+
+### Files changed
+
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Logger Primary Action Determinism Fix (Session 49)
+
+- Logger primary action must be deterministic: dirty set = Save Set, non-dirty with next set = Next Set, non-dirty last set = Finish Exercise. Dirty state should only change from user edits, not hydration/default comparison. Last-set detection must use actual current exercise set array including added sets. Exercise/set IDs must be stable and not regenerated during render.
+
+### What changed
+
+- Replaced mixed planned-coverage/button-state branching with one deterministic derived logger primary action.
+- Primary action now derives from stable state only: editing mode, user-dirty+valid draft, and active set position within the current exercise lineup (including added sets).
+- Removed past-last planned override text that could force misleading labels.
+- Kept save-first finish behavior in place for dirty+valid active sets via existing finish/save handlers.
+
+### Validation
+
+- `npm run build` ✓
+
+### Files changed
+
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Logger Set State Stability Fix (Session 50)
+
+- Logger set state must be stable: set IDs are generated once, never during render; actual logged sets must not be rebuilt from planned sets after user edits; + Set appends exactly one stable set; Delete Set removes exactly one selected set; Next Set advances through actual sets only; button labels derive from actual set count and dirty state.
+
+### What changed
+
+- Added explicit focused-set state for actual logged sets so save/add/delete/next actions do not fall back to recalculating the current row from planned coverage after every render.
+- `+ Set` now moves focus to the newly appended pending set instead of leaving selection in a stale derived state.
+- `Next Set` now advances focus through the existing lineup once instead of reusing the save path.
+- `Delete Set` now removes only the selected row and moves focus predictably; deleting a normal logged planned set no longer hides the underlying planned row.
+
+### Validation
+
+- `npm run build` ✓
+
+### Files changed
+
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Reopened Workout Custom Exercise Logger Action Fix (Session 48)
+
+- Custom/off-program exercises added to completed or reopened workouts must be normalized into the same workout-exercise runtime shape as planned exercises. They must support + Set, Edit Set, Save Set, and Finish Exercise. Logger actions must target exact exercise instance and set id/index, never planned-only data or status-only matching.
+
+### What changed
+
+- Added runtime planned-set normalization for logger exercises that do not resolve to a program planned exercise, ensuring stable planned set ids/set numbers/targets exist.
+- Updated logger `+ Set` flow to support off-program/custom exercises by appending to `offProgramPlannedSets` when no program planned exercise instance exists.
+- Updated exercise context menu `Add Set` to target the exact exercise instance id rather than relying on whichever exercise was active in closure state.
+- Kept Finish Exercise save-first behavior and exact set targeting so added custom exercises can save/finish consistently.
+
+### Validation
+
+- `npm run build` ✓
+
+### Files changed
+
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Exercise Picker Library Sync Bug Fix (Session 46)
+
+### What changed
+
+- **Root cause found and fixed**: `ExercisePicker` had a filter gate on line 6843 (pre-edit):
+  ```js
+  (!grouped || query || muscle !== "all" || pattern !== "all" || targetPatternMatch)
+  ```
+  When `grouped=true`, no user-applied filters, and `targetMuscles=[]` (e.g. "Add Exercise" after all requirements are already met), this collapsed to just `targetPatternMatch` — meaning only exercises whose `movementPattern` matched the day's patterns (e.g. `["vertical-pull","triceps-isolation"]`) made it into `allMatches`. The flat list therefore showed only 6–10 exercises (those matching the day's movement patterns) instead of the full library.
+
+- **Fix**: Added `!targetMuscles.length ||` to that condition:
+  ```js
+  (!grouped || !targetMuscles.length || query || muscle !== "all" || pattern !== "all" || targetPatternMatch)
+  ```
+  Now, when `targetMuscles=[]` (no requirement sections to organize), the movement-pattern gate is skipped and the full exercise library is eligible. The pattern filter still applies when `targetMuscles` is non-empty (requirement-slot filling mode) so the organized grouped sections continue to work correctly.
+
+- **Result limit increased**:
+  - Grouped + no target muscles (full-library flat browse in a scrollable sheet): `allMatches.length` — all exercises visible, no artificial cap.
+  - Grouped + target muscles (requirement slot picker, sections shown): 36-item flat fallback (unchanged behavior, mostly superseded by grouped sections).
+  - Default non-grouped (inline embed): 50 (up from 12).
+
+**Invariants to preserve:**
+- All Add Exercise pickers must use the same shared exercise library source as the Library page. Custom exercises and variations must appear everywhere: Today/Edit Workout, Week/Edit Workout, Logger, Block Builder, Week Planner, and inline requirement pickers.
+- Picker-specific filters should apply after merging default/custom library data.
+- Creating an exercise/variation from inside a picker must preserve workflow state and return to the same picker.
+- Muscle groups stay expanded during multi-select.
+- Mobile inputs must use 16px+ font size and keyboard-safe layouts.
+- Movement-pattern gate only applies in grouped mode when `targetMuscles` is non-empty (i.e., when requirement-organized sections will be rendered).
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Exercise Picker/Library Sync + Mobile Input Fixes (Session 45)
+
+### What changed
+
+- **Shared exercise source**: `ExercisePicker` now filters out archived (`isArchived`) exercises from both `allMatches` and `muscleOnlyPool`, so hidden exercises no longer appear in pickers. The `muscleOnlyPool` for grouped sections also correctly applies the owner/user filter. All pickers receive `db.exercises` from the same global state, so custom exercises created anywhere immediately appear in all pickers.
+- **Inline create exercise in any picker**: `ExercisePicker` now accepts an optional `updateDb` prop. When provided, a "Create new exercise" button appears at the bottom of every picker. Tapping it opens a compact inline form (name, primary muscle, equipment) without navigating away from the current workflow. On save, the exercise is added to the database and immediately picked/selected in place. All picker instances (TodayScreen off-program, Today inline add, LiveLogger ×2, WorkoutDayEditor inline req + add sheet + swap ×2, TemplateEditor) now pass `updateDb`.
+- **Muscle group picker stays expanded on selection**: `LibraryMusclePicker`'s `useEffect` that sets `expandedGroupId` no longer lists `selected` as a dependency — it only fires when the picker opens. Selecting/deselecting muscles within a group no longer collapses the group.
+- **Mobile input zoom prevention**: Added `@media (pointer: coarse) { input, select, textarea { font-size: 16px; } }` globally in `styles.css` so iOS Safari never auto-zooms on focus. ExercisePicker's quick-create form inputs also carry `style={{ fontSize: "16px" }}` as a belt-and-suspenders.
+- **Mobile picker layout (dvh)**: `.apollo-picker-panel` now uses `height: 100dvh` / `max-height: 100dvh` on mobile and `min(90dvh, 56rem)` on `sm:` breakpoint, replacing the old `90vh` that didn't track keyboard shrinkage.
+- **Add exercise modals use `max-h-[85dvh]`**: Logger/Today add-exercise overlay sections changed from `max-h-[85vh]` to `max-h-[85dvh]`.
+- **Library mobile inspector safe-area**: The sticky bottom button bar in the exercise inspector uses `pt-3 safe-bottom` instead of `py-3` so the iOS home indicator never covers Save/Cancel buttons.
+- **Library header wraps on small screens**: `flex flex-wrap` + `min-w-0` on the label area + `shrink-0` on the "Add Exercise" button prevents the header from overflowing on narrow viewports.
+
+**Invariants to preserve:**
+- Exercise pickers across Library, Today/Edit Workout, Logger, Week planner, and Block Builder must use one shared exercise library source so custom exercises and variations appear everywhere.
+- Creating a new exercise/variation from inside a workflow must preserve unsaved edits and return to the same picker/workflow.
+- Mobile inputs must avoid iOS zoom/cutoff by using 16px+ input font sizes and keyboard-safe scrolling.
+- Muscle group pickers should stay expanded during multi-select until explicitly collapsed.
+- `ExercisePicker` `updateDb` prop is optional — pickers without it simply omit the create button.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `src/styles.css`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Block Builder Cleanup (Session 44)
+
+### What changed
+
+- **Template/Reset bug fixed**: Selecting a template (via dropdown or "Use" button on home) now syncs `daysPerWeek` from `split.daysPerWeek` into `request` state. Previously, resetting and selecting a new template left `daysPerWeek` at the old value, causing day count mismatch.
+- **WeeklyOverview lime removed**: Non-editable `WeeklyOverview` and non-compact `WeekDayCardSelector` day card focus lines replaced `text-volt`/`border-volt`/`bg-volt` with blue (`border-[#0a84ff]/40 bg-[#0a84ff]/5`) and iron (`text-iron-400`). Separator changed from ` - ` to ` · `.
+- **Builder WeeklyOverview**: Only shown when a `draftProgram` exists; otherwise shows a placeholder "Click Generate weeks to build" state.
+- **Planning Rules collapsed summary**: When the Planning Rules accordion is collapsed, shows a sub-line with `{blockType} · {Continuous|Restart}`.
+- **Block Type more-menu**: Block type segmented control shows Hypertrophy / Strength / Peaking + a `•••` button. Clicking `•••` opens a dropdown with the remaining types: Accumulation, Intensification, Deload, Pivot, Maintenance, Conditioning, Custom. If a non-primary type is selected, its chip appears inline.
+- **`ab-alt` SplitLoopMode removed from UI**: Type only has `continuous | weekly-reset`; removed dead `ab-alt` option that caused a TS error.
+- **Right preview panel — Muscle coverage chips**: When a `workingProgram` exists, chips appear below the block meta. Muscles that appear in the split template's `targetMuscles` are blue (`border-[#0a84ff]/30 bg-[#0a84ff]/8 text-[#8fb9ff]`). Muscles generated by exercises that are outside the template requirements are orange (`border-[#f4842a]/30 bg-[#f4842a]/8 text-[#f4842a]`).
+- **Gap Analysis moved to right column**: `ProgramGapPanel` removed from left column and now renders below the preview box in the right column (only when `workingProgram` exists).
+
+**Invariants to preserve:**
+- `SplitLoopMode = "continuous" | "weekly-reset"` — do not add `ab-alt` back to the UI segmented control (it's not in the type).
+- `showBlockTypeMenu` state lives in `BuilderScreen` alongside `showAdvancedRules`.
+- Gap Analysis lives in the right column (`lg:col-span-1`), not the left form column.
+- Muscle chips use `summarizePlannedVolume` for the muscle set and `splitTemplate.days[*].targetMuscles` for the "required" set to classify covered vs extra.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Block Tab Full Visual Rebuild (Session 43)
+
+### What changed
+
+- **Blocks Home landing page**: The "programs" screen now shows a proper Blocks home before the builder. Includes: large "Blocks" title with subtitle, Draft in progress banner (orange-bordered), Active block card with week badge, Templates list with "Use" CTAs, and Archived blocks with "Reuse" actions.
+- **Build Block form rebuilt**: Replaced the old single-column settings dump with a guided builder:
+  - Compact header: `< Blocks` breadcrumb, Save draft, Generate (short on mobile) / Generate weeks (desktop)
+  - Inline segmented progress bar showing sections complete (e.g. "5 of 6")
+  - Row-style Basics inputs (Name, Goal, Start week, Template)
+  - Plus/minus Volume controls (Duration, Days/week)
+  - Planning Rules accordion: block type segmented control, split loop segmented control, progression rules Configure button
+  - Desktop two-column layout: form on left (lg:col-span-2), preview panel on right (weekly schedule + volume forecast bars)
+- **Weekly split rail improved**: Compact horizontal scrollable rail with border-b-2 selection indicator; day cards show abbreviated day name + workout name only (no focus sub-line).
+- **Day editor elevated**: After generating, the day editor shows below the split rail with a large day title (h3), week/focus subtitle, and "Day settings" collapsible. Requirement chips use title-case labels (e.g. "Upper Chest" not "upper-chest").
+- **Exercise rows compacted**: Week-variant exercise rows now use a numbered avatar box (1/2/3…) + compact inline metadata: `Name · N×reps · RPE x · Muscle` — no stacked card layout.
+- **Mobile nav updated**: "Block" tab is now visible on mobile nav (replaced Analytics/progress with Block in the mobile filter — Analytics remains accessible on desktop nav).
+- **Mobile header mobile-friendly**: Activate is hidden on small screens (shown as full-width secondary row below the header when a draft exists). "Generate weeks" shortens to "Generate" on mobile.
+
+**Invariant to preserve:**
+- Block tab visual direction: Blocks home, Build Block, Day Editor, and Gap Analysis should follow the new crafted dark iOS/Apollo-style references. Block setup should be guided and compact, Day Editor should be the main working area, exercise requirement filling should stay automatic/inline, and Gap Analysis should remain minimal/compact for now rather than becoming a full dashboard.
+- `BuilderScreen` has internal `blocksView: "home" | "builder"` state. Navigating to "programs" always lands on home; home has Resume (draft) and New block buttons to enter the builder.
+- Mobile nav shows Today, Week, Block, Library, Settings (Analytics filtered out for mobile).
+- `mobileNavItems = navItems.filter(item => item.id !== "progress")` — do not change back to filtering "programs".
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Block Builder Advanced Sections Compact Rebuild (Session 42)
+
+### What changed
+
+- Rebuilt Block Builder advanced/supporting sections into compact Apollo-style layouts:
+  - SBD Settings now uses row-based controls instead of large cards.
+  - Exercise Avoider now keeps specific-exercise picker hidden by default behind `Choose exercises`.
+  - Block Builder Exercise Picker default mode now uses compact list rows and collapsible filters.
+  - Program Gap Analysis now renders as a compact checklist-style section with subtle warning treatment.
+- Preserved existing functionality and data sources for all toggles, avoid rules, picker selections, and gap analysis actions.
+
+**Invariant to preserve:**
+- Block Builder advanced sections should be compact Apollo-style sections. SBD Settings should be row-based, Exercise Avoider should not show the full picker by default, Exercise Picker should use compact rows with collapsed filters, and Program Gap Analysis should be a checklist-style gap view instead of card/dashboard panels.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Block Builder Apollo Visual Rebuild (Session 41)
+
+### What changed
+
+- Block Builder was visually rebuilt into a compact Apollo-style planner layout:
+  - compact header with back and top action buttons
+  - compact block setup section
+  - horizontal weekly split rail
+  - selected day editor as the main visible editing area
+  - advanced planning/settings sections collapsed by default
+- Replaced lime-leaning CTA usage in the main Block Builder flow with Apollo blue primary actions.
+- Removed the old heavy card-stack/planner-preview rhythm and reduced vertical padding/spacing to keep editable content visible sooner.
+- Preserved all existing options and controls, but moved lower-frequency controls into collapsed advanced sections.
+
+**Invariant to preserve:**
+- Block Builder should use a compact Apollo-style layout: header actions, compact block setup, horizontal weekly split rail, selected day editor, visible requirements/exercises, and advanced planning rules collapsed by default. Avoid lime styling, dashboard cards, and giant repeated settings panels.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Exercise Analytics Route Reconnected (Session 40)
+
+### What changed
+
+- Added/reconnected an exercise-specific analytics route that uses real stored session/exercise data only.
+- Today exercise rows now open Exercise Analytics for that exercise (instead of dead-end behavior).
+- Completed Session Review exercise rows are now clickable and open Exercise Analytics for the selected exercise.
+- Week completed workout rows still open Completed Session Review first; exercise analytics is reached by clicking an exercise inside that review.
+- Back from Exercise Analytics returns to the prior review context when opened from a completed session review.
+
+**Invariant to preserve:**
+- Exercise-specific analytics page must be reachable from Today exercise rows and from exercise rows inside Completed Session Review. Week workout rows should still open Session Review first; clicking an exercise from that review opens Exercise Analytics. The analytics page should show real exercise history, average RPE/feel, hard/skipped sets, e1RM trend when available, and past set history. Do not fake analytics data.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Workout Analytics/Review Entry Points Reconnected (Session 39)
+
+### What changed
+
+- Reconnected Today completed-workout analytics entry:
+  - `View Results` opens the selected workout’s completed session review.
+  - Completed workout exercise-list rows are now clickable and open the same workout review instead of doing nothing.
+- Reconnected Week overview row routing:
+  - completed rows open the completed session review page
+  - in-progress/review rows open the in-progress review page
+- Reconnected Week planning/edit day-rail behavior for completed days:
+  - clicking a day with completed workout data opens that day’s review/stats instead of entering edit flows.
+
+**Invariant to preserve:**
+- Workout analytics/review must be reachable from Today View Results, completed Week rows, and completed days in Week planning/settings. These clicks should populate the existing session review page with the selected workout’s real data.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Week Workout Row Review Routing Restore (Session 38)
+
+### What changed
+
+- Week workout rows now open Week review/detail pages directly for active session states:
+  - completed rows open completed session stats/review
+  - in-progress/review rows open in-progress review with `Continue workout`
+- Row click no longer routes into week/day editing or exercise picker flows.
+- In-progress Week review no longer exposes an `Edit day` action from the review surface, preventing accidental planning-mode transitions from row review.
+- Completed session review header now includes compact avg RPE/avg feel context when available, alongside hard/skipped/score stats.
+
+**Invariant to preserve:**
+- Week workout rows should open workout review/detail pages. Completed workouts open completed session stats/review; in-progress workouts open an in-progress review with Continue Workout. Row click should not edit the week or open exercise picker.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
+## Current Handoff — Week Planner Entry Route Fix (Session 37)
+
+### What changed
+
+**Plan Week from Today now routes to the day editor only**
+- Fixed a bug where clicking "Plan Week N" from Today/Home immediately opened the broad exercise picker sheet.
+- Root cause: a `useEffect` in `WorkoutDayEditor` unconditionally called `setShowPicker(true)` whenever `day.exercises.length === 0`, overriding the initial-state guard added in the previous session.
+- Fix: added `if (!weekVariant)` guard so the sheet picker is never auto-opened in the week planner variant.
+- The inline requirement picker (auto-opened for the first unmet requirement) is unaffected.
+
+**Invariant to preserve:**
+- Plan Week from Today must route to the day editor only and must not open the broad exercise picker on entry.
+- In `WorkoutDayEditor`, the `useEffect` that calls `setShowPicker(true)` on empty days must remain guarded by `!weekVariant`.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx` only
 
 ---
 

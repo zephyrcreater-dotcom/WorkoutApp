@@ -35,7 +35,8 @@ import {
   Trash2,
   UserRound,
   Wand2,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
@@ -65,16 +66,19 @@ import {
   getBlockExercisePrescription,
   isCompound,
   isSbdExercise,
+  orderExercisesForDay,
   sessionFatigueScore
 } from "./lib/programmingLogic";
 import {
   buildFatigueBudget,
+  classifyExerciseRole,
   getExerciseFatigueTag,
   getGoalUsed,
   getSameExerciseBaseline,
   getRequirementSlotPlan,
   getTrainingTargets,
   inferBaseExerciseRole,
+  inferWorkoutDayType,
   mapBlockType,
   mapTrainingGoal,
   recommendWeightForExercise,
@@ -184,6 +188,7 @@ type Screen =
   | "today"
   | "logger"
   | "completed-review"
+  | "exercise-analytics"
   | "programs"
   | "library"
   | "week"
@@ -206,6 +211,15 @@ type TodayExerciseDetailState = {
   fromEditMode: boolean;
 };
 
+type ExerciseAnalyticsState = {
+  exerciseId?: string;
+  exerciseName?: string;
+  sessionId?: string;
+  workoutDayId?: string;
+  returnScreen: Screen;
+  returnCompletedReviewState?: CompletedReviewState;
+};
+
 const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "today", label: "Today", icon: Dumbbell },
   { id: "week", label: "Week", icon: ClipboardList },
@@ -215,7 +229,7 @@ const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
-const mobileNavItems = navItems.filter((item) => item.id !== "programs");
+const mobileNavItems = navItems.filter((item) => item.id !== "progress");
 
 const muscleOptions: MuscleGroup[] = [
   "chest",
@@ -758,6 +772,11 @@ function App() {
   const [planWeekRequest, setPlanWeekRequest] = useState<number | undefined>();
   // Persists the Week Editor open state across tab navigation so editing is not lost on screen switch.
   const [editingWeekNumber, setEditingWeekNumber] = useState<number | undefined>();
+  const [exerciseAnalyticsState, setExerciseAnalyticsState] = useState<ExerciseAnalyticsState | undefined>();
+  // Today timeline: which workout day (by ID) the user has navigated to on the Today screen.
+  // null = show the current block day (default). Persists across screen changes so Today retains
+  // context when returning from the logger or completed-review.
+  const [todaySelectedDayId, setTodaySelectedDayId] = useState<string | null>(null);
 
   if (loading) {
     return (
@@ -836,6 +855,12 @@ function App() {
     setCompletedReviewState({ sessionId, returnScreen });
     setResumeMessage(undefined);
     setScreen("completed-review");
+  }
+
+  function openExerciseAnalytics(state: ExerciseAnalyticsState) {
+    setExerciseAnalyticsState(state);
+    setResumeMessage(undefined);
+    setScreen("exercise-analytics");
   }
 
   function openLoggerSession(
@@ -995,8 +1020,11 @@ function App() {
               onResumeWorkout={resumeWorkoutSession}
               onOpenLoggerSession={openLoggerSession}
               onOpenCompletedSessionReview={openCompletedSessionReview}
+              onOpenExerciseAnalytics={openExerciseAnalytics}
               resumeMessage={resumeMessage}
               clearResumeMessage={() => setResumeMessage(undefined)}
+              todaySelectedDayId={todaySelectedDayId}
+              setTodaySelectedDayId={setTodaySelectedDayId}
             />
           )}
           {screen === "logger" && (
@@ -1029,6 +1057,14 @@ function App() {
                 user={currentUser}
                 session={reviewSession}
                 onBack={() => setScreen(completedReviewState.returnScreen)}
+                onOpenExerciseAnalytics={(exerciseId, exerciseName) => openExerciseAnalytics({
+                  exerciseId,
+                  exerciseName,
+                  sessionId: reviewSession.id,
+                  workoutDayId: reviewSession.workoutDayId,
+                  returnScreen: "completed-review",
+                  returnCompletedReviewState: completedReviewState,
+                })}
                 onEditWorkout={() => void resumeWorkoutSession(completedReviewState.sessionId, {
                   previousScreen: completedReviewState.returnScreen,
                   completedReviewState,
@@ -1038,9 +1074,45 @@ function App() {
               />
             );
           })()}
+          {screen === "exercise-analytics" && exerciseAnalyticsState && (() => {
+            const contextSession = exerciseAnalyticsState.sessionId
+              ? db.sessions.find((session) => session.id === exerciseAnalyticsState.sessionId && session.userId === currentUser.id)
+              : undefined;
+            const contextDay = contextSession
+              ? findWorkoutDayForSession(db, contextSession)
+              : (exerciseAnalyticsState.workoutDayId
+                ? db.programs
+                  .flatMap((program) => program.blocks)
+                  .flatMap((block) => block.weeks)
+                  .flatMap((week) => week.workouts)
+                  .find((day) => day.id === exerciseAnalyticsState.workoutDayId)
+                : undefined);
+            const exercise = exerciseAnalyticsState.exerciseId
+              ? db.exercises.find((item) => item.id === exerciseAnalyticsState.exerciseId)
+              : undefined;
+            return (
+              <ExerciseAnalyticsView
+                db={db}
+                user={currentUser}
+                exercise={exercise}
+                exerciseId={exerciseAnalyticsState.exerciseId}
+                exerciseName={exerciseAnalyticsState.exerciseName}
+                contextSession={contextSession}
+                contextDay={contextDay}
+                onBack={() => {
+                  if (exerciseAnalyticsState.returnScreen === "completed-review" && exerciseAnalyticsState.returnCompletedReviewState) {
+                    setCompletedReviewState(exerciseAnalyticsState.returnCompletedReviewState);
+                    setScreen("completed-review");
+                    return;
+                  }
+                  setScreen(exerciseAnalyticsState.returnScreen);
+                }}
+              />
+            );
+          })()}
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
-          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} />}
+          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} onOpenExerciseAnalytics={openExerciseAnalytics} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
@@ -1078,8 +1150,11 @@ function TodayScreen({
   onResumeWorkout,
   onOpenLoggerSession,
   onOpenCompletedSessionReview,
+  onOpenExerciseAnalytics,
   resumeMessage,
-  clearResumeMessage
+  clearResumeMessage,
+  todaySelectedDayId,
+  setTodaySelectedDayId,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -1104,8 +1179,11 @@ function TodayScreen({
     }
   ) => void;
   onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
+  onOpenExerciseAnalytics: (state: ExerciseAnalyticsState) => void;
   resumeMessage?: string;
   clearResumeMessage: () => void;
+  todaySelectedDayId: string | null;
+  setTodaySelectedDayId: (id: string | null) => void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const todayPlan = getCurrentWorkoutForUser(db, user.id);
@@ -1179,6 +1257,121 @@ function TodayScreen({
   const weekBeingEdited = editingWeekNumber !== undefined && editingWeekNumber === currentWeekNumber;
   const weekPlanned = isWeekPlanned(todayPlan?.week);
   const weekLocked = !!(selectedDay && (weekBeingEdited || isWeekDraft(todayPlan?.week) || !weekPlanned));
+
+  // --- Today timeline: ordered workout days the user can navigate ---
+  // Includes: interacted days (completed/skipped/in-progress) + all days of the current active
+  // week when not locked, plus a plan-wall entry when the week is locked or block is complete.
+  type TodayTimelineEntry = { type: "day"; dayId: string } | { type: "plan-wall" };
+  const blockOrderedDays = (activeBlock?.weeks ?? [])
+    .flatMap((week) => week.workouts)
+    .filter((day) => day.status !== "rest");
+  const doneDayIds = new Set([
+    ...(activeBlock?.completedWorkoutDayIds ?? []),
+    ...(activeBlock?.skippedWorkoutDayIds ?? []),
+  ]);
+  const inProgressBlockDayIds = new Set(
+    db.sessions
+      .filter(
+        (s) =>
+          s.userId === user.id &&
+          s.blockId === activeBlock?.id &&
+          (s.status === "in-progress" || s.status === "review")
+      )
+      .map((s) => s.workoutDayId)
+      .filter((id): id is string => !!id)
+  );
+  const timelineDaySet = new Set<string>();
+  blockOrderedDays.forEach((d) => {
+    if (doneDayIds.has(d.id) || inProgressBlockDayIds.has(d.id)) timelineDaySet.add(d.id);
+    if (!weekLocked && d.weekNumber === currentWeekNumber) timelineDaySet.add(d.id);
+  });
+  const timelineDays = blockOrderedDays.filter((d) => timelineDaySet.has(d.id));
+  const todayTimeline: TodayTimelineEntry[] = [
+    ...timelineDays.map((d): TodayTimelineEntry => ({ type: "day", dayId: d.id })),
+    ...((!selectedDay || weekLocked) && !!activeProgram
+      ? ([{ type: "plan-wall" }] as TodayTimelineEntry[])
+      : []),
+  ];
+  // Current position in the timeline
+  const todayCurrentEntry: TodayTimelineEntry = todaySelectedDayId
+    ? { type: "day", dayId: todaySelectedDayId }
+    : !selectedDay || weekLocked
+      ? { type: "plan-wall" }
+      : { type: "day", dayId: selectedDay.id };
+  const currentTimelineIndex = todayTimeline.findIndex(
+    (entry) =>
+      entry.type === todayCurrentEntry.type &&
+      (entry.type === "plan-wall" ||
+        (entry as { type: "day"; dayId: string }).dayId ===
+          (todayCurrentEntry as { type: "day"; dayId: string }).dayId)
+  );
+  const canGoBack = currentTimelineIndex > 0;
+  const canGoNext =
+    currentTimelineIndex >= 0 && currentTimelineIndex < todayTimeline.length - 1;
+  // The workout day currently being displayed (may differ from the block's active day)
+  const viewingDay = todaySelectedDayId
+    ? (blockOrderedDays.find((d) => d.id === todaySelectedDayId) ?? selectedDay)
+    : selectedDay;
+  // The session for the viewing day (most recent relevant one)
+  const viewingDaySession = viewingDay
+    ? db.sessions.find(
+        (s) =>
+          s.workoutDayId === viewingDay.id &&
+          s.userId === user.id &&
+          (s.status === "completed" || s.status === "in-progress" || s.status === "review")
+      )
+    : undefined;
+  const viewingDayIsCompleted = viewingDaySession?.status === "completed";
+  const viewingDayIsInProgress =
+    viewingDaySession?.status === "in-progress" || viewingDaySession?.status === "review";
+
+  function handleTodayBack() {
+    if (!canGoBack) return;
+    const prev = todayTimeline[currentTimelineIndex - 1];
+    if (prev.type === "day") setTodaySelectedDayId(prev.dayId);
+  }
+
+  function handleTodayNext() {
+    if (!canGoNext) return;
+    const next = todayTimeline[currentTimelineIndex + 1];
+    // If the viewing day is in-progress (reopened but not finished), safely re-complete before
+    // advancing so no data is lost and status is clean.
+    if (todaySelectedDayId && viewingDayIsInProgress && viewingDaySession) {
+      const sessionId = viewingDaySession.id;
+      const dayId = todaySelectedDayId;
+      void updateDb((draft) => {
+        const target = draft.sessions.find((s) => s.id === sessionId);
+        if (target) {
+          target.status = "completed";
+          target.completedAt = target.completedAt || nowIso();
+          target.updatedAt = nowIso();
+        }
+        const targetProgram = draft.programs.find((p) => p.id === activeProgram?.id);
+        const targetBlock = targetProgram?.blocks[0];
+        if (targetBlock) {
+          targetBlock.completedWorkoutDayIds = Array.from(
+            new Set([...(targetBlock.completedWorkoutDayIds ?? []), dayId])
+          );
+          syncActiveBlockProgress(
+            targetBlock,
+            draft.sessions.filter(
+              (s) => s.userId === user.id && s.blockId === targetBlock!.id
+            )
+          );
+        }
+        if (targetProgram) targetProgram.updatedAt = nowIso();
+        return draft;
+      });
+    }
+    // Navigate forward in the timeline
+    if (next.type === "plan-wall") {
+      setTodaySelectedDayId(null);
+    } else if (next.dayId === selectedDay?.id && !weekLocked) {
+      setTodaySelectedDayId(null); // Return to the current default day
+    } else {
+      setTodaySelectedDayId(next.dayId);
+    }
+  }
 
   type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number; plannedWeight?: number };
   const [offProgramBuilder, setOffProgramBuilder] = useState<{ active: boolean; exercises: OffProgramExerciseDraft[] }>({ active: false, exercises: [] });
@@ -1417,6 +1610,20 @@ function TodayScreen({
   }
 
   function openExerciseDetail(plannedExerciseId: string, fromEditMode = false) {
+    const sourceDay = showEditDay && editDraft ? editDraft : selectedDay;
+    const planned = sourceDay?.exercises.find((item) => item.id === plannedExerciseId)
+      || selectedDay?.exercises.find((item) => item.id === plannedExerciseId);
+    const exercise = planned ? db.exercises.find((item) => item.id === planned.exerciseId) : undefined;
+    if (planned && exercise) {
+      onOpenExerciseAnalytics({
+        exerciseId: exercise.id,
+        exerciseName: exercise.name,
+        sessionId: selectedDaySession?.id,
+        workoutDayId: selectedDay?.id,
+        returnScreen: "today",
+      });
+      return;
+    }
     setExerciseDetail({ plannedExerciseId, fromEditMode });
   }
 
@@ -1477,6 +1684,7 @@ function TodayScreen({
               <ExercisePicker
                 db={db}
                 user={user}
+                updateDb={updateDb}
                 selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
                 alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
                 onPick={(exercise) => {
@@ -1587,7 +1795,140 @@ function TodayScreen({
           </button>
         </Panel>
       )}
-      {activeProgram && !selectedDay && (
+      {/* Selected workout from timeline — user navigated Back/Next to a specific day */}
+      {activeProgram && todaySelectedDayId && viewingDay && (
+        <section className="space-y-4">
+          <div className="space-y-1">
+            <p className="text-[1.95rem] font-semibold tracking-[-0.045em] text-white sm:text-[2.2rem]">Today</p>
+            <h2 className="text-[1.22rem] font-semibold tracking-[-0.03em] text-iron-100 sm:text-[1.42rem]">
+              {viewingDay.name}
+            </h2>
+            <p className="text-sm text-iron-500">
+              {[
+                `Week ${viewingDay.weekNumber ?? "?"}`,
+                `Day ${viewingDay.dayIndex ?? "?"}`,
+                viewingDay.focus,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+              {viewingDayIsCompleted && (
+                <span className="ml-2 text-xs font-semibold text-emerald-400">Completed</span>
+              )}
+              {viewingDayIsInProgress && (
+                <span className="ml-2 text-xs font-semibold text-amber-400">In Progress</span>
+              )}
+            </p>
+          </div>
+
+          {/* Primary action */}
+          {viewingDaySession ? (
+            <button
+              className="apollo-primary-btn w-full sm:w-auto"
+              onClick={() =>
+                void onResumeWorkout(viewingDaySession.id, {
+                  previousScreen: "today",
+                  loggerMode: viewingDayIsCompleted ? "completed-edit" : "active-logger",
+                })
+              }
+            >
+              {viewingDayIsInProgress ? "Resume" : "Resume / Edit"}
+            </button>
+          ) : (
+            <button
+              className="apollo-primary-btn w-full sm:w-auto"
+              onClick={() => startWorkout(viewingDay)}
+            >
+              Start
+            </button>
+          )}
+
+          {/* Navigation row */}
+          <div className="compact-actions">
+            {canGoBack && (
+              <button className="btn-compact" onClick={handleTodayBack}>← Back</button>
+            )}
+            {canGoNext && (
+              <button className="btn-compact" onClick={handleTodayNext}>Next Day →</button>
+            )}
+            {viewingDayIsCompleted && viewingDaySession && (
+              <button
+                className="btn-compact"
+                onClick={() => onOpenCompletedSessionReview(viewingDaySession.id, "today")}
+              >
+                View Results
+              </button>
+            )}
+            <button className="btn-compact ml-auto" onClick={() => setTodaySelectedDayId(null)}>
+              Current Day
+            </button>
+          </div>
+
+          {/* Exercise list (read-only reference) */}
+          {viewingDay.exercises.length > 0 && (
+            <div className="mt-1">
+              <div className="flex items-center justify-between pb-1.5">
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">
+                  Workout
+                </p>
+                <p className="text-xs text-iron-500">
+                  {viewingDay.exercises.length} exercises ·{" "}
+                  {viewingDay.exercises.reduce((sum, ex) => sum + ex.plannedSets.length, 0)} sets
+                </p>
+              </div>
+              <div className="list-section overflow-hidden rounded-sm">
+                {viewingDay.exercises.map((planned, idx) => {
+                  const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+                  const rpeText = planned.plannedSets[0]?.targetRpe
+                    ? ` · RPE ${planned.plannedSets[0].targetRpe}`
+                    : "";
+                  const openFromList = () => {
+                    onOpenExerciseAnalytics({
+                      exerciseId: planned.exerciseId,
+                      exerciseName: exercise?.name || "Exercise",
+                      sessionId: viewingDaySession?.id,
+                      workoutDayId: viewingDay.id,
+                      returnScreen: "today",
+                    });
+                  };
+                  return (
+                    <div key={planned.id}>
+                      {idx > 0 && <div className="list-divider" />}
+                      <div
+                        className="list-row cursor-pointer transition hover:bg-white/[0.03]"
+                        onClick={openFromList}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            openFromList();
+                          }
+                        }}
+                        role="button"
+                        tabIndex={0}
+                        aria-label={`Open exercise analytics for ${exercise?.name || "exercise"}`}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <p className="native-row-title">
+                            {exercise?.name ?? "Unknown exercise"}
+                          </p>
+                          <p className="native-row-subtitle">
+                            {planned.plannedSets.length} set{planned.plannedSets.length !== 1 ? "s" : ""}
+                            {planned.plannedSets[0]?.targetReps
+                              ? ` · ${planned.plannedSets[0].targetReps} reps`
+                              : ""}
+                            {rpeText}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {activeProgram && !selectedDay && !todaySelectedDayId && (
         <Panel title="Block Complete" icon={CheckCircle2}>
           <EmptyState
             title="This block is complete"
@@ -1606,7 +1947,7 @@ function TodayScreen({
         </Panel>
       )}
       {/* Week locked: current week is being planned — hide workout card entirely */}
-      {activeProgram && selectedDay && weekLocked && (
+      {activeProgram && selectedDay && weekLocked && !todaySelectedDayId && (
         <section className="panel border-amber-500/20 p-4">
           <p className="text-xs font-semibold text-amber-400">Week {currentWeekNumber} not ready</p>
           <h2 className="mt-1 font-semibold">{isWeekDraft(todayPlan?.week) || weekBeingEdited ? "Planning in progress" : "Plan this week before training"}</h2>
@@ -1614,17 +1955,22 @@ function TodayScreen({
             Finish planning and save Week {currentWeekNumber} before starting this workout.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <button className="btn-primary" onClick={() => onPlanWeek(currentWeekNumber)}>
+            <button className="apollo-primary-btn" onClick={() => onPlanWeek(currentWeekNumber)}>
               <CalendarDays className="h-4 w-4" /> Plan Week {currentWeekNumber}
             </button>
-            <button className="btn-ghost" onClick={goOffProgram}>
+            <button className="apollo-secondary-btn" onClick={goOffProgram}>
               <Shuffle className="h-3.5 w-3.5" /> Off Program
             </button>
           </div>
+          {canGoBack && (
+            <div className="compact-actions">
+              <button className="btn-compact" onClick={handleTodayBack}>← Back</button>
+            </div>
+          )}
         </section>
       )}
       {/* Week ready: show normal workout card */}
-      {activeProgram && selectedDay && !weekLocked && (
+      {activeProgram && selectedDay && !weekLocked && !todaySelectedDayId && (
         (() => {
           const latestReadiness = [...db.readiness]
             .filter((item) => item.userId === user.id)
@@ -1683,21 +2029,21 @@ function TodayScreen({
 
               {selectedDay.status === "rest" ? (
                 <button
-                  className="native-primary-action w-full rounded-md bg-[#0a84ff] text-white shadow-[0_10px_24px_rgba(10,132,255,0.18)] sm:w-[12.75rem]"
+                  className="apollo-primary-btn w-full sm:w-auto"
                   onClick={() => updateActiveBlockProgress("rest-complete")}
                 >
                   Mark Rest
                 </button>
               ) : selectedDay.exercises.length ? (
                 <button
-                  className="native-primary-action w-full rounded-md bg-[#0a84ff] text-white shadow-[0_10px_24px_rgba(10,132,255,0.18)] sm:w-[12.75rem]"
+                  className="apollo-primary-btn w-full sm:w-auto"
                   onClick={() => startWorkout(selectedDay)}
                 >
                   Resume
                 </button>
               ) : (
                 <button
-                  className="native-primary-action w-full rounded-md bg-[#0a84ff] text-white shadow-[0_10px_24px_rgba(10,132,255,0.18)] sm:w-[12.75rem]"
+                  className="apollo-primary-btn w-full sm:w-auto"
                   onClick={() => onPlanWeek(currentWeekNumber)}
                 >
                   Plan Week
@@ -1706,9 +2052,9 @@ function TodayScreen({
 
               <div className="border-b border-white/[0.07] pb-2.5">
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-iron-500">
-                  <button className="transition hover:text-iron-100" onClick={() => updateActiveBlockProgress("previous")}>Back</button>
+                  <button className="transition hover:text-iron-100" onClick={handleTodayBack}>Back</button>
                   <span className="text-iron-700">|</span>
-                  <button className="transition hover:text-iron-100" onClick={() => updateActiveBlockProgress("next")}>Next Day</button>
+                  <button className="transition hover:text-iron-100" onClick={handleTodayNext}>Next Day</button>
                   <span className="text-iron-700">|</span>
                   <button className="text-orange-300 transition hover:text-orange-200" onClick={() => updateActiveBlockProgress("skip")}>Skip</button>
                   {showInlineEditActions && (
@@ -2012,6 +2358,7 @@ function TodayScreen({
                           <ExercisePicker
                             db={db}
                             user={user}
+                            updateDb={updateDb}
                             alreadyAddedIds={editDraft.exercises.map((item) => item.exerciseId)}
                             onPick={(exercise) => {
                               const planned = buildPlannedExerciseFromExercise({
@@ -2459,6 +2806,7 @@ function LiveLogger({
   navigation: LoggerNavigationState;
   onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
 }) {
+  const LOGGER_DEBUG = false;
   const sessionRecord = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
   const [activeExerciseId, setActiveExerciseId] = useState(sessionRecord?.loggedExercises[sessionRecord.currentExerciseIndex || 0]?.id || sessionRecord?.loggedExercises[0]?.id);
   const resumeState = useMemo(
@@ -2504,24 +2852,27 @@ function LiveLogger({
     ? Math.min(resumeState.currentSetIndex, plannedSets.length)
     : activeExerciseLog ? getResumeSetIndex(activeExerciseLog, plannedSets) : 0;
   const [selectedLoggingIndex, setSelectedLoggingIndex] = useState<number | null>(null);
+  const [focusedActualSetId, setFocusedActualSetId] = useState<string | null>(null);
   const [editingSetId, setEditingSetId] = useState<string | null>(null);
   const lineupItems = useMemo(
     () => activeExerciseLog ? buildLoggerLineupItems(activeExerciseLog, plannedSets) : [],
     [activeExerciseLog, plannedSets]
   );
-  const editingLineupItem = editingSetId ? lineupItems.find((item) => item.actualSet?.id === editingSetId) : undefined;
-  const effectiveSetIndex = editingLineupItem
-    ? (editingLineupItem.plannedIndex ?? currentSetIndex)
+  const activeActualSetId = editingSetId ?? focusedActualSetId;
+  const selectedActualLineupItem = activeActualSetId ? lineupItems.find((item) => item.actualSet?.id === activeActualSetId) : undefined;
+  const editingLineupItem = editingSetId ? selectedActualLineupItem : undefined;
+  const effectiveSetIndex = selectedActualLineupItem
+    ? (selectedActualLineupItem.plannedIndex ?? currentSetIndex)
     : (selectedLoggingIndex ?? currentSetIndex);
-  const currentPlannedSet = editingLineupItem?.plannedSet ?? plannedSets[effectiveSetIndex];
+  const currentPlannedSet = selectedActualLineupItem?.plannedSet ?? plannedSets[effectiveSetIndex];
   const lastSet = activeExerciseLog?.sets.at(-1);
-  const selectedActualSet = editingLineupItem?.actualSet;
+  const selectedActualSet = selectedActualLineupItem?.actualSet;
   const previousCompletedSet = activeExerciseLog ? findPreviousCompletedSet(activeExerciseLog.sets, effectiveSetIndex) : undefined;
-  const draftKey = editingLineupItem?.actualSet
-    ? `edit:${editingLineupItem.actualSet.id}`
+  const draftKey = selectedActualSet
+    ? `${editingSetId ? "edit" : "view"}:${selectedActualSet.id}`
     : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
   const [setDraft, setSetDraft] = useState(() => buildDraftFromSet({
-    actualSet: editingLineupItem?.actualSet,
+    actualSet: selectedActualSet,
     plannedSet: currentPlannedSet,
     previousCompletedSet,
     draftKey,
@@ -2580,12 +2931,52 @@ function LiveLogger({
   });
   const adjustedWeight = weightRec?.recommendedWeight ?? undefined;
   const selectionDraftSeed = useMemo(() => buildDraftFromSet({
-    actualSet: editingLineupItem?.actualSet,
+    actualSet: selectedActualSet,
     plannedSet: currentPlannedSet,
     previousCompletedSet,
     draftKey,
     recommendedWeight: adjustedWeight,
-  }), [adjustedWeight, currentPlannedSet, draftKey, editingLineupItem?.actualSet, previousCompletedSet]);
+  }), [adjustedWeight, currentPlannedSet, draftKey, previousCompletedSet, selectedActualSet]);
+
+  function loggerDebugSnapshot() {
+    const activeExerciseName = exercise?.name || "(unknown)";
+    const setIds = plannedSets.map((set) => set.id);
+    const effectiveItem = lineupItems.find((item) => item.plannedIndex === effectiveSetIndex || item.actualSet?.id === activeActualSetId);
+    return {
+      sessionId: session?.id,
+      activeExerciseId,
+      activeExerciseIndex,
+      activeExerciseName,
+      activeSetId: selectedActualSet?.id ?? null,
+      activeSetIndex: effectiveSetIndex,
+      plannedSetIds: setIds,
+      plannedSetCount: plannedSets.length,
+      actualSetIds: liveExerciseLog?.sets.map((set) => set.id) || [],
+      actualSetCount: liveExerciseLog?.sets.length || 0,
+      currentSetIndex,
+      selectedLoggingIndex,
+      focusedActualSetId,
+      editingSetId,
+      dirty: draftDirty,
+      primaryActionLabel,
+      primaryAction: derivedPrimaryAction,
+      effectiveLineupKey: effectiveItem?.key,
+      sessionStatus: session?.status,
+    };
+  }
+
+  function loggerDebug(label: string, extra?: Record<string, unknown>) {
+    if (!LOGGER_DEBUG) return;
+    console.log(`[LOGGER_DEBUG] ${label}`, { ...loggerDebugSnapshot(), ...(extra || {}) });
+  }
+
+  const needsRuntimePlannedSetNormalization = !!session?.id && session.loggedExercises.some((log) => {
+    const hasProgramPlannedExercise = !!findPlannedExercise(db, session, log);
+    if (hasProgramPlannedExercise) return false;
+    const needsNormalization = !log.offProgramPlannedSets?.length
+      || log.offProgramPlannedSets.some((set, index) => !set.id || set.setNumber !== index + 1);
+    return needsNormalization;
+  });
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -2598,9 +2989,25 @@ function LiveLogger({
 
   useEffect(() => {
     if (draftDirty) return;
+    loggerDebug("HYDRATE_ACTIVE_SET_START", { source: "selectionDraftSeed" });
     setSetDraft(selectionDraftSeed);
     setShowSetNotes(false);
+    loggerDebug("HYDRATE_ACTIVE_SET_END", { source: "selectionDraftSeed" });
   }, [draftDirty, selectionDraftSeed]);
+
+  useEffect(() => {
+    loggerDebug("DIRTY_STATE_CHANGE", { dirty: draftDirty });
+  }, [draftDirty]);
+
+  useEffect(() => {
+    loggerDebug("ACTIVE_SET_CHANGE", {
+      activeSetId: selectedActualSet?.id ?? null,
+      effectiveSetIndex,
+      selectedLoggingIndex,
+      focusedActualSetId,
+      editingSetId,
+    });
+  }, [selectedActualSet?.id, effectiveSetIndex, selectedLoggingIndex, focusedActualSetId, editingSetId]);
 
   useEffect(() => {
     const ref = swipeSkipHoldTimerRef;
@@ -2614,8 +3021,10 @@ function LiveLogger({
   }, [draftKey]);
 
   useEffect(() => {
+    loggerDebug("ACTIVE_EXERCISE_CHANGE", { effect: "reset-ui-on-activeExerciseId" });
     // Reset set navigation and UI state when switching exercises
     setSelectedLoggingIndex(null);
+    setFocusedActualSetId(null);
     setEditingSetId(null);
     setDraftDirty(false);
     setPendingDeleteTarget(null);
@@ -2627,14 +3036,17 @@ function LiveLogger({
   }, [activeExerciseId]);
 
   useEffect(() => {
+    loggerDebug("EFFECT_SESSION_ID_CHANGE_START", { effect: "reset-ui-on-sessionId" });
     setPendingDeleteTarget(null);
     setSelectedLoggingIndex(null);
+    setFocusedActualSetId(null);
     setEditingSetId(null);
     setDraftDirty(false);
     setShowSkipExerciseConfirm(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
     setSwipeDrag(null);
+    loggerDebug("EFFECT_SESSION_ID_CHANGE_END", { effect: "reset-ui-on-sessionId" });
   }, [sessionId]);
 
   useEffect(() => {
@@ -2645,28 +3057,65 @@ function LiveLogger({
   }, [isSwipeEnabled]);
 
   useEffect(() => {
-    if (resumeState.kind === "ready" && activeExerciseId !== resumeState.activeExerciseId) {
+    const activeExists = !!session?.loggedExercises.some((item) => item.id === activeExerciseId);
+    if (resumeState.kind === "ready" && (!activeExerciseId || !activeExists) && activeExerciseId !== resumeState.activeExerciseId) {
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_START", {
+        reason: !activeExerciseId ? "missing-active-id" : "active-id-not-found",
+        nextActiveExerciseId: resumeState.activeExerciseId,
+      });
       setActiveExerciseId(resumeState.activeExerciseId);
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_END", { nextActiveExerciseId: resumeState.activeExerciseId });
       return;
     }
-    if (session && !activeExerciseId) setActiveExerciseId(session.loggedExercises[session.currentExerciseIndex || 0]?.id);
+    if (session && !activeExerciseId) {
+      const nextId = session.loggedExercises[session.currentExerciseIndex || 0]?.id;
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_START", { reason: "session-fallback", nextActiveExerciseId: nextId });
+      setActiveExerciseId(nextId);
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_END", { nextActiveExerciseId: nextId });
+    }
   }, [activeExerciseId, resumeState, session]);
 
   useEffect(() => {
-    if (resumeState.kind !== "ready" || !session) return;
-    if (
-      session.currentExerciseIndex === resumeState.activeExerciseIndex
-      && (session.currentSetIndex ?? getResumeSetIndex(activeExerciseLog!, plannedSets)) === resumeState.currentSetIndex
-    ) return;
+    // Intentionally no DB synchronization from resumeState here.
+    // Current set/exercise persistence must come from explicit user actions only.
+  }, [resumeState]);
+
+  useEffect(() => {
+    if (!session?.id || !needsRuntimePlannedSetNormalization) return;
+    loggerDebug("NORMALIZE_WORKOUT_START", { effect: "normalize-off-program-planned-sets" });
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === session.id);
       if (!target) return draft;
-      target.currentExerciseIndex = resumeState.activeExerciseIndex;
-      target.currentSetIndex = resumeState.currentSetIndex;
-      target.updatedAt = nowIso();
+      let changed = false;
+      for (const log of target.loggedExercises) {
+        const hasProgramPlannedExercise = !!findPlannedExercise(draft, target, log);
+        const shouldUseRuntimePlan = !hasProgramPlannedExercise;
+        if (!shouldUseRuntimePlan) continue;
+        const exerciseDef = draft.exercises.find((ex) => ex.id === log.exerciseId);
+        const existingFirstWeight = log.offProgramPlannedSets?.[0]?.plannedWeight;
+        const fallbackWeight = typeof existingFirstWeight === "number"
+          ? existingFirstWeight
+          : getOffProgramStartingWeight({
+            db: draft,
+            user,
+            exercise: exerciseDef,
+            targetReps: 8,
+            targetRpe: 7,
+          });
+        const normalized = normalizeLoggerRuntimePlannedSets(log.offProgramPlannedSets, 1, 8, 7, fallbackWeight);
+        const needsNormalization = !log.offProgramPlannedSets?.length
+          || log.offProgramPlannedSets.some((set, index) => !set.id || set.setNumber !== index + 1);
+        if (needsNormalization) {
+          log.offProgramPlannedSets = normalized;
+          log.offProgram = true;
+          changed = true;
+        }
+      }
+      if (changed) target.updatedAt = nowIso();
       return draft;
     });
-  }, [activeExerciseLog, plannedSets, resumeState, session, updateDb]);
+    loggerDebug("NORMALIZE_WORKOUT_END", { effect: "normalize-off-program-planned-sets" });
+  }, [db, needsRuntimePlannedSetNormalization, session, updateDb, user]);
 
   useEffect(() => {
     if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") return;
@@ -2712,6 +3161,12 @@ function LiveLogger({
   }, [editingSetId, lineupItems]);
 
   useEffect(() => {
+    if (!focusedActualSetId) return;
+    const focusedSetStillExists = lineupItems.some((item) => item.actualSet?.id === focusedActualSetId);
+    if (!focusedSetStillExists) setFocusedActualSetId(null);
+  }, [focusedActualSetId, lineupItems]);
+
+  useEffect(() => {
     if (!pendingDeleteTarget) return;
     const targetStillExists = lineupItems.some((item) => {
       if (pendingDeleteTarget.actualSetId && item.actualSet?.id === pendingDeleteTarget.actualSetId) return true;
@@ -2735,7 +3190,7 @@ function LiveLogger({
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           {isCompletedToday && (
             <button
-              className="btn-primary col-span-2"
+              className="apollo-primary-btn col-span-2"
               onClick={() => {
                 setActiveSessionId(recoverableSession!.id);
                 setScreen("logger");
@@ -2823,7 +3278,7 @@ function LiveLogger({
         </div>
         {showAddExercisePicker && (
           <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
-            <section className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
+            <section className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="text-xl font-black">Add exercise</h3>
                 <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
@@ -2831,6 +3286,7 @@ function LiveLogger({
               <ExercisePicker
                 db={db}
                 user={user}
+                updateDb={updateDb}
                 onPick={(ex) => {
                   setShowAddExercisePicker(false);
                   setPendingOffProgramExercise(ex);
@@ -2845,7 +3301,7 @@ function LiveLogger({
               <h3 className="text-xl font-black">Add {pendingOffProgramExercise.name}</h3>
               <div className="space-y-2">
                 <button
-                  className="btn-primary w-full"
+                  className="apollo-primary-btn w-full"
                   onClick={() => {
                     const ex = pendingOffProgramExercise;
                     void updateDb((draft) => {
@@ -2952,20 +3408,33 @@ function LiveLogger({
     && (draftWeight > 0 || (liveExercise.category === "bodyweight" && draftReps > 0));
   const currentSetWouldCompleteExercise = currentPendingSetIsUncovered && uncoveredPlannedSets.length <= 1;
   const currentSetWouldCompleteWorkout = currentSetWouldCompleteExercise && !hasMoreExercises;
-  const primaryAction = currentSetWouldCompleteWorkout
-    ? "finish-workout"
-    : currentSetWouldCompleteExercise
-      ? "finish-exercise"
-      : "next-set";
-  const primaryActionLabel = isEditingLoggedSet
+  const activeLineupIndex = editingLineupItem
+    ? lineupItems.findIndex((item) => item.key === editingLineupItem.key)
+    : selectedActualLineupItem
+      ? lineupItems.findIndex((item) => item.key === selectedActualLineupItem.key)
+      : selectedLoggingIndex !== null
+      ? lineupItems.findIndex((item) => item.plannedIndex === selectedLoggingIndex)
+      : lineupItems.findIndex((item) => item.plannedIndex === effectiveSetIndex);
+  const clampedActiveLineupIndex = activeLineupIndex >= 0
+    ? activeLineupIndex
+    : (lineupItems.length ? Math.min(effectiveSetIndex, lineupItems.length - 1) : -1);
+  const activeLineupItem = clampedActiveLineupIndex >= 0 ? lineupItems[clampedActiveLineupIndex] : undefined;
+  const hasNextSetInExercise = clampedActiveLineupIndex >= 0 && clampedActiveLineupIndex < lineupItems.length - 1;
+  const dirtySetIsValid = draftDirty && hasDraftValidValues;
+  const derivedPrimaryAction: "save-changes" | "save-set" | "next-set" | "finish-exercise" = isEditingLoggedSet
+    ? "save-changes"
+    : dirtySetIsValid
+      ? "save-set"
+      : hasNextSetInExercise
+        ? "next-set"
+        : "finish-exercise";
+  const primaryActionLabel = derivedPrimaryAction === "save-changes"
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
-    : primaryAction === "finish-workout" ? "Finish Workout"
-    : primaryAction === "finish-exercise" ? "Finish Exercise"
-    // If current pending set has valid values, it must be saved before finishing — show Save Set
-    : hasDraftValidValues ? "Save Set"
-    // Out-of-order: user jumped to a pending set that isn't the natural next set — call it "Save Set"
-    : selectedLoggingIndex !== null && selectedLoggingIndex !== currentSetIndex ? "Save Set"
-    : "Next Set";
+    : derivedPrimaryAction === "save-set"
+      ? "Save Set"
+      : derivedPrimaryAction === "next-set"
+        ? "Next Set"
+        : "Finish Exercise";
   const plannedLineupItems = lineupItems.filter((item) => !item.isExtra);
   const completedPlannedCount = plannedLineupItems.filter((item) => !!item.actualSet).length;
   const totalPlannedCount = plannedLineupItems.length;
@@ -3065,7 +3534,8 @@ function LiveLogger({
     };
   }
 
-  function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-exercise" | "finish-workout" = "stay") {
+  function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-set" | "next-exercise" | "finish-workout" = "stay") {
+    loggerDebug("SAVE_SET_START", { rating, afterAction, isEditingLoggedSet });
     const actualWeight = Number(setDraft.actualWeight) || 0;
     const actualReps = Number(setDraft.actualReps) || 0;
     // Zero weight on a weight-based exercise is not a completed working set — skip it instead.
@@ -3139,7 +3609,10 @@ function LiveLogger({
         return draft;
       });
       setEditingSetId(null);
+      setFocusedActualSetId(updatedSet.id);
+      setSelectedLoggingIndex(null);
       setDraftDirty(false);
+      loggerDebug("SAVE_SET_END", { mode: "edit-existing", updatedSetId: updatedSet.id });
       // After saving an edit, re-anchor to the first planned set not yet covered.
       // loggedPlannedSetIds reflects pre-save state; editing an existing set doesn't change coverage.
       const firstUncoveredIdx = plannedSets.findIndex((ps) => !loggedPlannedSetIds.has(ps.id));
@@ -3231,14 +3704,22 @@ function LiveLogger({
       }
       return draft;
     });
-    setSelectedLoggingIndex(null);
+    const optimisticNextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, loggedSet] }, plannedSets);
+    setSelectedLoggingIndex(afterAction === "stay" ? effectiveSetIndex : afterAction === "next-set" ? optimisticNextUncoveredIndex : null);
     setEditingSetId(null);
+    setFocusedActualSetId(afterAction === "stay" ? loggedSet.id : null);
     setDraftDirty(false);
     setRestRemaining(planned?.restSeconds || user.settings.defaultRestSeconds);
     // Coverage-based: pre-compute where getResumeSetIndex will land after this set is pushed,
     // so the draft key matches the effect's expected key and avoids a stale intermediate render.
-    const nextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, loggedSet] }, plannedSets);
+    const nextUncoveredIndex = optimisticNextUncoveredIndex;
     setSetDraft(emptySetDraft(plannedSets[nextUncoveredIndex] ?? null, loggedSet, `${liveExerciseLog.id}:${nextUncoveredIndex}`));
+    if (afterAction === "next-set") {
+      setTimeout(() => {
+        const nextItem = lineupItems.find((item) => item.plannedIndex === nextUncoveredIndex);
+        if (nextItem) focusLineupItem(nextItem);
+      }, 0);
+    }
     if (afterAction === "next-exercise") {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
       const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
@@ -3275,6 +3756,7 @@ function LiveLogger({
       setCompletionSummary(summary);
       setShowCompletionSummary(true);
     }
+    loggerDebug("SAVE_SET_END", { mode: "create-new", afterAction });
   }
 
   function skipSet() {
@@ -3339,6 +3821,41 @@ function LiveLogger({
       setCompletionSummary(summary);
       setShowCompletionSummary(true);
     }
+  }
+
+  function selectExactLineupItemForEditing(lineupItem?: (typeof lineupItems)[number]) {
+    if (!lineupItem) return;
+    setOpenSwipeSetId(undefined);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
+    setPendingDeleteTarget(null);
+    if (lineupItem.actualSet?.id) {
+      setFocusedActualSetId(lineupItem.actualSet.id);
+      setSelectedLoggingIndex(null);
+      setEditingSetId(lineupItem.actualSet.id);
+      return;
+    }
+    if (lineupItem.plannedIndex !== undefined) {
+      setFocusedActualSetId(null);
+      setEditingSetId(null);
+      setSelectedLoggingIndex(lineupItem.plannedIndex);
+    }
+  }
+
+  function focusLineupItem(lineupItem?: (typeof lineupItems)[number]) {
+    if (!lineupItem) return;
+    setOpenSwipeSetId(undefined);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
+    setPendingDeleteTarget(null);
+    setEditingSetId(null);
+    if (lineupItem.actualSet?.id) {
+      setFocusedActualSetId(lineupItem.actualSet.id);
+      setSelectedLoggingIndex(null);
+      return;
+    }
+    setFocusedActualSetId(null);
+    if (lineupItem.plannedIndex !== undefined) setSelectedLoggingIndex(lineupItem.plannedIndex);
   }
 
   // Skips a specific planned set by index — used by swipe-to-skip on set rows.
@@ -3413,31 +3930,77 @@ function LiveLogger({
     }
   }
 
-  function addSet() {
-    const base = currentPlannedSet || plannedSets.at(-1);
-    const extra: PlannedSet = {
-      ...(base || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 }),
-      id: createId("pset"),
-      kind: "working",
-      setNumber: (plannedSets.length || currentSetIndex) + 1,
-      percentageOfTopSet: base?.percentageOfTopSet,
-      notes: "Added set."
-    };
+  function addSet(targetLogId?: string) {
+    loggerDebug("ADD_SET_START", { targetLogId });
+    const targetExerciseLogId = targetLogId || liveExerciseLog.id;
+    const isAddingToActiveExercise = targetExerciseLogId === liveExerciseLog.id;
+    const nextSetIndex = isAddingToActiveExercise ? plannedSets.length : undefined;
     void updateDb((draft) => {
       const targetProgram = draft.programs.find((program) => program.id === liveSession.programId);
-      const targetPlanned = targetProgram?.blocks.flatMap((block) => block.weeks).flatMap((week) => week.workouts).flatMap((day) => day.exercises).find((item) => item.id === liveExerciseLog.plannedExerciseId);
-      if (targetPlanned) targetPlanned.plannedSets.push(extra);
       const target = draft.sessions.find((item) => item.id === liveSession.id);
+      const log = target?.loggedExercises.find((item) => item.id === targetExerciseLogId);
+      const targetPlanned = targetProgram?.blocks
+        .flatMap((block) => block.weeks)
+        .flatMap((week) => week.workouts)
+        .flatMap((day) => day.exercises)
+        .find((item) => item.id === log?.plannedExerciseId);
+      if (targetPlanned) {
+        const base = targetPlanned.plannedSets.at(-1) || targetPlanned.plannedSets[0] || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 };
+        const extra: PlannedSet = {
+          ...base,
+          id: createId("pset"),
+          kind: "working",
+          setNumber: targetPlanned.plannedSets.length + 1,
+          percentageOfTopSet: base.percentageOfTopSet,
+          notes: "Added set."
+        };
+        targetPlanned.plannedSets.push(extra);
+      }
+      if (log && !targetPlanned) {
+        const exerciseDef = draft.exercises.find((ex) => ex.id === log.exerciseId);
+        const baseSet = normalizeLoggerRuntimePlannedSets(log.offProgramPlannedSets, 1, 8, 7)[0];
+        const runtimeExtra: PlannedSet = {
+          ...baseSet,
+          id: createId("pset"),
+          setNumber: Math.max(1, (log.offProgramPlannedSets?.length || 0) + 1),
+          notes: "Added set.",
+          plannedWeight: baseSet.plannedWeight ?? getOffProgramStartingWeight({
+            db: draft,
+            user,
+            exercise: exerciseDef,
+            targetReps: baseSet.targetReps || 8,
+            targetRpe: baseSet.targetRpe || 7,
+          }),
+        };
+        log.offProgramPlannedSets = normalizeLoggerRuntimePlannedSets([...(log.offProgramPlannedSets || []), runtimeExtra], 1, 8, 7);
+        log.offProgram = true;
+      }
       if (target) {
         if (editingCompletedWorkout && target.status === "completed") {
           target.status = "in-progress";
         } else if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) {
           target.status = "in-progress";
         }
+        if (log) {
+          const logIndex = target.loggedExercises.findIndex((item) => item.id === log.id);
+          if (logIndex >= 0) {
+            target.currentExerciseIndex = logIndex;
+            const updatedPlanned = findPlannedExercise(draft, target, log);
+            const updatedPlannedSets = getLoggedExercisePlannedSets(log, updatedPlanned);
+            target.currentSetIndex = Math.max(0, updatedPlannedSets.length - 1);
+          }
+        }
         target.updatedAt = nowIso();
       }
       return draft;
     });
+    setDraftDirty(false);
+    setEditingSetId(null);
+    setFocusedActualSetId(null);
+    if (isAddingToActiveExercise && nextSetIndex !== undefined) {
+      setSelectedLoggingIndex(nextSetIndex);
+    }
+    loggerDebug("ADD_SET_END", { targetExerciseLogId, nextSetIndex });
   }
 
 
@@ -3627,6 +4190,7 @@ function LiveLogger({
   }
 
   function finishExercise() {
+    loggerDebug("FINISH_EXERCISE_START");
     // If the user is mid-edit of a logged/skipped set with unsaved changes, save first.
     if (isEditingLoggedSet && draftDirty) {
       logSet(setDraft.setRating, "stay");
@@ -3649,9 +4213,27 @@ function LiveLogger({
       logSet(setDraft.setRating, afterSave);
       return;
     }
+    // If the user selected a different pending set via row action, ensure we still save
+    // that exact selected pending set before finishing/advancing.
+    if (draftDirty && !isEditingLoggedSet && selectedLoggingIndex !== null) {
+      const selectedPlanned = plannedSets[selectedLoggingIndex];
+      const selectedIsUncovered = !!selectedPlanned && !loggedPlannedSetIds.has(selectedPlanned.id);
+      if (selectedIsUncovered) {
+        const selectedHasValidValues = currentDraftWeight > 0 || (!liveExercise.bestTrackedBy.includes("time") && currentDraftReps > 0);
+        if (selectedHasValidValues) {
+          const remainingAfterSave = uncoveredPlannedSets.filter((ps) => ps.id !== selectedPlanned.id);
+          const afterSave = remainingAfterSave.length === 0
+            ? (hasMoreExercises ? "next-exercise" : "finish-workout")
+            : "stay";
+          logSet(setDraft.setRating, afterSave);
+          return;
+        }
+      }
+    }
     // If any planned sets are still uncovered (no logged set matched), confirm skip.
     if (!allPlannedSetsCovered) {
       setShowFinishConfirm(true);
+      loggerDebug("FINISH_EXERCISE_END", { result: "show-skip-confirm" });
       return;
     }
     setSelectedLoggingIndex(null);
@@ -3662,6 +4244,7 @@ function LiveLogger({
     } else {
       navigateToNextExercise();
     }
+    loggerDebug("FINISH_EXERCISE_END", { result: hasMoreExercises ? "next-exercise" : "finish-workout" });
   }
 
   function abandonWorkout() {
@@ -3733,6 +4316,13 @@ function LiveLogger({
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       if (!target) return draft;
       const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise, targetReps: 8, targetRpe: 7 });
+      const runtimePlannedSets = normalizeLoggerRuntimePlannedSets(
+        buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
+        3,
+        8,
+        7,
+        plannedWeight
+      );
       target.loggedExercises.push({
         id: newLogId,
         exerciseId: exercise.id,
@@ -3741,7 +4331,7 @@ function LiveLogger({
         sets: [],
         weakPointTags: [],
         offProgram: true,
-        offProgramPlannedSets: buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
+        offProgramPlannedSets: runtimePlannedSets,
       });
       if (editingCompletedWorkout && target.status === "completed") {
         target.status = "in-progress";
@@ -3797,7 +4387,17 @@ function LiveLogger({
               <button
                 className="btn-danger"
                 onClick={() => {
+                  loggerDebug("DELETE_SET_START", { pendingDeleteTarget });
                   const targetDelete = pendingDeleteTarget;
+                  const deletingLineupIndex = targetDelete
+                    ? lineupItems.findIndex((item) => {
+                      if (targetDelete.actualSetId && item.actualSet?.id === targetDelete.actualSetId) return true;
+                      if (targetDelete.plannedSetId && item.plannedSet?.id === targetDelete.plannedSetId) return true;
+                      return item.key === targetDelete.lineupKey;
+                    })
+                    : -1;
+                  const previousLineupItem = deletingLineupIndex > 0 ? lineupItems[deletingLineupIndex - 1] : undefined;
+                  const nextLineupItem = deletingLineupIndex >= 0 ? lineupItems[deletingLineupIndex + 1] : undefined;
                   setPendingDeleteTarget(null);
                   void updateDb((draft) => {
                     const target = draft.sessions.find((item) => item.id === liveSession.id);
@@ -3807,7 +4407,7 @@ function LiveLogger({
                         const deletedIndex = log.sets.findIndex((set) => set.id === targetDelete.actualSetId);
                         const deletedSet = deletedIndex >= 0 ? log.sets[deletedIndex] : undefined;
                         if (deletedIndex >= 0) log.sets.splice(deletedIndex, 1);
-                        if (deletedSet?.plannedSetId) {
+                        if (deletedSet?.plannedSetId && deletedSet.added) {
                           log.deletedPlannedSetIds = Array.from(new Set([...(log.deletedPlannedSetIds || []), deletedSet.plannedSetId]));
                         }
                       } else if (targetDelete.plannedSetId) {
@@ -3832,7 +4432,19 @@ function LiveLogger({
                   swipeGestureRef.current = null;
                   setSwipeDrag(null);
                   if (targetDelete?.actualSetId && editingSetId === targetDelete.actualSetId) setEditingSetId(null);
-                  setSelectedLoggingIndex(null);
+                  if (targetDelete?.actualSetId && focusedActualSetId === targetDelete.actualSetId) {
+                    setFocusedActualSetId(null);
+                  }
+                  if (previousLineupItem) {
+                    focusLineupItem(previousLineupItem);
+                  } else if (nextLineupItem) {
+                    focusLineupItem(nextLineupItem);
+                  } else {
+                    setSelectedLoggingIndex(null);
+                    setFocusedActualSetId(null);
+                    setEditingSetId(null);
+                  }
+                  loggerDebug("DELETE_SET_END", { deletedActualSetId: targetDelete?.actualSetId, deletedPlannedSetId: targetDelete?.plannedSetId });
                 }}
               >
                 Delete Set
@@ -3853,10 +4465,14 @@ function LiveLogger({
                 label: "Add Set",
                 icon: <Plus className="h-4 w-4" />,
                 onClick: () => {
-                  if (menuLog && menuLog.id !== activeExerciseLog.id) {
-                    setActiveExerciseId(menuLog.id);
-                    setSelectedLoggingIndex(null);
-                    setEditingSetId(null);
+                  if (menuLog) {
+                    if (menuLog.id !== activeExerciseLog.id) {
+                      setActiveExerciseId(menuLog.id);
+                      setSelectedLoggingIndex(null);
+                      setEditingSetId(null);
+                    }
+                    addSet(menuLog.id);
+                    return;
                   }
                   addSet();
                 },
@@ -3878,7 +4494,11 @@ function LiveLogger({
       })()}
       {setContextMenuId && (() => {
         const menuActual = liveExerciseLog.sets.find((s) => s.id === setContextMenuId);
-        const menuLineup = lineupItems.find((item) => item.actualSet?.id === setContextMenuId || (item.actualSet === undefined && item.plannedSet?.id === setContextMenuId));
+        const menuLineup = lineupItems.find((item) =>
+          item.actualSet?.id === setContextMenuId
+          || item.plannedSet?.id === setContextMenuId
+          || item.key === setContextMenuId
+        );
         const canSkip = !isPastLastPlannedSet && !isEditingLoggedSet;
         return (
           <ActionSheet
@@ -3889,13 +4509,7 @@ function LiveLogger({
                 label: menuActual ? "Edit Set" : "Jump to Set",
                 icon: <Pencil className="h-4 w-4" />,
                 onClick: () => {
-                  if (menuActual) {
-                    setSelectedLoggingIndex(null);
-                    setEditingSetId(menuActual.id);
-                  } else if (menuLineup?.plannedIndex !== undefined) {
-                    setEditingSetId(null);
-                    setSelectedLoggingIndex(menuLineup.plannedIndex);
-                  }
+                  selectExactLineupItemForEditing(menuLineup);
                 },
               },
               {
@@ -3903,7 +4517,13 @@ function LiveLogger({
                 icon: <X className="h-4 w-4" />,
                 destructive: true,
                 disabled: !canSkip,
-                onClick: skipSet,
+                onClick: () => {
+                  if (menuLineup?.plannedIndex !== undefined) {
+                    skipAtPlannedIndex(menuLineup.plannedIndex);
+                    return;
+                  }
+                  skipSet();
+                },
               },
               {
                 label: "Delete Set",
@@ -3947,7 +4567,7 @@ function LiveLogger({
             ))}
             <div className="space-y-2">
               <button
-                className="btn-primary w-full"
+                className="apollo-primary-btn w-full"
                 onClick={() => {
                   // Real finalization: compute scores, create perf logs, advance block.
                   void updateDb((draft) => {
@@ -4024,24 +4644,19 @@ function LiveLogger({
         </div>
       </div>
       {editingCompletedWorkout && (
-        <section className="rounded-lg border border-[#0a84ff]/30 bg-[#0a84ff]/[0.08] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-semibold text-[#0a84ff]">Editing completed workout</p>
-              <p className="mt-1 text-sm text-iron-200">Edit sets, add exercises, then save the workout again.</p>
-            </div>
-            <div className="flex w-full flex-wrap gap-2 sm:w-auto">
-              {navigation.completedReviewState && (
-                <button className="btn-secondary w-full sm:w-auto" onClick={backToSummary}>
-                  Back to Summary
-                </button>
-              )}
-              <button className="btn-secondary w-full sm:w-auto" onClick={backToToday}>
-                Back to Today
-              </button>
-            </div>
+        <div className="flex items-center gap-3 border-l-2 border-[#0a84ff]/60 pl-3 py-1">
+          <div className="min-w-0 flex-1">
+            <span className="text-xs font-semibold text-[#0a84ff]">Editing completed workout</span>
+            <span className="mx-1.5 text-iron-700">·</span>
+            <span className="text-xs text-iron-500">Edit sets or add exercises, then save.</span>
           </div>
-        </section>
+          <div className="flex shrink-0 items-center gap-1">
+            {navigation.completedReviewState && (
+              <button className="btn-compact" onClick={backToSummary}>Summary</button>
+            )}
+            <button className="btn-compact" onClick={backToToday}>Back to Today</button>
+          </div>
+        </div>
       )}
       {!session.readiness && <ReadinessCard onSubmit={addReadiness} user={user} />}
 
@@ -4133,7 +4748,9 @@ function LiveLogger({
                   const set = lineupItem.plannedSet;
                   const actual = lineupItem.actualSet;
                   const isEditingThisRow = !!actual && editingSetId === actual.id;
-                  const isSelected = isEditingThisRow || (!isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
+                  const isSelected = isEditingThisRow
+                    || (!!actual && focusedActualSetId === actual.id)
+                    || (!selectedActualLineupItem && !isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
                   const isLoggedSet = !!actual;
                   const statusLabel = isEditingThisRow ? "Editing" : actual?.skipped ? "Skipped" : actual ? "Done" : isSelected ? "Current" : "Pending";
                   // Pending rows use planned set id so they can also be swiped.
@@ -4246,16 +4863,7 @@ function LiveLogger({
                             setOpenSwipeSetId(undefined);
                             return;
                           }
-                          setOpenSwipeSetId(undefined);
-                          if (actual) {
-                            setSelectedLoggingIndex(null);
-                            setEditingSetId(actual.id);
-                            return;
-                          }
-                          if (lineupItem.plannedIndex !== undefined) {
-                            setEditingSetId(null);
-                            setSelectedLoggingIndex(lineupItem.plannedIndex);
-                          }
+                          selectExactLineupItemForEditing(lineupItem);
                         }}
                         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); }}
                         onTouchStart={(event) => {
@@ -4470,33 +5078,27 @@ function LiveLogger({
                       logSet(setDraft.setRating, "stay");
                       return;
                     }
-                    if (isPastLastPlannedSet) {
-                      if (hasMoreExercises) finishExercise();
-                      else finishWorkout();
+                    if (derivedPrimaryAction === "save-set") {
+                      logSet(setDraft.setRating, "stay");
                       return;
                     }
-                    if (primaryAction === "finish-workout") {
-                      if (hasDraftValidValues) {
-                        logSet(setDraft.setRating, "finish-workout");
-                      } else {
-                        finishExercise();
+                    if (derivedPrimaryAction === "next-set") {
+                      loggerDebug("NEXT_SET_START", { fromLineupIndex: clampedActiveLineupIndex });
+                      if (hasDraftValidValues && currentPendingSetIsUncovered && !isPastLastPlannedSet) {
+                        logSet(setDraft.setRating, "next-set");
+                        loggerDebug("NEXT_SET_END", { mode: "commit-and-advance" });
+                        return;
                       }
+                      focusLineupItem(activeLineupItem ? lineupItems[clampedActiveLineupIndex + 1] : undefined);
+                      loggerDebug("NEXT_SET_END", { mode: "advance-only", toLineupIndex: clampedActiveLineupIndex + 1 });
                       return;
                     }
-                    if (primaryAction === "finish-exercise") {
-                      if (hasDraftValidValues) {
-                        logSet(setDraft.setRating, "next-exercise");
-                      } else {
-                        finishExercise();
-                      }
-                      return;
-                    }
-                    logSet(setDraft.setRating, "stay");
+                    finishExercise();
                   }}
                 >
-                  <Check className="h-4 w-4" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : finishWorkoutLabel) : primaryActionLabel}
+                  <Check className="h-4 w-4" /> {primaryActionLabel}
                 </button>
-                <button className="tap-highlight shrink-0 inline-flex min-h-10 items-center justify-center gap-2 rounded border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]" onClick={addSet}>+ Set</button>
+                <button className="tap-highlight shrink-0 inline-flex min-h-10 items-center justify-center gap-2 rounded border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]" onClick={() => addSet()}>+ Set</button>
               </div>
             </div>
               </div>
@@ -4516,7 +5118,7 @@ function LiveLogger({
           </div>
           {showAddExercisePicker && (
             <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
-              <section className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
+              <section className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <h3 className="text-xl font-black">Add exercise</h3>
                   <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
@@ -4524,6 +5126,7 @@ function LiveLogger({
                 <ExercisePicker
                   db={db}
                   user={user}
+                  updateDb={updateDb}
                   onPick={(exercise) => {
                     setShowAddExercisePicker(false);
                     setPendingOffProgramExercise(exercise);
@@ -4574,6 +5177,18 @@ function BuilderScreen({
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   setScreen: (screen: Screen) => void;
 }) {
+  type TemplateLaunchMeta = {
+    id: string;
+    name: string;
+    splitPreview: string;
+    daysPerWeek: number;
+    goalFocus: string;
+    suitability: string;
+    goodFor: string;
+    includesSBD: boolean;
+    estimatedSessions: number;
+  };
+
   const splitTemplates = db.splitTemplates.filter((split) => !split.ownerUserId || split.ownerUserId === user.id);
 
   const defaultSplitId = splitTemplates[0]?.id || db.splitTemplates[0]?.id || "";
@@ -4597,6 +5212,10 @@ function BuilderScreen({
   const [generationState, setGenerationState] = useState<{ status: "idle" | "loading" | "success" | "error"; message?: string }>({ status: "idle" });
   const [buildMode, setBuildMode] = useState<ProgramBuildMode>(savedDraft?.buildMode || "manual");
   const [showSbdAdvanced, setShowSbdAdvanced] = useState(false);
+  const [showAdvancedRules, setShowAdvancedRules] = useState(false);
+  const [showBlockTypeMenu, setShowBlockTypeMenu] = useState(false);
+  const [showScheduleDetails, setShowScheduleDetails] = useState(false);
+  const [showAdvancedDefaults, setShowAdvancedDefaults] = useState(false);
   const [request, setRequest] = useState<ProgramRequest>(savedDraft ? {
     ...defaultRequest,
     name: savedDraft.requestName,
@@ -4644,12 +5263,134 @@ function BuilderScreen({
     const splitDays = selectedSplit?.days.length ? selectedSplit.days : [];
     return splitDays.length ? splitDays : generateSplitFromText({ daysPerWeek: request.daysPerWeek, goal: request.goal, text: request.notes });
   }, [request.daysPerWeek, request.goal, request.notes, selectedSplit]);
+  const [blocksView, setBlocksView] = useState<"home" | "builder">("home");
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const draftProgram = db.programs.find((program) => program.userId === user.id && program.status === "draft");
   const workingProgram = draftProgram || activeProgram;
   const schedulePreview = [0, 1].map((weekIndex) => buildSplitSchedule(generatedSplit, request.daysPerWeek, weekIndex, request.splitLoopMode));
+  const archivedPrograms = db.programs.filter((p) => p.userId === user.id && p.status !== "active" && p.status !== "draft");
+  const archivedCount = archivedPrograms.length;
 
-  async function createProgram(mode: ProgramBuildMode) {
+  const sbdExerciseIds = new Set(["ex_squat_comp", "ex_bench_comp", "ex_deadlift_comp", "ex_paused_squat", "ex_box_squat", "ex_paused_bench", "ex_deficit_deadlift"]);
+
+  function hasSbdName(name?: string): boolean {
+    if (!name) return false;
+    const lowered = name.toLowerCase();
+    return lowered.includes("squat") || lowered.includes("bench") || lowered.includes("deadlift");
+  }
+
+  function getTemplatePreview(split: SplitTemplate): string {
+    if (split.days?.length) return split.days.map((day) => day.name).join(" · ");
+    return `${split.daysPerWeek} day split`;
+  }
+
+  function getTemplateBestFor(split: SplitTemplate): string | undefined {
+    const source = split.description?.trim() || split.notes?.trim();
+    if (!source) return undefined;
+    const sentence = source.split(/[.!?]/)[0]?.trim();
+    return sentence || undefined;
+  }
+
+  function deriveTemplateMeta(split: SplitTemplate): TemplateLaunchMeta {
+    const preview = getTemplatePreview(split);
+    const includesSBD = split.days.some((day) => hasSbdName(day.mainLiftFocus) || hasSbdName(day.name) || day.movementPatterns.some((pattern) => pattern === "squat" || pattern === "hinge"))
+      || hasSbdName(split.name)
+      || split.goal === "powerlifting"
+      || split.goal === "powerbuilding";
+
+    const known: Record<string, Pick<TemplateLaunchMeta, "suitability" | "goodFor">> = {
+      split_bodybuilding_ppl_3: {
+        suitability: "beginner/intermediate friendly",
+        goodFor: "simple structure, lower time commitment",
+      },
+      split_bodybuilding_ppl_6: {
+        suitability: "intermediate/advanced",
+        goodFor: "higher frequency and more weekly volume",
+      },
+      split_upper_lower_4: {
+        suitability: "beginner/intermediate friendly",
+        goodFor: "balanced recovery and predictable scheduling",
+      },
+      split_powerbuilding_ul_4: {
+        suitability: "intermediate friendly",
+        goodFor: "SBD exposure with bodybuilding accessories",
+      },
+      split_full_body_3: {
+        suitability: "beginner/intermediate friendly",
+        goodFor: "simple full-body progression and busy schedules",
+      },
+    };
+
+    const fallbackSuitability =
+      split.daysPerWeek >= 6 ? "intermediate/advanced" :
+      split.daysPerWeek <= 3 ? "beginner/intermediate friendly" :
+      "intermediate friendly";
+
+    const fallbackGoodFor = getTemplateBestFor(split)
+      || (split.goal === "powerbuilding"
+        ? "balanced strength and hypertrophy work"
+        : split.goal === "bodybuilding"
+          ? "hypertrophy progress with clear weekly structure"
+          : "simple full-body progression and busy schedules");
+
+    return {
+      id: split.id,
+      name: split.name,
+      splitPreview: preview,
+      daysPerWeek: split.daysPerWeek,
+      goalFocus: split.goal === "powerbuilding" ? "strength + hypertrophy" : split.goal,
+      suitability: known[split.id]?.suitability ?? fallbackSuitability,
+      goodFor: known[split.id]?.goodFor ?? fallbackGoodFor,
+      includesSBD,
+      estimatedSessions: split.daysPerWeek * request.blockLengthWeeks,
+    };
+  }
+
+  const templateLaunchList = useMemo(
+    () => splitTemplates.map(deriveTemplateMeta),
+    [splitTemplates, request.blockLengthWeeks]
+  );
+
+  const hasSbdExposure = useMemo(() => {
+    const fromActive = !!activeProgram?.blocks.some((block) =>
+      block.weeks.some((week) => week.workouts.some((day) =>
+        day.exercises.some((planned) => sbdExerciseIds.has(planned.exerciseId))
+      ))
+    );
+    if (fromActive) return true;
+    const fromHistory = db.sessions
+      .filter((session) => session.userId === user.id && session.status === "completed")
+      .some((session) => session.loggedExercises.some((logged) => sbdExerciseIds.has(logged.exerciseId)));
+    return fromHistory;
+  }, [activeProgram, db.sessions, user.id]);
+
+  const recommendedTemplateMeta = useMemo(() => {
+    const powerbuilding4 = templateLaunchList.find((template) => template.id === "split_powerbuilding_ul_4")
+      || templateLaunchList.find((template) => template.name.toLowerCase().includes("powerbuilding") && template.daysPerWeek === 4);
+    const fallback = templateLaunchList.find((template) => template.id === "split_bodybuilding_ppl_3")
+      || templateLaunchList.find((template) => template.id === "split_upper_lower_4")
+      || templateLaunchList[0];
+    return hasSbdExposure && powerbuilding4 ? powerbuilding4 : fallback;
+  }, [hasSbdExposure, templateLaunchList]);
+
+  function duplicate(program: Program) {
+    const clone = cloneProgramAsActive(program);
+    void updateDb((draft) => {
+      draft.programs.forEach((item) => {
+        if (item.userId === user.id && item.status === "active") item.status = "archived";
+      });
+      draft.programs.unshift(clone);
+      const target = draft.users.find((item) => item.id === user.id);
+      if (target) {
+        target.activeProgramId = clone.id;
+        target.activeBlockId = clone.blocks[0]?.id;
+      }
+      draft.programGaps = analyzeProgramGaps(clone, draft);
+      return draft;
+    });
+  }
+
+  async function createProgram(mode: ProgramBuildMode, options?: { replaceExistingDraft?: boolean; splitIdOverride?: string; successMessage?: string }) {
     if (request.daysPerWeek < 1 || request.daysPerWeek > 7) {
       setGenerationState({ status: "error", message: "Choose between 1 and 7 training days per week." });
       return;
@@ -4657,20 +5398,32 @@ function BuilderScreen({
     setBuildMode(mode);
     setGenerationState({ status: "loading", message: mode === "manual" ? "Creating a manual block draft..." : "Suggesting a complete program draft..." });
     try {
-      const program = generateProgram(user, db, { ...request, buildMode: mode, splitTemplateId: selectedSplitId, splitDays: generatedSplit });
+      const resolvedSplitId = options?.splitIdOverride ?? selectedSplitId;
+      const resolvedSplit = db.splitTemplates.find((split) => split.id === resolvedSplitId);
+      const splitDays = resolvedSplit?.days.length ? resolvedSplit.days : generatedSplit;
+      const resolvedProgramName = request.name.trim() || `${resolvedSplit?.name || "Custom"} Block`;
+      const draftRequest = {
+        ...request,
+        name: resolvedProgramName,
+        buildMode: mode,
+        splitTemplateId: resolvedSplitId,
+        daysPerWeek: resolvedSplit?.daysPerWeek ?? request.daysPerWeek,
+        splitDays
+      };
+      const program = generateProgram(user, db, draftRequest);
       program.blocks = program.blocks.map((block) => ({
         ...block,
-        splitTemplateId: selectedSplitId,
-        blockType: request.blockType,
-        goal: request.goal,
-        numberOfWeeks: request.blockLengthWeeks,
+        splitTemplateId: resolvedSplitId || undefined,
+        blockType: draftRequest.blockType,
+        goal: draftRequest.goal,
+        numberOfWeeks: draftRequest.blockLengthWeeks,
         status: "draft",
-        loopMode: request.splitLoopMode,
+        loopMode: draftRequest.splitLoopMode,
         weeks: block.weeks.map((week) => ({
           ...week,
           workouts: week.workouts.map((workout, dayIndex) => {
-            const splitOffset = request.splitLoopMode === "weekly-reset" ? dayIndex : ((week.weekNumber - 1) * request.daysPerWeek) + dayIndex;
-            const splitDay = generatedSplit.find((item) => workout.name.toLowerCase().includes(item.name.toLowerCase())) || generatedSplit[splitOffset % generatedSplit.length];
+            const splitOffset = draftRequest.splitLoopMode === "weekly-reset" ? dayIndex : ((week.weekNumber - 1) * draftRequest.daysPerWeek) + dayIndex;
+            const splitDay = splitDays.find((item) => workout.name.toLowerCase().includes(item.name.toLowerCase())) || splitDays[splitOffset % splitDays.length];
             return {
               ...workout,
               blockId: block.id,
@@ -4685,15 +5438,64 @@ function BuilderScreen({
         }))
       }));
       await updateDb((draft) => {
-        draft.programs = draft.programs.filter((item) => !(item.userId === user.id && item.status === "draft"));
+        if (options?.replaceExistingDraft !== false) {
+          draft.programs = draft.programs.filter((item) => !(item.userId === user.id && item.status === "draft"));
+        }
         draft.programs.unshift(program);
         draft.programGaps = analyzeProgramGaps(program, draft);
         return draft;
       });
-      setGenerationState({ status: "success", message: mode === "manual" ? "Manual draft created. Add exercises in the weekly overview, then activate it when ready." : "Suggested draft created. Review and edit it before activating." });
+      setGenerationState({ status: "success", message: options?.successMessage || (mode === "manual" ? "Draft saved. Fill requirement slots in the day editor, then deploy when ready." : "Suggested draft created. Review and edit it before activating.") });
     } catch (error) {
       setGenerationState({ status: "error", message: error instanceof Error ? error.message : "Program generation failed." });
     }
+  }
+
+  function syncDraftProgramBasics() {
+    if (!draftProgram) return;
+    const resolvedName = request.name.trim() || `${selectedSplit?.name || "Custom"} Block`;
+    void updateDb((draft) => {
+      const targetProgram = draft.programs.find((program) => program.id === draftProgram.id);
+      if (!targetProgram) return draft;
+      targetProgram.name = resolvedName;
+      targetProgram.goal = request.goal;
+      targetProgram.splitTemplateId = selectedSplitId || undefined;
+      targetProgram.updatedAt = nowIso();
+      targetProgram.changeLog ||= [];
+      targetProgram.changeLog.unshift({ id: createId("change"), at: nowIso(), label: "Updated draft basics", detail: "Updated block name, goal, and template selection." });
+      const targetBlock = targetProgram.blocks[0];
+      if (targetBlock) {
+        targetBlock.goal = request.goal;
+        targetBlock.splitTemplateId = selectedSplitId || undefined;
+        targetBlock.trainingDaysPerWeek = request.daysPerWeek;
+        targetBlock.lengthWeeks = request.blockLengthWeeks;
+      }
+      draft.programGaps = analyzeProgramGaps(targetProgram, draft);
+      return draft;
+    });
+  }
+
+  async function startNewBlock(splitId?: string, blank = false) {
+    const hasExistingDraft = !!draftProgram;
+    if (hasExistingDraft && !confirm("Start a new block draft? Your current draft will be replaced unless you resume it first.")) return;
+    const chosenSplitId = blank ? "" : (splitId ?? selectedSplitId);
+    const chosenSplit = db.splitTemplates.find((item) => item.id === chosenSplitId);
+    setSelectedSplitId(chosenSplitId || "");
+    setRequest((current) => ({
+      ...defaultRequest,
+      goal: chosenSplit?.goal ?? current.goal,
+      splitTemplateId: chosenSplitId || undefined,
+      daysPerWeek: chosenSplit?.daysPerWeek ?? defaultRequest.daysPerWeek,
+      name: "",
+    }));
+    setBlocksView("builder");
+    await createProgram("manual", {
+      replaceExistingDraft: true,
+      splitIdOverride: chosenSplitId || undefined,
+      successMessage: blank
+        ? "Custom draft started. Build your split and requirement slots manually."
+        : "New draft started. Select a day to fill requirement slots."
+    });
   }
 
   function activateProgram(program?: Program) {
@@ -4738,138 +5540,572 @@ function BuilderScreen({
     });
   }
 
-  return (
-    <div className="space-y-5">
-      <PageTitle eyebrow="Block" title="Build the block, review the week, then activate it for Today." />
-      <section className="grid gap-3 lg:grid-cols-3">
-        <Panel title="Active Block" icon={CalendarDays}>
-          {activeProgram ? (
-            <div>
-              <p className="text-lg font-black">{activeProgram.name}</p>
-              <p className="mt-1 text-sm text-iron-300">{activeProgram.goal} - {activeProgram.blocks[0]?.type} - {activeProgram.blocks[0]?.trainingDaysPerWeek} days/week</p>
-            </div>
-          ) : <EmptyState title="No active block" detail="Create or suggest a draft, then activate it when ready." />}
-        </Panel>
-        <Panel title="Draft Control" icon={Save}>
-          {draftProgram ? (
-            <div className="space-y-3">
-              <p className="font-black">{draftProgram.name}</p>
-              <p className="text-sm text-iron-300">{draftProgram.buildMode === "manual" ? "Manual draft" : "Suggested draft"} waiting for review.</p>
-              <p className="text-xs text-iron-400">Edit exercises and prescriptions in the Weekly Overview below, then activate when ready.</p>
-              <button className="btn-primary w-full" onClick={() => activateProgram(draftProgram)}><CheckCircle2 className="h-4 w-4" /> Activate Draft</button>
-            </div>
-          ) : <EmptyState title="No draft" detail="Use Manual Build or Suggest Full Program below." />}
-        </Panel>
-      </section>
-      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <Panel title="Block Planner" icon={Wand2}>
-          <p className="mb-4 text-sm text-iron-300">Use a split to create a multi-week training block with exercises, sets, reps, intensity targets, and progression. Manual build keeps you in control; suggestions fill in a proposed draft for review.</p>
-          <div className="mb-3 grid grid-cols-2 gap-2">
-            <button className={`btn-secondary ${buildMode === "manual" ? "border-volt/60 text-volt" : ""}`} onClick={() => setBuildMode("manual")}>Manual Build</button>
-            <button className={`btn-secondary ${buildMode === "suggested" ? "border-volt/60 text-volt" : ""}`} onClick={() => setBuildMode("suggested")}>Suggest Full Program</button>
+  if (blocksView === "home") {
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight text-white">Blocks</h1>
+            <p className="mt-1 text-sm text-iron-500">
+              {[activeProgram && "1 active", draftProgram && "1 draft", archivedCount > 0 && `${archivedCount} archived`].filter(Boolean).join(" · ") || "No blocks yet"}
+            </p>
           </div>
-          <div className="grid gap-3 md:grid-cols-2">
-            <TextField label="Block name" placeholder="e.g. Powerbuilding Block" value={request.name} onChange={(name) => setRequest((draft) => ({ ...draft, name }))} />
-            <SelectField label="Split template" value={selectedSplitId} options={db.splitTemplates.map((split) => split.id)} labels={Object.fromEntries(db.splitTemplates.map((split) => [split.id, `${split.name} (${split.daysPerWeek}d)`]))} onChange={(id) => { setSelectedSplitId(id); setRequest((draft) => ({ ...draft, splitTemplateId: id })); }} />
-            <SelectField label="Block type" value={request.blockType} options={["accumulation", "hypertrophy", "strength", "intensification", "peaking", "deload", "custom"]} onChange={(blockType) => setRequest((draft) => ({ ...draft, blockType: blockType as BlockType }))} />
-            <NumberField label="Weeks" value={request.blockLengthWeeks} onChange={(blockLengthWeeks) => setRequest((draft) => ({ ...draft, blockLengthWeeks }))} />
-            <NumberField label="Days/week" value={request.daysPerWeek} min={1} max={7} onChange={(daysPerWeek) => setRequest((draft) => ({ ...draft, daysPerWeek }))} />
-            <SelectField label="Split loop" value={request.splitLoopMode} options={["continuous", "weekly-reset"]} labels={{ "continuous": "Continuous loop", "weekly-reset": "Weekly reset" }} onChange={(splitLoopMode) => setRequest((draft) => ({ ...draft, splitLoopMode: splitLoopMode as SplitLoopMode }))} />
-          </div>
-          <button
-            className="mt-3 flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-300 transition hover:bg-white/[0.07]"
-            onClick={() => setShowSbdAdvanced((v) => !v)}
-          >
-            Advanced / Goal override
-            <ChevronRight className={`h-3 w-3 transition ${showSbdAdvanced ? "rotate-90" : ""}`} />
+          <button className="apollo-primary-btn" onClick={() => void startNewBlock()}>
+            <Plus className="h-4 w-4" />
+            New block
           </button>
-          {showSbdAdvanced && (
-            <div className="mt-2 grid gap-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
-              <SelectField label="Goal override" value={request.goal} options={["powerlifting", "bodybuilding", "powerbuilding", "general-health", "conditioning", "maintenance"]} onChange={(goal) => setRequest((draft) => ({ ...draft, goal: goal as TrainingGoal }))} />
-            </div>
-          )}
-          {showSbdAdvanced && (
-            <>
-              <SbdSettingsEditor
-                db={db}
-                user={user}
-                settings={request.compoundSettings}
-                selectedIds={request.priorityExerciseIds}
-                onSelectedChange={(priorityExerciseIds) => setRequest((draft) => ({ ...draft, priorityExerciseIds }))}
-                onChange={(compoundSettings) => setRequest((draft) => ({ ...draft, compoundSettings }))}
-              />
-              {buildMode === "suggested" && (
-                <CompoundSettingsEditor
-                  db={db}
-                  user={user}
-                  settings={request.compoundSettings}
-                  onChange={(compoundSettings) => setRequest((draft) => ({ ...draft, compoundSettings }))}
-                />
-              )}
-            </>
-          )}
-          <label className="label mt-4 block">Block notes</label>
-          <textarea className="field mt-2 min-h-24" value={request.notes} onChange={(event) => setRequest((draft) => ({ ...draft, notes: event.target.value }))} />
-          {generationState.message && (
-            <div className={`mt-4 rounded-lg border p-3 text-sm ${
-              generationState.status === "error" ? "border-ember/40 bg-ember/10 text-orange-100" :
-              generationState.status === "success" ? "border-volt/40 bg-volt/10 text-volt" :
-              "border-white/10 bg-white/[0.06] text-iron-200"
-            }`}>
-              {generationState.message}
-            </div>
-          )}
-          <div className="mt-4 flex gap-2">
-            <button className="btn-primary flex-1" onClick={() => createProgram(buildMode)} disabled={generationState.status === "loading"}>
-              <Save className="h-4 w-4" />
-              {generationState.status === "loading" ? "Working..." : buildMode === "manual" ? "Create Manual Draft" : "Suggest Full Program"}
-            </button>
-            <button className="btn-ghost" onClick={resetBuilderForm} title="Reset form to defaults">
-              <RefreshCcw className="h-4 w-4" />
-            </button>
-          </div>
-        </Panel>
+        </div>
 
-        <Panel title="Split Schedule Preview" icon={CalendarDays}>
-          <p className="mb-3 text-sm text-iron-300">Continuous loop carries the split across weeks. Weekly reset starts each week from day one.</p>
-          <div className="space-y-3">
-            {schedulePreview.map((week, weekIndex) => (
-              <div key={weekIndex} className="rounded-lg bg-white/[0.06] p-3">
-                <p className="label mb-2">Week {weekIndex + 1}</p>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {week.map((day, index) => (
-                    <div key={`${day.id}-${index}`} className="rounded-lg bg-iron-950/50 p-2">
-                      <p className="font-black">Day {index + 1}: {day.name}</p>
-                      <p className="text-xs text-iron-400">{day.muscleGroups.join(", ")}</p>
-                    </div>
-                  ))}
+        {/* Draft in progress banner */}
+        {draftProgram && (
+          <div className="flex items-center gap-3 border border-[#c65f12]/40 bg-[#2a1500]/60 px-4 py-3">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center bg-[#c65f12]/20 text-[#f4842a]">
+              <Zap className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-white">Draft in progress</p>
+              <p className="text-xs text-iron-400">{draftProgram.name || "Unnamed block"} · {draftProgram.blocks[0]?.lengthWeeks ?? request.blockLengthWeeks} weeks</p>
+            </div>
+            <button className="text-sm font-semibold text-[#f4842a]" onClick={() => setBlocksView("builder")}>Resume</button>
+          </div>
+        )}
+
+        {/* Active block */}
+        {activeProgram && (
+          <section>
+            <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Active block</p>
+            <div className="border border-white/[0.08] bg-white/[0.03] p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-10 w-10 shrink-0 items-center justify-center border border-white/[0.1] bg-white/[0.06]">
+                    <Dumbbell className="h-4 w-4 text-iron-300" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-white">{activeProgram.name}</p>
+                    <p className="mt-0.5 text-xs text-iron-400">
+                      {activeProgram.goal} · {activeProgram.blocks[0]?.type} · {activeProgram.blocks[0]?.trainingDaysPerWeek ?? request.daysPerWeek}d/wk · started {activeProgram.acceptedAt ? new Date(activeProgram.acceptedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
+                    </p>
+                  </div>
                 </div>
+                <span className="shrink-0 rounded-sm border border-[#0a84ff]/30 bg-[#0a84ff]/10 px-2 py-0.5 text-xs font-semibold text-[#8fb9ff]">
+                  Week {activeProgram.blocks[0]?.currentWeek ?? 1}
+                </span>
+              </div>
+              <button className="mt-3 border border-white/[0.1] bg-white/[0.04] px-3 py-1.5 text-xs text-iron-300 transition hover:bg-white/[0.07]" onClick={() => setScreen("week")}>
+                View current week →
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* Recommended for you */}
+        {recommendedTemplateMeta && (
+          <section>
+            <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Recommended for you</p>
+            <div className="border border-white/[0.08] bg-white/[0.03] p-4">
+              <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-[#8fb9ff]">Recommended</p>
+              <p className="mt-1 text-base font-semibold text-white">{recommendedTemplateMeta.name}</p>
+              <p className="mt-1 text-xs text-iron-300">
+                {recommendedTemplateMeta.goalFocus === "strength + hypertrophy"
+                  ? "Balanced for strength + hypertrophy"
+                  : `Built for ${recommendedTemplateMeta.goalFocus}`}
+              </p>
+              <p className="mt-1 text-xs text-iron-500">
+                {hasSbdExposure
+                  ? "Fits your recent training: squat, bench, and deadlift exposure."
+                  : "Safe default recommendation based on your current setup."}
+              </p>
+              <button
+                className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]"
+                onClick={() => void startNewBlock(recommendedTemplateMeta.id)}
+              >
+                Use template
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* Start from template */}
+        <section>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Start from template</p>
+          </div>
+          <div className="divide-y divide-white/[0.06] border-y border-white/[0.06]">
+            {templateLaunchList.slice(0, 8).map((template) => (
+              <div key={template.id} className="flex items-center justify-between gap-3 py-3">
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center border border-white/[0.1] bg-white/[0.04]">
+                    <ClipboardList className="h-3.5 w-3.5 text-iron-400" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-white">{template.name}</p>
+                    <p className="mt-0.5 truncate text-xs text-iron-400">{template.splitPreview}</p>
+                    <p className="mt-0.5 text-xs text-iron-500">
+                      {template.daysPerWeek} days/week · {template.goalFocus} · {template.suitability}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-iron-500">Good for: {template.goodFor}</p>
+                  </div>
+                </div>
+                <button
+                  className="shrink-0 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]"
+                  onClick={() => void startNewBlock(template.id)}
+                >
+                  Use template
+                </button>
               </div>
             ))}
           </div>
-        </Panel>
-      </section>
+        </section>
 
-      {draftProgram ? (
-        <WeeklyOverview db={db} user={user} program={draftProgram} updateDb={updateDb} editable />
-      ) : activeProgram ? (
-        <section className="rounded-lg border border-white/10 bg-white/[0.04] p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <p className="label">Active block — read-only</p>
-              <p className="mt-1 font-black">{activeProgram.name}</p>
-              <p className="mt-1 text-sm text-iron-300">
-                {activeProgram.goal} · {activeProgram.blocks[0]?.type} · Week {activeProgram.blocks[0]?.currentWeek ?? 1} of {activeProgram.blocks[0]?.lengthWeeks ?? "?"}
-              </p>
-              <p className="mt-2 text-xs text-iron-400">The Week tab owns current progress, completed sessions, and week review. To edit exercises, create a new draft block below.</p>
+        {/* Custom block */}
+        <section>
+          <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Custom block</p>
+          <div className="flex items-center justify-between gap-3 border-y border-white/[0.06] py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">Custom Block</p>
+              <p className="mt-0.5 text-xs text-iron-500">Start blank and build your own split, requirements, and exercise slots.</p>
             </div>
-            <button className="btn-secondary" onClick={() => setScreen("week")}>View current week →</button>
+            <button className="shrink-0 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]" onClick={() => void startNewBlock(undefined, true)}>
+              Start blank
+            </button>
           </div>
         </section>
-      ) : null}
 
-      <ProgramGapPanel db={db} user={user} program={workingProgram} updateDb={updateDb} />
-      <BlockHistory db={db} user={user} updateDb={updateDb} />
+        {/* Archived */}
+        {archivedPrograms.length > 0 && (
+          <section>
+            <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Archived / Previous blocks · {archivedPrograms.length}</p>
+            <div className="divide-y divide-white/[0.06] border-y border-white/[0.06]">
+              {archivedPrograms.map((program) => (
+                <div key={program.id} className="flex items-center justify-between gap-3 py-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center border border-white/[0.08] bg-white/[0.02] opacity-60">
+                      <Dumbbell className="h-3.5 w-3.5 text-iron-500" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-iron-300">{program.name}</p>
+                      <p className="mt-0.5 text-xs text-iron-500">
+                        {program.goal} · {program.blocks[0]?.lengthWeeks ?? "?"}wk · {program.status === "draft" ? "draft" : "completed"}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    className="shrink-0 border border-white/[0.1] bg-white/[0.03] px-2.5 py-1 text-xs text-iron-400 transition hover:text-iron-200"
+                    onClick={() => { duplicate(program); }}
+                  >
+                    Reuse
+                  </button>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-0">
+      {/* Header */}
+      <section className="border-b border-white/[0.06] pb-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <button className="btn-compact -ml-2" onClick={() => setBlocksView("home")}>
+            <ChevronLeft className="h-3.5 w-3.5" />
+            Blocks
+          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="apollo-secondary-btn"
+              onClick={() => {
+                if (draftProgram) {
+                  syncDraftProgramBasics();
+                  setGenerationState({ status: "success", message: "Draft saved." });
+                  return;
+                }
+                setBuildMode("manual");
+                void createProgram("manual", { replaceExistingDraft: true, successMessage: "Draft saved." });
+              }}
+              disabled={generationState.status === "loading"}
+            >
+              Save Draft
+            </button>
+            <button
+              className="apollo-primary-btn"
+              onClick={() => {
+                if (draftProgram) {
+                  syncDraftProgramBasics();
+                  activateProgram(draftProgram);
+                }
+              }}
+              disabled={generationState.status === "loading" || !draftProgram}
+            >
+              <CheckCircle2 className="h-4 w-4" />
+              <span>Deploy Block</span>
+            </button>
+          </div>
+        </div>
+        <h1 className="mt-3 text-2xl font-bold tracking-[-0.02em] text-white">Build training block</h1>
+        <p className="mt-0.5 text-sm text-iron-400">Select a template, then fill requirement slots manually or with Choose for me.</p>
+        {/* Progress indicator */}
+        {(() => {
+          const steps = [
+            !!request.name,
+            !!request.goal,
+            !!selectedSplitId,
+            request.blockLengthWeeks > 0,
+            request.daysPerWeek > 0,
+            !!(draftProgram?.blocks[0]?.weeks[0]?.workouts.some(w => w.exercises.length > 0)),
+          ];
+          const done = steps.filter(Boolean).length;
+          return (
+            <div className="mt-3 flex items-center gap-3">
+              <div className="flex flex-1 gap-1">
+                {steps.map((complete, i) => (
+                  <div key={i} className={`h-0.5 flex-1 rounded-full transition ${complete ? "bg-[#0a84ff]" : "bg-white/[0.12]"}`} />
+                ))}
+              </div>
+              <span className="shrink-0 text-xs text-iron-500">{done} of {steps.length}</span>
+            </div>
+          );
+        })()}
+      </section>
+
+      {generationState.message && (
+        <div className={`mt-4 border px-3 py-2 text-sm ${
+          generationState.status === "error" ? "border-ember/40 bg-ember/10 text-orange-100" :
+          generationState.status === "success" ? "border-[#0a84ff]/40 bg-[#0a84ff]/10 text-[#8fb9ff]" :
+          "border-white/[0.08] bg-white/[0.04] text-iron-200"
+        }`}>
+          {generationState.message}
+        </div>
+      )}
+
+      {/* Two-column layout on desktop */}
+      <div className="mt-4 lg:grid lg:grid-cols-3 lg:gap-6">
+        {/* Left: form */}
+        <div className="lg:col-span-2 space-y-0">
+          {/* Basics */}
+          <section className="border-b border-white/[0.06] pb-5">
+            <p className="mb-3 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Basics</p>
+            <div className="divide-y divide-white/[0.06]">
+              {/* Block name */}
+              <div className="flex items-center justify-between gap-4 py-2.5">
+                <span className="text-sm text-iron-300">Name</span>
+                <input
+                  className="min-w-0 flex-1 bg-transparent text-right text-sm text-white placeholder-iron-600 outline-none"
+                  placeholder={`${selectedSplit?.name || "Custom"} Block`}
+                  value={request.name}
+                  onChange={(e) => setRequest((d) => ({ ...d, name: e.target.value }))}
+                />
+              </div>
+              {/* Goal */}
+              <div className="flex items-center justify-between gap-4 py-2.5">
+                <span className="text-sm text-iron-300">Goal</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full bg-[#f4842a]" />
+                  <select
+                    className="bg-transparent text-right text-sm font-medium text-white outline-none"
+                    value={request.goal}
+                    onChange={(e) => setRequest((d) => ({ ...d, goal: e.target.value as TrainingGoal }))}
+                  >
+                    {["powerlifting","bodybuilding","powerbuilding","general-health","conditioning","maintenance"].map(g => (
+                      <option key={g} value={g} className="bg-iron-900">{g.charAt(0).toUpperCase() + g.slice(1)}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="h-3.5 w-3.5 text-iron-500" />
+                </div>
+              </div>
+              {/* Start week */}
+              <div className="flex items-center justify-between gap-4 py-2.5">
+                <span className="text-sm text-iron-300">Start week</span>
+                <div className="flex items-center gap-1.5 text-sm font-medium text-white">
+                  Week 1
+                  <ChevronDown className="h-3.5 w-3.5 text-iron-500" />
+                </div>
+              </div>
+              {/* Template */}
+              <div className="flex items-center justify-between gap-4 py-2.5">
+                <span className="text-sm text-iron-300">Template</span>
+                <div className="flex items-center gap-1.5">
+                  <select
+                    className="bg-transparent text-right text-sm font-medium text-white outline-none"
+                    value={selectedSplitId}
+                    onChange={(e) => {
+                      const newId = e.target.value;
+                      const newSplit = db.splitTemplates.find((s) => s.id === newId);
+                      setSelectedSplitId(newId);
+                      setRequest((d) => ({ ...d, splitTemplateId: newId, daysPerWeek: newSplit?.daysPerWeek ?? d.daysPerWeek }));
+                      void startNewBlock(newId);
+                    }}
+                  >
+                    {db.splitTemplates.map((split) => (
+                      <option key={split.id} value={split.id} className="bg-iron-900">{split.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="h-3.5 w-3.5 text-iron-500" />
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Volume */}
+          <section className="border-b border-white/[0.06] py-5">
+            <p className="mb-3 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Volume</p>
+            <div className="divide-y divide-white/[0.06]">
+              <div className="flex items-center justify-between gap-4 py-2.5">
+                <div>
+                  <p className="text-sm text-iron-200">Duration</p>
+                  <p className="text-xs text-iron-500">How many training weeks</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button className="flex h-7 w-7 items-center justify-center border border-white/[0.12] bg-white/[0.04] text-iron-300 hover:bg-white/[0.07]" onClick={() => setRequest((d) => ({ ...d, blockLengthWeeks: Math.max(1, d.blockLengthWeeks - 1) }))}>
+                    <Minus className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="w-12 text-center text-sm font-semibold text-white">{request.blockLengthWeeks} wk</span>
+                  <button className="flex h-7 w-7 items-center justify-center border border-white/[0.12] bg-white/[0.04] text-iron-300 hover:bg-white/[0.07]" onClick={() => setRequest((d) => ({ ...d, blockLengthWeeks: Math.min(24, d.blockLengthWeeks + 1) }))}>
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center justify-between gap-4 py-2.5">
+                <div>
+                  <p className="text-sm text-iron-200">Days / week</p>
+                  <p className="text-xs text-iron-500">Affects split &amp; recovery</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <button className="flex h-7 w-7 items-center justify-center border border-white/[0.12] bg-white/[0.04] text-iron-300 hover:bg-white/[0.07]" onClick={() => setRequest((d) => ({ ...d, daysPerWeek: Math.max(1, d.daysPerWeek - 1) }))}>
+                    <Minus className="h-3.5 w-3.5" />
+                  </button>
+                  <span className="w-12 text-center text-sm font-semibold text-white">{request.daysPerWeek} d</span>
+                  <button className="flex h-7 w-7 items-center justify-center border border-white/[0.12] bg-white/[0.04] text-iron-300 hover:bg-white/[0.07]" onClick={() => setRequest((d) => ({ ...d, daysPerWeek: Math.min(7, d.daysPerWeek + 1) }))}>
+                    <Plus className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          {/* Planning Rules */}
+          <section className="border-b border-white/[0.06] py-5">
+            <button
+              className="flex w-full items-center justify-between"
+              onClick={() => setShowAdvancedRules((v) => !v)}
+            >
+              <div>
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Planning rules</p>
+                {!showAdvancedRules && (
+                  <p className="mt-0.5 text-xs text-iron-400">
+                    {request.blockType.charAt(0).toUpperCase() + request.blockType.slice(1)}
+                    {" · "}
+                    {request.splitLoopMode === "weekly-reset" ? "Restart" : "Continuous"}
+                    {request.compoundSettings ? " · Custom progression" : ""}
+                  </p>
+                )}
+              </div>
+              <ChevronRight className={`h-4 w-4 text-iron-500 transition ${showAdvancedRules ? "rotate-90" : ""}`} />
+            </button>
+            {showAdvancedRules && (
+              <div className="mt-3 space-y-4">
+                {/* Block type */}
+                <div>
+                  <p className="mb-2 text-xs text-iron-400">Block type</p>
+                  <div className="relative flex gap-1 border border-white/[0.08] bg-white/[0.02] p-0.5">
+                    {(["hypertrophy","strength","peaking"] as BlockType[]).map((bt) => (
+                      <button
+                        key={bt}
+                        className={`flex-1 px-3 py-1.5 text-xs font-medium transition ${request.blockType === bt ? "bg-white/[0.12] text-white" : "text-iron-400 hover:text-iron-200"}`}
+                        onClick={() => { setRequest((d) => ({ ...d, blockType: bt })); setShowBlockTypeMenu(false); }}
+                      >
+                        {bt.charAt(0).toUpperCase() + bt.slice(1)}
+                      </button>
+                    ))}
+                    {!["hypertrophy","strength","peaking"].includes(request.blockType) && (
+                      <button
+                        className="bg-white/[0.12] px-3 py-1.5 text-xs font-medium text-white"
+                      >
+                        {request.blockType.charAt(0).toUpperCase() + request.blockType.slice(1)}
+                      </button>
+                    )}
+                    <button
+                      className="px-2 py-1.5 text-xs text-iron-400 hover:text-iron-200"
+                      onClick={() => setShowBlockTypeMenu((v) => !v)}
+                    >
+                      •••
+                    </button>
+                    {showBlockTypeMenu && (
+                      <div className="absolute right-0 top-full z-20 mt-1 w-44 border border-white/[0.12] bg-[#151515] py-1 shadow-xl">
+                        {(["accumulation","intensification","deload","pivot","maintenance","conditioning","custom"] as BlockType[]).map((bt) => (
+                          <button
+                            key={bt}
+                            className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition ${request.blockType === bt ? "text-white" : "text-iron-400 hover:text-iron-200"}`}
+                            onClick={() => { setRequest((d) => ({ ...d, blockType: bt })); setShowBlockTypeMenu(false); }}
+                          >
+                            {bt.charAt(0).toUpperCase() + bt.slice(1)}
+                            {request.blockType === bt && <span className="h-1.5 w-1.5 rounded-full bg-[#0a84ff]" />}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                {/* Split loop */}
+                <div>
+                  <p className="mb-2 text-xs text-iron-400">Split loop</p>
+                  <div className="flex gap-1 border border-white/[0.08] bg-white/[0.02] p-0.5">
+                    {([{v:"continuous",l:"Continuous"},{v:"weekly-reset",l:"Restart"}] as {v: SplitLoopMode, l: string}[]).map(({v,l}) => (
+                      <button
+                        key={v}
+                        className={`flex-1 px-3 py-1.5 text-xs font-medium transition ${request.splitLoopMode === v ? "bg-white/[0.12] text-white" : "text-iron-400 hover:text-iron-200"}`}
+                        onClick={() => setRequest((d) => ({ ...d, splitLoopMode: v }))}
+                      >
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Progression rules */}
+                <button
+                  className="flex w-full items-center justify-between border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-left"
+                  onClick={() => setShowSbdAdvanced((v) => !v)}
+                >
+                  <div>
+                    <p className="text-sm text-iron-200">Progression &amp; fatigue rules</p>
+                    <p className="mt-0.5 text-xs text-iron-500">RPE caps, deload triggers, autoregulation</p>
+                  </div>
+                  <ChevronRight className={`h-4 w-4 shrink-0 text-iron-500 transition ${showSbdAdvanced ? "rotate-90" : ""}`} />
+                </button>
+                {showSbdAdvanced && (
+                  <>
+                    <SbdSettingsEditor
+                      db={db}
+                      user={user}
+                      settings={request.compoundSettings}
+                      selectedIds={request.priorityExerciseIds}
+                      onSelectedChange={(priorityExerciseIds) => setRequest((d) => ({ ...d, priorityExerciseIds }))}
+                      onChange={(compoundSettings) => setRequest((d) => ({ ...d, compoundSettings }))}
+                    />
+                    <CompoundSettingsEditor
+                      db={db}
+                      user={user}
+                      settings={request.compoundSettings}
+                      onChange={(compoundSettings) => setRequest((d) => ({ ...d, compoundSettings }))}
+                    />
+                  </>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Weekly split + day editor */}
+          {draftProgram ? (
+            <section className="border-b border-white/[0.06] py-5">
+              <WeeklyOverview db={db} user={user} program={draftProgram} updateDb={updateDb} editable />
+            </section>
+          ) : (
+            <section className="border-b border-white/[0.06] py-5">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Weekly split &amp; exercises</p>
+              <p className="mt-2 text-sm text-iron-500">Start a new block or choose a template to open the day editor and requirement slots.</p>
+            </section>
+          )}
+
+          {/* Reset */}
+          <div className="flex justify-end pt-3">
+            <button className="btn-ghost text-xs text-iron-500" onClick={resetBuilderForm}>
+              <RefreshCcw className="h-3.5 w-3.5" />
+              Reset form
+            </button>
+          </div>
+        </div>
+
+        {/* Right: preview */}
+        <div className="mt-6 lg:mt-0 lg:col-span-1">
+          <div className="border border-white/[0.08] bg-white/[0.02] p-4">
+            <p className="font-semibold text-white">{request.name || "Unnamed block"}</p>
+            <p className="mt-0.5 text-xs text-iron-400">
+              {request.blockLengthWeeks} weeks · {request.daysPerWeek} days/week · {request.blockLengthWeeks * request.daysPerWeek} sessions
+            </p>
+            <div className="mt-3 space-y-1">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Weekly schedule</p>
+              {schedulePreview[0]?.map((day, i) => (
+                <div key={i} className="flex items-center justify-between py-0.5">
+                  <span className="text-xs text-iron-400">{["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][i]}</span>
+                  <span className="text-xs text-iron-200">{day.name}</span>
+                </div>
+              ))}
+            </div>
+            {workingProgram && (() => {
+              const vol = summarizePlannedVolume(workingProgram, db);
+              const sorted = Object.entries(vol).filter(([,v]) => v > 0).sort((a,b) => b[1]-a[1]).slice(0,8);
+              // Derive required muscles from all split days in the working program
+              const splitTemplate = db.splitTemplates.find((s) => s.id === workingProgram.splitTemplateId);
+              const requiredMuscles = new Set<string>([
+                ...(splitTemplate?.days.flatMap((sd) => sd.targetMuscles ?? sd.muscleGroups ?? []) ?? []),
+                ...(splitTemplate?.days.flatMap((sd) => (sd.requirements ?? []).map((req) => req.targetMuscle)) ?? [])
+              ]);
+              const coveredMuscles = sorted.filter(([m]) => requiredMuscles.has(m)).map(([m]) => m);
+              const extraMuscles = sorted.filter(([m]) => !requiredMuscles.has(m)).map(([m]) => m);
+              return (
+                <>
+                  {(coveredMuscles.length > 0 || extraMuscles.length > 0) && (
+                    <div className="mt-4">
+                      <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Muscle coverage</p>
+                      <div className="flex flex-wrap gap-1">
+                        {coveredMuscles.map((m) => (
+                          <span key={m} className="rounded border border-[#0a84ff]/30 bg-[#0a84ff]/8 px-2 py-0.5 text-[0.65rem] capitalize text-[#8fb9ff]">
+                            {m.replace(/-/g," ")}
+                          </span>
+                        ))}
+                        {extraMuscles.map((m) => (
+                          <span key={m} className="rounded border border-[#f4842a]/30 bg-[#f4842a]/8 px-2 py-0.5 text-[0.65rem] capitalize text-[#f4842a]">
+                            {m.replace(/-/g," ")}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {sorted.length > 0 && (
+                    <div className="mt-4 space-y-1.5">
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Volume forecast</p>
+                      {sorted.map(([muscle, sets]) => (
+                        <div key={muscle} className="flex items-center gap-2">
+                          <span className="w-20 shrink-0 text-xs capitalize text-iron-400">{muscle.replace(/-/g," ")}</span>
+                          <div className="flex-1 h-1 bg-white/[0.06] overflow-hidden">
+                            <div className="h-full bg-[#0a84ff]" style={{ width: `${Math.min(100, (sets / 24) * 100)}%` }} />
+                          </div>
+                          <span className="w-10 text-right text-xs text-iron-400">{sets} set</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {sorted.length === 0 && (
+                    <div className="mt-4">
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Planned requirement groups</p>
+                      {requiredMuscles.size > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {[...requiredMuscles].map((muscle) => (
+                            <span key={muscle} className="rounded border border-white/[0.12] bg-white/[0.04] px-2 py-0.5 text-[0.65rem] capitalize text-iron-300">
+                              {muscle.replace(/-/g, " ")}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-iron-500">No requirement groups defined yet.</p>
+                      )}
+                      <p className="mt-2 text-xs text-iron-500">No exercises selected yet.</p>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
+          {workingProgram && (
+            <div className="mt-4">
+              <ProgramGapPanel db={db} user={user} program={workingProgram} updateDb={updateDb} />
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -4906,21 +6142,33 @@ function SbdSettingsEditor({
   };
 
   return (
-    <div className="mt-4 rounded-lg border border-white/10 bg-iron-950/45 p-3">
-      <p className="font-black">SBD settings</p>
-      <p className="mt-1 text-sm text-iron-300">This only controls squat, bench, and deadlift exposure. Rows, presses, leg press, pull-ups, and other compounds stay in normal exercise selection.</p>
-      <div className="mt-3 grid gap-2 md:grid-cols-3">
+    <div className="mt-3 border-t border-white/[0.06] pt-3">
+      <p className="text-sm font-semibold text-white">SBD settings</p>
+      <p className="mt-1 text-xs text-iron-400">Controls squat, bench, and deadlift exposure only.</p>
+      <div className="mt-3 divide-y divide-white/[0.06] border-y border-white/[0.06]">
         {sbdExercises.map((exercise) => {
           const avoided = settings.avoidExerciseIds.includes(exercise.id);
           const emphasized = selectedIds.includes(exercise.id);
           return (
-            <div key={exercise.id} className={`rounded-lg border p-3 ${avoided ? "border-ember/40 bg-ember/10" : emphasized ? "border-volt/50 bg-volt/10" : "border-white/10 bg-white/[0.05]"}`}>
-              <p className="font-black">{exercise.name.replace("Competition ", "")}</p>
-              <div className="mt-3 grid gap-2">
-                <button className={`btn-secondary min-h-10 ${emphasized ? "border-volt/60 text-volt" : ""}`} onClick={() => toggleEmphasis(exercise.id)} disabled={avoided}>
-                  {emphasized ? "Emphasized" : "Include"}
+            <div key={exercise.id} className="flex flex-wrap items-center justify-between gap-2 px-1 py-2.5">
+              <p className="text-sm font-medium text-iron-100">{exercise.name.replace("Competition ", "")}</p>
+              <div className="flex items-center gap-2">
+                <button
+                  className={`border px-2.5 py-1 text-xs transition ${
+                    emphasized && !avoided
+                      ? "border-[#0a84ff]/50 bg-[#0a84ff]/15 text-[#8fb9ff]"
+                      : "border-white/[0.12] bg-white/[0.03] text-iron-300 hover:bg-white/[0.06]"
+                  }`}
+                  onClick={() => toggleEmphasis(exercise.id)}
+                  disabled={avoided}
+                >
+                  Include
                 </button>
-                <label className="flex min-h-10 items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm font-bold text-iron-200">
+                <label className={`flex items-center gap-1.5 border px-2.5 py-1 text-xs transition ${
+                  avoided
+                    ? "border-ember/40 bg-ember/10 text-orange-200"
+                    : "border-white/[0.12] bg-white/[0.03] text-iron-300"
+                }`}>
                   <input type="checkbox" checked={avoided} onChange={(event) => updateAvoid(exercise.id, event.target.checked)} />
                   Avoid this block
                 </label>
@@ -4955,49 +6203,61 @@ function CompoundSettingsEditor({
   onChange: (settings: CompoundSettings) => void;
 }) {
   const avoided = settings.avoidExerciseIds.map((id) => db.exercises.find((exercise) => exercise.id === id)).filter(Boolean) as Exercise[];
+  const [showAvoidPicker, setShowAvoidPicker] = useState(false);
   const update = (patch: Partial<CompoundSettings>) => onChange({ ...settings, ...patch });
   return (
-    <div className="mt-4 rounded-lg border border-white/10 bg-iron-950/45 p-3">
-      <p className="font-black">Exercise Avoider</p>
-      <p className="mt-1 text-sm text-iron-300">Only used when you ask the app to suggest exercises. Manual day editing stays open-ended.</p>
+    <div className="mt-3 border-t border-white/[0.06] pt-3">
+      <p className="text-sm font-semibold text-white">Exercise Avoider</p>
+      <p className="mt-1 text-xs text-iron-400">Used only when the app suggests exercises.</p>
       <div className="mt-3">
-        <p className="label mb-2">Avoid movement patterns</p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Avoid movement patterns</p>
+        <div className="mt-2 flex flex-wrap gap-2">
           {movementOptions.map((pattern) => (
-            <label key={pattern} className={`rounded-lg border p-2 text-xs font-bold ${settings.avoidMovementPatterns.includes(pattern) ? "border-ember/50 bg-ember/10 text-orange-100" : "border-white/10 bg-white/[0.04] text-iron-300"}`}>
-              <input
-                className="mr-2"
-                type="checkbox"
-                checked={settings.avoidMovementPatterns.includes(pattern)}
-                onChange={() => update({
-                  avoidMovementPatterns: settings.avoidMovementPatterns.includes(pattern)
-                    ? settings.avoidMovementPatterns.filter((item) => item !== pattern)
-                    : [...settings.avoidMovementPatterns, pattern]
-                })}
-              />
+            <button
+              key={pattern}
+              className={`border px-2.5 py-1 text-xs transition ${
+                settings.avoidMovementPatterns.includes(pattern)
+                  ? "border-ember/40 bg-ember/10 text-orange-200"
+                  : "border-white/[0.12] bg-white/[0.03] text-iron-300 hover:bg-white/[0.06]"
+              }`}
+              onClick={() => update({
+                avoidMovementPatterns: settings.avoidMovementPatterns.includes(pattern)
+                  ? settings.avoidMovementPatterns.filter((item) => item !== pattern)
+                  : [...settings.avoidMovementPatterns, pattern]
+              })}
+            >
               {pattern}
-            </label>
+            </button>
           ))}
         </div>
       </div>
       <div className="mt-3">
-        <p className="label mb-2">Avoid specific exercises</p>
-        <div className="mb-2 flex flex-wrap gap-2">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Avoid specific exercises</p>
+        <div className="mt-2 flex flex-wrap gap-2">
           {avoided.map((exercise) => (
-            <button key={exercise.id} className="btn-ghost border border-ember/30 text-orange-100" onClick={() => update({ avoidExerciseIds: settings.avoidExerciseIds.filter((id) => id !== exercise.id) })}>
+            <button key={exercise.id} className="border border-ember/30 bg-ember/10 px-2 py-1 text-xs text-orange-200" onClick={() => update({ avoidExerciseIds: settings.avoidExerciseIds.filter((id) => id !== exercise.id) })}>
               {exercise.name} remove
             </button>
           ))}
           {!avoided.length && <p className="text-sm text-iron-400">No specific exercises avoided.</p>}
         </div>
-        <ExercisePicker
-          db={db}
-          user={user}
-          selectedIds={settings.avoidExerciseIds}
-          onPick={(exercise) => {
-            if (!settings.avoidExerciseIds.includes(exercise.id)) update({ avoidExerciseIds: [...settings.avoidExerciseIds, exercise.id] });
-          }}
-        />
+        <button
+          className="mt-2 border border-[#0a84ff]/40 bg-[#0a84ff]/10 px-3 py-1.5 text-xs font-medium text-[#8fb9ff] transition hover:bg-[#0a84ff]/20"
+          onClick={() => setShowAvoidPicker((v) => !v)}
+        >
+          {showAvoidPicker ? "Hide exercises" : "Choose exercises"}
+        </button>
+        {showAvoidPicker && (
+          <ExercisePicker
+            db={db}
+            user={user}
+            selectedIds={settings.avoidExerciseIds}
+            onPick={(exercise) => {
+              if (!settings.avoidExerciseIds.includes(exercise.id)) update({ avoidExerciseIds: [...settings.avoidExerciseIds, exercise.id] });
+            }}
+            variant="week-inline"
+          />
+        )}
       </div>
     </div>
   );
@@ -5040,15 +6300,32 @@ function WeeklyOverview({
     const displayDays = workoutDays.length > 0 ? workoutDays : week.workouts;
     const selectedEdDay = displayDays.find((d) => d.id === selectedDayId) ?? displayDays[0];
     return (
-      <Panel title="Weekly Overview" icon={CalendarDays}>
+      <section className="space-y-0">
+        <div className="mb-3">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Weekly split</p>
+        </div>
         <WeekDayCardSelector
           db={db}
           days={displayDays}
           selectedDayId={selectedEdDay?.id}
+          compact
           onSelect={(day) => setSelectedDayId(day.id)}
         />
-        {selectedEdDay && <WorkoutDayEditor db={db} user={user} program={program} day={selectedEdDay} updateDb={updateDb} />}
-      </Panel>
+        {selectedEdDay && (
+          <div className="mt-4 border-t border-white/[0.06] pt-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-xl font-bold text-white">{selectedEdDay.name}</h3>
+                <p className="mt-0.5 text-xs text-iron-500">
+                  {program.blocks[0]?.weeks.find(w => w.workouts.some(d => d.id === selectedEdDay.id)) && `Week ${program.blocks[0].weeks.find(w => w.workouts.some(d => d.id === selectedEdDay.id))?.weekNumber}`}
+                  {selectedEdDay.focus ? ` · ${selectedEdDay.focus}` : ""}
+                </p>
+              </div>
+            </div>
+            <WorkoutDayEditor db={db} user={user} program={program} day={selectedEdDay} updateDb={updateDb} variant="week" />
+          </div>
+        )}
+      </section>
     );
   }
 
@@ -5067,7 +6344,7 @@ function WeeklyOverview({
             <button
               key={name}
               className={`min-h-36 rounded-lg border p-3 text-left transition ${
-                day && selectedDayId === day.id ? "border-volt bg-volt/10" : "border-white/10 bg-white/[0.045]"
+                day && selectedDayId === day.id ? "border-[#0a84ff]/40 bg-[#0a84ff]/5" : "border-white/10 bg-white/[0.045]"
               }`}
               onClick={() => day && setSelectedDayId(day.id)}
             >
@@ -5075,7 +6352,7 @@ function WeeklyOverview({
               {day ? (
                 <>
                   <p className="mt-2 font-black text-white">{day.name}</p>
-                  <p className="mt-1 text-xs text-volt">{day.focus} - ~{estimateWorkoutDuration(day)} min</p>
+                  <p className="mt-1 text-xs text-iron-400">{day.focus} · ~{estimateWorkoutDuration(day)} min</p>
                   <p className="mt-2 line-clamp-2 text-xs text-iron-300">{keyExercises?.join(", ")}</p>
                   <p className="mt-2 line-clamp-2 text-[0.7rem] text-iron-500">{[...muscles].slice(0, 4).join(", ")}</p>
                   <p className="mt-2 text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500">{completed ? "completed" : "planned"} - fatigue {fatigue}</p>
@@ -5128,17 +6405,17 @@ function WeekDayCardSelector({
             type="button"
             disabled={!day}
             className={compact
-              ? `min-w-[10rem] border-b px-0 py-2 text-left transition ${
+              ? `shrink-0 border-b-2 px-3 py-2 text-left transition ${
                 day
                   ? selected
                     ? "border-[#0a84ff] text-[#8fb9ff]"
                     : "border-transparent text-iron-400 hover:text-iron-200"
                   : "cursor-default border-transparent text-iron-600"
-              }`
+                }`
               : `min-h-32 rounded-lg border p-3 text-left transition ${
                 day
                   ? selected
-                    ? "border-volt bg-volt/10"
+                    ? "border-[#0a84ff]/40 bg-[#0a84ff]/5"
                     : "border-white/10 bg-white/[0.045] hover:bg-white/[0.07]"
                   : "cursor-default border-dashed border-white/10 bg-white/[0.02]"
               }`}
@@ -5147,14 +6424,13 @@ function WeekDayCardSelector({
             {compact ? (
               day && !restDay ? (
                 <>
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">{name.slice(0, 3)}</p>
-                  <p className="mt-1 text-sm font-medium text-white">{day.name}</p>
-                  <p className="mt-1 text-xs text-iron-500">{day.focus}</p>
+                  <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-iron-500">{name.slice(0, 3)}</p>
+                  <p className="mt-0.5 text-sm font-semibold text-white leading-tight">{day.name}</p>
                 </>
               ) : (
                 <>
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">{name.slice(0, 3)}</p>
-                  <p className="mt-1 text-sm font-medium text-iron-500">Rest</p>
+                  <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-iron-600">{name.slice(0, 3)}</p>
+                  <p className="mt-0.5 text-sm text-iron-600">Rest</p>
                 </>
               )
             ) : (
@@ -5162,7 +6438,7 @@ function WeekDayCardSelector({
                 <>
                   <p className="text-xs font-black uppercase tracking-[0.14em] text-iron-500">{name.slice(0, 3)}</p>
                   <p className="mt-2 font-black text-white">{day.name}</p>
-                  <p className="mt-1 text-xs text-volt">{day.focus} - ~{estimateWorkoutDuration(day)} min</p>
+                  <p className="mt-1 text-xs text-iron-400">{day.focus} · ~{estimateWorkoutDuration(day)} min</p>
                   {keyExercises?.length ? (
                     <p className="mt-2 line-clamp-2 text-xs text-iron-300">{keyExercises.join(", ")}</p>
                   ) : (
@@ -5232,10 +6508,12 @@ function WorkoutDayEditor({
   const [showAllExercises, setShowAllExercises] = useState(false);
   const [chooserWarning, setChooserWarning] = useState("");
   const [showPrescription, setShowPrescription] = useState(allReqsMet);
-  const [showPicker, setShowPicker] = useState(day.exercises.length === 0);
+  const [showPicker, setShowPicker] = useState(!weekVariant && day.exercises.length === 0);
   const [pendingExtraExercise, setPendingExtraExercise] = useState<Exercise | null>(null);
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>(day.exercises[0]?.id);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | undefined>();
+  const [inlineReqPickerOpen, setInlineReqPickerOpen] = useState(weekVariant && firstUnmetIndex >= 0);
+  const [daySettingsOpen, setDaySettingsOpen] = useState(false);
 
   // Advance to the first unfulfilled requirement whenever exercises change
   useEffect(() => {
@@ -5248,7 +6526,7 @@ function WorkoutDayEditor({
     if (!day.exercises.length) {
       setEditingExerciseId(undefined);
       setSwappingExerciseId(undefined);
-      setShowPicker(true);
+      if (!weekVariant) setShowPicker(true);
       return;
     }
     if (editingExerciseId && !day.exercises.some((planned) => planned.id === editingExerciseId)) {
@@ -5261,6 +6539,78 @@ function WorkoutDayEditor({
 
   const currentReq = requirements[currentReqIndex] as SplitDayRequirement | undefined;
   const alreadyAddedIds = day.exercises.map((planned) => planned.exerciseId);
+  const findNextUnmetRequirementIndex = (exercises: { exerciseId: string; fulfillsRequirementId?: string; isExtra?: boolean }[]) =>
+    requirements.findIndex((req) => Math.min(countFulfilled(exercises as typeof day.exercises, req), req.requiredExerciseCount) < req.requiredExerciseCount);
+  const isUserEditedPrescription = (planned: PlannedExercise) => planned.userEditedPrescription === true;
+  const isUserEditedOrder = (exercises: PlannedExercise[]) => exercises.some((planned) => planned.userEditedOrder);
+
+  function coachOrderDayExercises(exercises: PlannedExercise[]): PlannedExercise[] {
+    const exerciseMap = new Map(db.exercises.map((exercise) => [exercise.id, exercise] as const));
+    const sortableItems = exercises.reduce<{ planned: PlannedExercise; exercise: Exercise; exerciseRole?: ExerciseRole }[]>((items, planned) => {
+      const exercise = exerciseMap.get(planned.exerciseId);
+      if (exercise) items.push({ planned, exercise, exerciseRole: planned.exerciseRole });
+      return items;
+    }, []);
+    const ordered = orderExercisesForDay(
+      sortableItems,
+      {
+        splitDay: {
+          name: day.name,
+          muscleGroups: day.targetMuscles || [],
+          movementPatterns: day.movementPatterns || [],
+        },
+        blockType: program.blocks[0]?.type || "hypertrophy",
+      }
+    );
+    const orderedIds = ordered.map((item) => item.planned.id);
+    return exercises
+      .slice()
+      .sort((a, b) => orderedIds.indexOf(a.id) - orderedIds.indexOf(b.id))
+      .map((planned, index) => ({ ...planned, order: index + 1 }));
+  }
+
+  function refreshAutoPrescriptions(target: WorkoutDay): void {
+    const requirementOrdinal = new Map<string, number>();
+    target.exercises = target.exercises.map((planned, index) => {
+      if (planned.userEditedPrescription) {
+        return { ...planned, order: index + 1 };
+      }
+      const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+      if (!exercise) return { ...planned, order: index + 1 };
+      const req = planned.fulfillsRequirementId ? requirements.find((item) => item.id === planned.fulfillsRequirementId) : undefined;
+      const slotIndex = req
+        ? requirementOrdinal.get(req.id) ?? 0
+        : Math.max(0, index);
+      if (req) {
+        requirementOrdinal.set(req.id, slotIndex + 1);
+      }
+      const rebuilt = buildPlannedExerciseFromExercise({
+        db,
+        user,
+        program,
+        day: target,
+        exercise,
+        order: index + 1,
+        exerciseRole: planned.exerciseRole,
+        requirementSlotIndex: req ? slotIndex : undefined,
+        totalRequiredForMuscle: req?.requiredExerciseCount,
+      });
+      return {
+        ...planned,
+        order: index + 1,
+        exerciseRole: rebuilt.exerciseRole,
+        fatigueTag: rebuilt.fatigueTag,
+        required: rebuilt.required,
+        plannedSets: rebuilt.plannedSets.map((set, setIndex) => ({
+          ...set,
+          id: planned.plannedSets[setIndex]?.id || set.id,
+          plannedWeight: planned.plannedSets[setIndex]?.plannedWeight ?? set.plannedWeight,
+        })),
+        restSeconds: rebuilt.restSeconds,
+        notes: rebuilt.notes,
+      };
+    });
+  }
 
   function updateDay(mutator: (target: WorkoutDay) => void) {
     void updateDb((draft) => {
@@ -5318,18 +6668,24 @@ function WorkoutDayEditor({
       });
       planned.fulfillsRequirementId = isExtraFlag ? undefined : reqId;
       planned.isExtra = isExtraFlag || undefined;
+      planned.userEditedOrder = target.exercises.some((item) => item.userEditedOrder) || undefined;
       target.exercises.push(planned);
+      if (!isUserEditedOrder(target.exercises)) {
+        target.exercises = coachOrderDayExercises(target.exercises);
+        refreshAutoPrescriptions(target);
+      }
     });
     setPendingExtraExercise(null);
 
     // Advance to next unfulfilled requirement (only for non-extra exercises)
     if (!asExtra && !showAllExercises && requirements.length > 0) {
-      const updatedExercises = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId } as typeof day.exercises[number]];
-      const nextUnmet = requirements.findIndex((req, idx) => {
-        const currentFulfilled = Math.min(countFulfilled(updatedExercises, req), req.requiredExerciseCount);
-        return currentFulfilled < req.requiredExerciseCount && idx !== currentReqIndex;
-      });
-      if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
+      const updatedExercises = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
+      const nextUnmet = findNextUnmetRequirementIndex(updatedExercises);
+      if (nextUnmet >= 0) {
+        setCurrentReqIndex(nextUnmet);
+      } else {
+        setInlineReqPickerOpen(false);
+      }
     }
   }
 
@@ -5365,8 +6721,12 @@ function WorkoutDayEditor({
       replacementPlanned.id = targetExercise.id;
       replacementPlanned.order = targetExercise.order;
       replacementPlanned.required = targetExercise.required;
-      replacementPlanned.plannedSets = structuredClone(targetExercise.plannedSets);
-      replacementPlanned.restSeconds = targetExercise.restSeconds;
+      if (isUserEditedPrescription(targetExercise)) {
+        replacementPlanned.plannedSets = structuredClone(targetExercise.plannedSets);
+        replacementPlanned.restSeconds = targetExercise.restSeconds;
+      }
+      replacementPlanned.userEditedPrescription = targetExercise.userEditedPrescription;
+      replacementPlanned.userEditedOrder = targetExercise.userEditedOrder;
       replacementPlanned.fulfillsRequirementId = compatibleWithRequirement ? targetExercise.fulfillsRequirementId : undefined;
       replacementPlanned.isExtra = targetExercise.isExtra || !compatibleWithRequirement || undefined;
       replacementPlanned.originalExerciseId = targetExercise.originalExerciseId ?? targetExercise.exerciseId;
@@ -5385,8 +6745,52 @@ function WorkoutDayEditor({
     setEditingExerciseId(plannedExerciseId);
   }
 
+  function chooseForCurrentRequirement() {
+    if (!currentReq) return;
+    const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
+    const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
+    const currentFulfilled = Math.min(countFulfilled(day.exercises, currentReq), currentReq.requiredExerciseCount);
+    const slotPlan = getRequirementSlotPlan({
+      targetMuscle: currentReq.targetMuscle,
+      goalType: program.goal,
+      blockType: program.blocks[0]?.type || "hypertrophy",
+      dayFocus: day.focus,
+      slotIndex: currentFulfilled,
+      totalSlots: currentReq.requiredExerciseCount,
+      movementPattern: currentReq.movementPattern,
+    });
+    const candidates = db.exercises
+      .filter((exercise) => (!exercise.ownerUserId || exercise.ownerUserId === user.id))
+      .filter((exercise) => !alreadyAddedIds.includes(exercise.id))
+      .filter((exercise) => exerciseAllowedByCompoundSettings(exercise, settings))
+      .filter((exercise) => !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item)))
+      .filter((exercise) => exerciseFulfillsRequirement(exercise, currentReq))
+      .filter((exercise) => !currentReq.movementPattern || exercise.movementPattern === currentReq.movementPattern || exercise.movementPatterns?.includes(currentReq.movementPattern))
+      .map((exercise) => ({
+        exercise,
+        score: scoreExerciseForSlot({
+          exercise,
+          slotPlan,
+          targetMuscle: currentReq.targetMuscle,
+          goalType: program.goal,
+          blockType: program.blocks[0]?.type || "hypertrophy",
+          dayFocus: day.focus,
+          selectedExercises: day.exercises.map((planned) => db.exercises.find((item) => item.id === planned.exerciseId)).filter((item): item is Exercise => Boolean(item)),
+          slotIndex: currentFulfilled,
+          totalSlots: currentReq.requiredExerciseCount,
+        }),
+      }))
+      .sort((a, b) => b.score - a.score);
+    const pick = candidates[0]?.exercise;
+    if (!pick) {
+      setChooserWarning(`No matching option found for ${titleCaseLabel(currentReq.targetMuscle)}. Pick manually for this slot.`);
+      return;
+    }
+    setChooserWarning("");
+    addExercise(pick);
+  }
+
   function chooseForMe() {
-    if (day.exercises.length && !confirm("Replace the exercises currently selected for this workout?")) return;
     const targetMuscles = day.targetMuscles?.length ? day.targetMuscles : allSplitDays.find((sd) => sd.id === day.splitDayId)?.muscleGroups || [];
     const targetPatterns = day.movementPatterns || [];
     const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
@@ -5417,14 +6821,15 @@ function WorkoutDayEditor({
       totalRequiredForMuscle?: number;
       exerciseRole?: ExerciseRole;
     }[] = [];
-    const usedIds = new Set<string>();
+    const usedIds = new Set<string>(day.exercises.map((planned) => planned.exerciseId));
 
     if (dayReqs.length > 0) {
       const warnings: string[] = [];
       // Fill each requirement slot — exactly requiredExerciseCount exercises per slot, no more
       for (const req of [...dayReqs].sort((a, b) => a.priority - b.priority)) {
-        let filled = 0;
-        for (let slot = 0; slot < req.requiredExerciseCount; slot += 1) {
+        const currentFulfilled = Math.min(countFulfilled(day.exercises, req), req.requiredExerciseCount);
+        let filled = currentFulfilled;
+        for (let slot = currentFulfilled; slot < req.requiredExerciseCount; slot += 1) {
           const slotPlan = getRequirementSlotPlan({
             targetMuscle: req.targetMuscle,
             goalType: goalUsed,
@@ -5516,18 +6921,46 @@ function WorkoutDayEditor({
     }
 
     if (!selected.length) {
-      setChooserWarning("No valid exercises matched this day after SBD rules, Exercise Avoider, gym availability, muscles, and movement patterns. You can override manually below.");
+      setChooserWarning("No new matching exercises found. Fill the missing requirement slots manually.");
       return;
     }
     updateDay((target) => {
-      target.exercises = selected.map((item, index) => {
+      const orderedSelections = orderExercisesForDay(
+        selected
+          .map((item, index) => ({
+            ...item,
+            exerciseRole: classifyExerciseRole({
+              exercise: item.exercise,
+              dayType: inferWorkoutDayType({
+                name: target.name,
+                targetMuscles: target.targetMuscles,
+                movementPatterns: target.movementPatterns,
+              }),
+              blockType: program.blocks[0]?.type || "hypertrophy",
+              dayFocus: target.focus,
+              orderHint: target.exercises.length + index + 1,
+              explicitRole: item.exerciseRole,
+              isPriority: Boolean(program.blocks[0]?.priorityExerciseIds.includes(item.exercise.id) || isSbdExercise(item.exercise)),
+            }),
+          })),
+        {
+          splitDay: {
+            name: target.name,
+            muscleGroups: target.targetMuscles || [],
+            movementPatterns: target.movementPatterns || [],
+          },
+          blockType: program.blocks[0]?.type || "hypertrophy",
+        }
+      );
+      const nextOrderStart = target.exercises.length + 1;
+      const additions = orderedSelections.map((item, index) => {
         const planned = buildPlannedExerciseFromExercise({
           db,
           user,
           program,
           day: target,
           exercise: item.exercise,
-          order: index + 1,
+          order: nextOrderStart + index,
           exerciseRole: item.exerciseRole,
           requirementSlotIndex: item.slotIndex,
           totalRequiredForMuscle: item.totalRequiredForMuscle,
@@ -5535,6 +6968,13 @@ function WorkoutDayEditor({
         planned.fulfillsRequirementId = item.reqId;
         return planned;
       });
+      target.exercises.push(...additions);
+      if (!isUserEditedOrder(target.exercises)) {
+        target.exercises = coachOrderDayExercises(target.exercises);
+        refreshAutoPrescriptions(target);
+      } else {
+        target.exercises = target.exercises.map((item, index) => ({ ...item, order: index + 1 }));
+      }
     });
   }
 
@@ -5546,9 +6986,21 @@ function WorkoutDayEditor({
     return (
       <div className="space-y-5">
         {showNameFocusFields && (
-          <div className="grid gap-4 border-b border-white/[0.06] pb-4 md:grid-cols-2">
-            <TextField label="Day name" value={day.name} onChange={(name) => updateDay((target) => { target.name = name; })} />
-            <SelectField label="Focus" value={day.focus} options={["strength", "hypertrophy", "technical", "recovery", "conditioning", "hybrid"]} onChange={(focus) => updateDay((target) => { target.focus = focus as WorkoutDay["focus"]; })} />
+          <div className="border-b border-white/[0.06] pb-4">
+            <button
+              type="button"
+              className="flex items-center gap-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500 transition hover:text-iron-300"
+              onClick={() => setDaySettingsOpen((v) => !v)}
+            >
+              <ChevronRight className={`h-3 w-3 transition-transform ${daySettingsOpen ? "rotate-90" : ""}`} />
+              Day settings
+            </button>
+            {daySettingsOpen && (
+              <div className="mt-3 grid gap-4 md:grid-cols-2">
+                <TextField label="Day name" value={day.name} onChange={(name) => updateDay((target) => { target.name = name; })} />
+                <SelectField label="Focus" value={day.focus} options={["strength", "hypertrophy", "technical", "recovery", "conditioning", "hybrid"]} onChange={(focus) => updateDay((target) => { target.focus = focus as WorkoutDay["focus"]; })} />
+              </div>
+            )}
           </div>
         )}
 
@@ -5569,14 +7021,54 @@ function WorkoutDayEditor({
                           ? "border-white/[0.08] bg-white/[0.04] text-iron-300"
                           : "border-white/[0.08] bg-transparent text-iron-500"
                     }`}
-                    onClick={() => { setCurrentReqIndex(idx); setShowAllExercises(false); setShowPicker(true); }}
+                    onClick={() => { setCurrentReqIndex(idx); setShowAllExercises(false); setInlineReqPickerOpen((open) => idx === currentReqIndex ? !open : true); setShowPicker(false); }}
                   >
-                    {item.req.targetMuscle} {item.fulfilled}/{item.needed}
+                    {titleCaseLabel(item.req.targetMuscle)} {item.fulfilled}/{item.needed}
                   </button>
                 );
               })}
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button className="btn-compact" onClick={chooseForCurrentRequirement} disabled={!currentReq}>
+                <Wand2 className="h-3.5 w-3.5" />
+                Choose for this slot
+              </button>
+              <button className="btn-compact" onClick={chooseForMe}>
+                <Wand2 className="h-3.5 w-3.5" />
+                Auto-fill remaining
+              </button>
+            </div>
             {chooserWarning && <p className="mt-3 text-sm text-orange-300">{chooserWarning}</p>}
+            {allReqsMet && requirements.length > 0 && !inlineReqPickerOpen && (
+              <p className="mt-2 text-xs font-semibold text-emerald-400">All requirements filled</p>
+            )}
+            {inlineReqPickerOpen && currentReq && (
+              <ExercisePicker
+                db={db}
+                user={user}
+                updateDb={updateDb}
+                onPick={(exercise) => {
+                  const reqId = currentReq.id;
+                  addExercise(exercise);
+                  // Simulate post-add state to keep chip/title/filter/results in sync immediately.
+                  const simulated = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
+                  const nextUnmet = findNextUnmetRequirementIndex(simulated);
+                  if (nextUnmet >= 0) {
+                    setCurrentReqIndex(nextUnmet);
+                    setInlineReqPickerOpen(true);
+                  } else {
+                    setInlineReqPickerOpen(false);
+                  }
+                }}
+                alreadyAddedIds={alreadyAddedIds}
+                targetMuscles={[currentReq.targetMuscle]}
+                grouped
+                variant="week-inline"
+                title={`Add ${currentReq.targetMuscle} exercise`}
+                requirementStatusLabel={`${titleCaseLabel(currentReq.targetMuscle)} ${reqProgress.find((item) => item.req.id === currentReq.id)?.fulfilled ?? 0}/${currentReq.requiredExerciseCount}`}
+                onClose={() => setInlineReqPickerOpen(false)}
+              />
+            )}
           </section>
         )}
 
@@ -5586,7 +7078,7 @@ function WorkoutDayEditor({
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn-compact" onClick={chooseForMe}>
                 <Wand2 className="h-3.5 w-3.5" />
-                Choose for me
+                Auto-fill remaining
               </button>
               <button className="btn-compact text-[#8fb9ff]" onClick={() => { setSwappingExerciseId(undefined); setShowPicker((value) => !value); }}>
                 <Plus className="h-3.5 w-3.5" />
@@ -5610,20 +7102,20 @@ function WorkoutDayEditor({
               const isSwappingExercise = swappingExerciseId === planned.id;
 
               return (
-                <div key={planned.id} className="py-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-white">{index + 1}. {exercise?.name || "Unknown exercise"}</p>
-                      <p className="mt-1 text-sm text-iron-400">
-                        {planned.plannedSets.length} sets · {planned.plannedSets[0]?.targetReps || 8} reps · RPE {planned.plannedSets[0]?.targetRpe || 7}
-                      </p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        {reqBadge && <span className="rounded-sm border border-[#0a84ff]/30 px-2 py-0.5 text-[0.68rem] font-medium text-[#8fb9ff]">{reqBadge.targetMuscle}</span>}
-                        {planned.isExtra && <span className="rounded-sm border border-white/[0.08] px-2 py-0.5 text-[0.68rem] font-medium text-iron-500">extra</span>}
-                        {planned.fatigueTag === "high" && <span className="rounded-sm border border-orange-500/20 px-2 py-0.5 text-[0.68rem] font-medium text-orange-300">high fatigue</span>}
-                      </div>
+                <div key={planned.id} className="py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center border border-white/[0.1] bg-white/[0.04] text-xs font-bold text-iron-400">
+                      {index + 1}
                     </div>
-                    <span className="shrink-0 text-sm font-medium text-iron-300">{plannedWeightText}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-semibold text-white leading-snug">{exercise?.name || "Unknown exercise"}</p>
+                      <p className="mt-0.5 text-xs text-iron-500">
+                        {planned.plannedSets.length} × {planned.plannedSets[0]?.targetReps || 8} · RPE {planned.plannedSets[0]?.targetRpe || 7}
+                        {reqBadge && <> · <span className="text-[#8fb9ff]">{titleCaseLabel(reqBadge.targetMuscle)}</span></>}
+                        {planned.isExtra && <> · <span className="text-iron-600">extra</span></>}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-xs font-medium text-iron-400">{plannedWeightText}</span>
                   </div>
 
                   <div className="mt-3 grid gap-2 sm:grid-cols-3">
@@ -5637,6 +7129,7 @@ function WorkoutDayEditor({
                         if (!targetExercise) return;
                         const base = targetExercise.plannedSets[0] || { id: createId("pset"), kind: "working" as SetKind, targetReps: 8, targetRpe: 7 };
                         targetExercise.plannedSets = Array.from({ length: Math.max(1, Math.round(count)) }, () => ({ ...base, id: createId("pset") }));
+                        targetExercise.userEditedPrescription = true;
                       })}
                     />
                     <WeekEditorStepper
@@ -5645,7 +7138,9 @@ function WorkoutDayEditor({
                       step={1}
                       min={1}
                       onChange={(reps) => updateDay((target) => {
-                        target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetReps = Math.max(1, Math.round(reps)); });
+                        const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                        targetExercise?.plannedSets.forEach((set) => { set.targetReps = Math.max(1, Math.round(reps)); });
+                        if (targetExercise) targetExercise.userEditedPrescription = true;
                       })}
                     />
                     <WeekEditorStepper
@@ -5655,7 +7150,9 @@ function WorkoutDayEditor({
                       min={1}
                       max={10}
                       onChange={(rpe) => updateDay((target) => {
-                        target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                        const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                        targetExercise?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                        if (targetExercise) targetExercise.userEditedPrescription = true;
                       })}
                     />
                   </div>
@@ -5685,14 +7182,15 @@ function WorkoutDayEditor({
           <ExercisePicker
             db={db}
             user={user}
+            updateDb={updateDb}
             onPick={(exercise) => {
               addExercise(exercise);
               setShowPicker(false);
             }}
             alreadyAddedIds={alreadyAddedIds}
-            targetMuscles={pickerTargetMuscles}
-            targetPatterns={showAllExercises ? [] : day.movementPatterns || []}
-            grouped={!showAllExercises}
+            targetMuscles={[]}
+            targetPatterns={[]}
+            grouped={false}
             variant="week-sheet"
             title={allReqsMet ? "Add exercise" : "Add exercise"}
             onClose={() => setShowPicker(false)}
@@ -5703,6 +7201,7 @@ function WorkoutDayEditor({
           <ExercisePicker
             db={db}
             user={user}
+            updateDb={updateDb}
             onPick={(replacement) => swapExercise(swappingExerciseId, replacement)}
             alreadyAddedIds={day.exercises.filter((item) => item.id !== swappingExerciseId).map((item) => item.exerciseId)}
             selectedIds={(() => {
@@ -5796,6 +7295,7 @@ function WorkoutDayEditor({
           <ExercisePicker
             db={db}
             user={user}
+            updateDb={updateDb}
             onPick={addExercise}
             alreadyAddedIds={alreadyAddedIds}
             targetMuscles={pickerTargetMuscles}
@@ -5852,12 +7352,17 @@ function WorkoutDayEditor({
                     if (!targetExercise) return;
                     const base = targetExercise.plannedSets[0] || { id: createId("pset"), kind: "working" as SetKind, targetReps: 8, targetRpe: 7 };
                     targetExercise.plannedSets = Array.from({ length: Math.max(1, count) }, () => ({ ...base, id: createId("pset") }));
+                    targetExercise.userEditedPrescription = true;
                   })} />
                   <NumberField label="Reps" value={planned.plannedSets[0]?.targetReps || 8} onChange={(reps) => updateDay((target) => {
-                    target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetReps = reps; });
+                    const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                    targetExercise?.plannedSets.forEach((set) => { set.targetReps = reps; });
+                    if (targetExercise) targetExercise.userEditedPrescription = true;
                   })} />
                   <NumberField label="RPE" step={0.5} value={planned.plannedSets[0]?.targetRpe || 7} onChange={(rpe) => updateDay((target) => {
-                    target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                    const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                    targetExercise?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                    if (targetExercise) targetExercise.userEditedPrescription = true;
                   })} />
                 </div>
               )}
@@ -5867,6 +7372,7 @@ function WorkoutDayEditor({
                   <ExercisePicker
                     db={db}
                     user={user}
+                    updateDb={updateDb}
                     onPick={(replacement) => swapExercise(planned.id, replacement)}
                     alreadyAddedIds={day.exercises.filter((item) => item.id !== planned.id).map((item) => item.exerciseId)}
                     selectedIds={exercise ? [exercise.id] : []}
@@ -5916,7 +7422,9 @@ function ExercisePicker({
   grouped = false,
   variant = "default",
   title,
+  requirementStatusLabel,
   onClose,
+  updateDb,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -5927,47 +7435,135 @@ function ExercisePicker({
   targetMuscles?: MuscleGroup[];
   targetPatterns?: MovementPattern[];
   grouped?: boolean;
-  variant?: "default" | "week-sheet";
+  variant?: "default" | "week-sheet" | "week-inline";
   title?: string;
+  requirementStatusLabel?: string;
   onClose?: () => void;
+  updateDb?: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
 }) {
   const weekSheet = variant === "week-sheet";
+  const weekInline = variant === "week-inline";
   const [query, setQuery] = useState("");
   const [muscle, setMuscle] = useState("all");
   const [equipment, setEquipment] = useState("all");
   const [pattern, setPattern] = useState("all");
   const [fatigue, setFatigue] = useState("all");
-  const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
+  const [showFilters, setShowFilters] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newExName, setNewExName] = useState("");
+  const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>("chest");
+  const [newExEquipment, setNewExEquipment] = useState<EquipmentCategory>("barbell");
+  const requirementMode = grouped && targetMuscles.length > 0;
+  const requirementMuscle = requirementMode ? targetMuscles[0] : undefined;
+  const [manualMuscleOverride, setManualMuscleOverride] = useState(false);
+  const effectiveMuscleFilter = requirementMode && !manualMuscleOverride
+    ? requirementMuscle ?? "all"
+    : muscle;
+
+  useEffect(() => {
+    if (requirementMode) {
+      setManualMuscleOverride(false);
+      setMuscle(requirementMuscle ?? "all");
+    } else {
+      setManualMuscleOverride(false);
+    }
+  }, [requirementMode, requirementMuscle]);
+
+  function handleMuscleFilterChange(nextValue: string) {
+    if (requirementMode) {
+      setManualMuscleOverride(true);
+    }
+    setMuscle(nextValue);
+  }
+
+  function handleQuickCreate() {
+    if (!newExName.trim() || !updateDb) return;
+    const exercise: Exercise = {
+      id: createId("ex"),
+      ownerUserId: user.id,
+      name: newExName.trim(),
+      description: "",
+      muscleGroup: newExMuscle,
+      primaryMuscles: [newExMuscle],
+      secondaryMuscles: [],
+      equipment: [newExEquipment],
+      exerciseCategory: "isolation",
+      movementPattern: "isolation" as MovementPattern,
+      movementPatterns: ["isolation" as MovementPattern],
+      tags: [user.goal],
+      tagLabels: [],
+      variants: [],
+      substitutionIds: [],
+      notes: "",
+      setupCues: [],
+      trackByBodyweight: newExEquipment === "bodyweight",
+      trackPerSide: newExEquipment === "dumbbell" || newExEquipment === "cable",
+      category: newExEquipment,
+      kind: ["accessory"],
+      directVolumeMuscles: [newExMuscle],
+      indirectVolumeMuscles: [],
+      bestTrackedBy: ["load", "reps"],
+      fatigueRating: 2,
+      isCompound: false,
+      defaultUnit: user.unit as ExerciseUnit,
+      allowedUnits: [user.unit as ExerciseUnit],
+      defaultIncrement: user.unit === "kg" ? 2.5 : 5,
+      customIncrement: user.unit === "kg" ? 2.5 : 5,
+      canBeGymSpecific: false,
+      isGymSpecificEnabled: false,
+      createdByUser: true,
+      source: "custom" as const,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    void updateDb((data) => {
+      data.exercises.unshift(exercise);
+      return data;
+    });
+    setShowCreateForm(false);
+    setNewExName("");
+    onPick(exercise);
+  }
+
   const allMatches = db.exercises
-    .filter((exercise) => !exercise.ownerUserId || exercise.ownerUserId === user.id)
+    .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
     .filter((exercise) => {
       const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
-      const gymAvailable = !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item));
       const targetPatternMatch = !targetPatterns.length || targetPatterns.includes(exercise.movementPattern) || exercise.movementPatterns?.some((patternItem) => targetPatterns.includes(patternItem));
       return (
         text.includes(query.toLowerCase()) &&
-        (muscle === "all" || exercise.primaryMuscles.includes(muscle as MuscleGroup) || exercise.muscleGroup === muscle) &&
+        (effectiveMuscleFilter === "all" || exercise.primaryMuscles.includes(effectiveMuscleFilter as MuscleGroup) || exercise.muscleGroup === effectiveMuscleFilter) &&
         (equipment === "all" || exercise.equipment.includes(equipment as EquipmentCategory)) &&
         (pattern === "all" || exercise.movementPattern === pattern) &&
         (fatigue === "all" || String(fatigueRatingForExercise(exercise)) === fatigue) &&
         (compoundFilter === "all" || (compoundFilter === "compound" ? isCompound(exercise) : exercise.kind.includes("isolation"))) &&
-        (!grouped || query || muscle !== "all" || pattern !== "all" || targetPatternMatch) &&
-        gymAvailable
+        // In grouped mode, only gate by movement pattern when targetMuscles is non-empty
+        // (i.e. grouped sections will render). When targetMuscles=[]/flat-list mode, show all
+        // exercises so the picker functions as a full library browse, not a pattern-restricted subset.
+        (!grouped || !targetMuscles.length || query || effectiveMuscleFilter !== "all" || pattern !== "all" || targetPatternMatch)
       );
     });
-  const matches = allMatches.slice(0, grouped && !query && muscle === "all" ? 36 : 12);
+  // Grouped + target muscles → 36-item fallback (mostly hidden by grouped sections above).
+  // Grouped, no target muscles → show all matching exercises (full-library flat browse,
+  //   rendered in a scrollable sheet — no artificial cap).
+  // Non-grouped default (inline embed) → 50, enough to browse without searching.
+  const matches = allMatches.slice(0,
+    grouped && targetMuscles.length ? 36
+    : grouped ? allMatches.length
+    : 50
+  );
   const groupedMuscles = targetMuscles.filter((item, index) => targetMuscles.indexOf(item) === index);
   // For grouped muscle sections, query by primaryMuscles directly (not filtered by movement pattern)
   // so that exercises like Leg Extension always appear for quads regardless of day movement patterns.
   const muscleOnlyPool = grouped && groupedMuscles.length
     ? db.exercises.filter((exercise) => {
+        if (exercise.isArchived) return false;
         if (exercise.ownerUserId && exercise.ownerUserId !== user.id) return false;
-        if (activeGym && exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item))) return false;
         const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.muscleGroup}`.toLowerCase();
         return !query || text.includes(query.toLowerCase());
       })
-    : db.exercises;
-  const groupedSections = grouped && !query && muscle === "all" && groupedMuscles.length
+    : db.exercises.filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id));
+  const groupedSections = grouped && !query && effectiveMuscleFilter === "all" && groupedMuscles.length
     ? groupedMuscles.map((targetMuscle) => ({
         muscle: targetMuscle,
         exercises: muscleOnlyPool
@@ -5983,33 +7579,33 @@ function ExercisePicker({
       <button
         key={exercise.id}
         disabled={isAlreadyAdded}
-        className={weekSheet
+        className={weekSheet || weekInline
           ? `w-full border-b border-white/[0.06] px-0 py-3 text-left transition ${
             isAlreadyAdded ? "cursor-not-allowed opacity-45" :
             isSelected ? "bg-[#0a84ff]/[0.08]" :
             "hover:bg-white/[0.03]"
           }`
-          : `rounded-lg border p-3 text-left transition ${
-            isAlreadyAdded ? "cursor-not-allowed border-white/5 bg-white/[0.03] opacity-50" :
-            isSelected ? "border-volt bg-volt/10 hover:border-volt/80" :
-            "border-white/10 bg-white/[0.06] hover:border-volt/50"
+          : `w-full border-b border-white/[0.06] px-0 py-3 text-left transition ${
+            isAlreadyAdded ? "cursor-not-allowed opacity-45" :
+            isSelected ? "bg-[#0a84ff]/[0.08]" :
+            "hover:bg-white/[0.03]"
           }`}
         onClick={() => !isAlreadyAdded && onPick(exercise)}
       >
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0 flex-1">
-            <p className={`${weekSheet ? "text-sm font-medium text-white" : "font-black"}`}>{exercise.name}</p>
-            <p className={`mt-1 ${weekSheet ? "text-xs text-iron-400" : "text-xs text-iron-400"}`}>
+            <p className={`${weekSheet || weekInline ? "text-sm font-medium text-white" : "text-sm font-medium text-white"}`}>{exercise.name}</p>
+            <p className="mt-1 text-xs text-iron-400">
               {exercise.primaryMuscles.slice(0, 2).join(" · ")}{exercise.equipment[0] ? ` · ${exercise.equipment[0]}` : ""}
             </p>
-            <p className={`mt-1 ${weekSheet ? "text-[0.68rem] uppercase tracking-[0.12em] text-iron-500" : "text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500"}`}>
+            <p className={`mt-1 ${weekSheet || weekInline ? "text-[0.68rem] uppercase tracking-[0.12em] text-iron-500" : "text-[0.68rem] font-bold uppercase tracking-[0.12em] text-iron-500"}`}>
               {isCompound(exercise) ? "compound" : "isolation"} · fatigue {fatigueRatingForExercise(exercise)}/5
             </p>
           </div>
           {isAlreadyAdded
-            ? <span className={`${weekSheet ? "rounded-sm border border-white/[0.08] px-2 py-0.5 text-[0.65rem] font-medium text-iron-500" : "rounded-full bg-white/10 px-2 py-0.5 text-[0.65rem] font-bold text-iron-400"}`}>Added</span>
+            ? <span className={`${weekSheet || weekInline ? "rounded-sm border border-white/[0.08] px-2 py-0.5 text-[0.65rem] font-medium text-iron-500" : "rounded-full bg-white/10 px-2 py-0.5 text-[0.65rem] font-bold text-iron-400"}`}>Added</span>
             : isSelected
-              ? <Check className={`h-4 w-4 ${weekSheet ? "text-[#8fb9ff]" : "text-volt"}`} />
+              ? <Check className="h-4 w-4 text-[#8fb9ff]" />
               : null}
         </div>
       </button>
@@ -6018,7 +7614,7 @@ function ExercisePicker({
 
   const pickerBody = (
     <>
-      {weekSheet ? (
+      {weekSheet || weekInline ? (
         <div className="border-b border-white/[0.06] px-4 py-4">
           <div className="flex items-center justify-between gap-3">
             <p className="text-base font-semibold text-white">{title || "Add exercise"}</p>
@@ -6028,11 +7624,24 @@ function ExercisePicker({
             <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Search</p>
             <input className="field mt-2" placeholder="Search exercises..." value={query} onChange={(event) => setQuery(event.target.value)} />
           </div>
+          {requirementMode && (
+            <div className="mt-4 space-y-2">
+              <div className="rounded-sm border border-[#0a84ff]/20 bg-[#0a84ff]/6 px-3 py-2 text-sm text-iron-200">
+                <span className="text-iron-400">Target slot:</span>{" "}
+                <span className="font-medium text-white">{requirementStatusLabel || titleCaseLabel(requirementMuscle || "all")}</span>
+              </div>
+              <p className="text-xs text-iron-400">
+                {manualMuscleOverride
+                  ? `Manual filter override. Results are showing ${titleCaseLabel(effectiveMuscleFilter)} exercises, but selected picks will still fill the ${titleCaseLabel(requirementMuscle || "all")} slot.`
+                  : "Filtered for this requirement. Change muscle to search outside this slot."}
+              </p>
+            </div>
+          )}
           <div className="mt-4">
             <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Filters</p>
             <div className="-mx-4 mt-2 overflow-x-auto px-4 scrollbar-none">
               <div className="flex min-w-max gap-2">
-                <select className="field min-w-[8.5rem]" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+                <select className="field min-w-[8.5rem]" value={effectiveMuscleFilter} onChange={(event) => handleMuscleFilterChange(event.target.value)}>
                   <option value="all">Muscle</option>
                   {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
@@ -6055,16 +7664,23 @@ function ExercisePicker({
       ) : (
         <>
           <div className="mb-3 flex items-center gap-2">
-            <SlidersHorizontal className="h-4 w-4 text-volt" />
-            <p className="font-black">Exercise picker</p>
+            <SlidersHorizontal className="h-4 w-4 text-[#8fb9ff]" />
+            <p className="text-sm font-semibold text-white">Exercise picker</p>
           </div>
-          <p className="mb-3 text-sm text-iron-300">Search and select exercises from the exercise library.</p>
+          <p className="mb-3 text-xs text-iron-400">Search and select exercises from the exercise library.</p>
           <input className="field" placeholder="Search name, muscle, equipment, movement pattern..." value={query} onChange={(event) => setQuery(event.target.value)} />
+          <button
+            className="mt-2 flex w-full items-center justify-between border border-white/[0.12] bg-white/[0.03] px-3 py-1.5 text-xs text-iron-300 transition hover:bg-white/[0.06]"
+            onClick={() => setShowFilters((v) => !v)}
+          >
+            Filters
+            <ChevronRight className={`h-3.5 w-3.5 text-iron-500 transition ${showFilters ? "rotate-90" : ""}`} />
+          </button>
         </>
       )}
-      {!weekSheet && (
+      {!weekSheet && !weekInline && showFilters && (
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+          <select className="field" value={effectiveMuscleFilter} onChange={(event) => handleMuscleFilterChange(event.target.value)}>
             <option value="all">Muscle</option>
             {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
@@ -6083,20 +7699,68 @@ function ExercisePicker({
         </div>
       )}
       {groupedSections.length ? (
-        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : "mt-3 space-y-3"}>
+        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : weekInline ? "max-h-72 overflow-y-auto px-4 pb-4 scrollbar-none" : "mt-3 space-y-3"}>
           {groupedSections.map((section) => (
-            <div key={section.muscle} className={weekSheet ? "mb-4" : "rounded-lg border border-white/10 bg-white/[0.035] p-2"}>
-              <p className={`${weekSheet ? "mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500" : "label mb-2"}`}>{section.muscle}</p>
-              <div className={weekSheet ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "grid gap-2 sm:grid-cols-2"}>{section.exercises.map(renderExerciseButton)}</div>
+            <div key={section.muscle} className={weekSheet || weekInline ? "mb-4" : "mb-4"}>
+              <p className={`${weekSheet || weekInline ? "mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500" : "label mb-2"}`}>{section.muscle}</p>
+              <div className={weekSheet || weekInline ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "divide-y divide-white/[0.06] border-y border-white/[0.06]"}>{section.exercises.map(renderExerciseButton)}</div>
             </div>
           ))}
         </div>
       ) : (
-        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : "mt-3 grid gap-2 sm:grid-cols-2"}>
-          <div className={weekSheet ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "contents"}>{matches.map(renderExerciseButton)}</div>
+        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : weekInline ? "max-h-72 overflow-y-auto px-4 pb-4 scrollbar-none" : "mt-3"}>
+          <div className={weekSheet || weekInline ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "divide-y divide-white/[0.06] border-y border-white/[0.06]"}>{matches.map(renderExerciseButton)}</div>
         </div>
       )}
       {!matches.length && !groupedSections.length && <EmptyState title="No exercises found" detail="Try a broader muscle, equipment, or movement filter." />}
+      {updateDb && (
+        <div className={weekSheet || weekInline ? "border-t border-white/[0.06] px-4 py-3" : "mt-3 border-t border-white/[0.06] pt-3"}>
+          {!showCreateForm ? (
+            <button
+              className="btn-compact w-full text-[#8fb9ff]"
+              onClick={() => setShowCreateForm(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Create new exercise
+            </button>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">New exercise</p>
+              <input
+                className="field"
+                style={{ fontSize: "16px" }}
+                placeholder="Exercise name"
+                value={newExName}
+                onChange={(e) => setNewExName(e.target.value)}
+                autoFocus
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <select className="field" style={{ fontSize: "16px" }} value={newExMuscle} onChange={(e) => setNewExMuscle(e.target.value as MuscleGroup)}>
+                  {muscleOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <select className="field" style={{ fontSize: "16px" }} value={newExEquipment} onChange={(e) => setNewExEquipment(e.target.value as EquipmentCategory)}>
+                  {equipmentOptions.map((eq) => <option key={eq} value={eq}>{eq}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="apollo-primary-btn flex-1 text-xs"
+                  disabled={!newExName.trim()}
+                  onClick={handleQuickCreate}
+                >
+                  Save &amp; add
+                </button>
+                <button
+                  className="apollo-secondary-btn text-xs"
+                  onClick={() => { setShowCreateForm(false); setNewExName(""); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 
@@ -6104,8 +7768,10 @@ function ExercisePicker({
     <div className="apollo-picker-sheet">
       <div className="apollo-picker-panel">{pickerBody}</div>
     </div>
+  ) : weekInline ? (
+    <div className="mt-3 overflow-hidden rounded-sm border border-white/[0.08] bg-iron-950">{pickerBody}</div>
   ) : (
-    <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">{pickerBody}</div>
+    <div className="border border-white/[0.08] bg-iron-950/45 p-3">{pickerBody}</div>
   );
 }
 
@@ -6199,21 +7865,11 @@ function ProgramGapPanel({
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const gaps = analyzeProgramGaps(program, db);
   const criticalGaps = gaps.filter((gap) => gap.severity === "high");
   const secondaryGaps = gaps.filter((gap) => gap.severity !== "high");
   const visibleGaps = showAll ? gaps : criticalGaps;
-  const groupedGaps = [
-    { label: "Rule Conflicts", types: ["fatigue"] as ProgramGap["type"][], match: (gap: ProgramGap) => gap.issue.toLowerCase().includes("rule") || gap.issue.toLowerCase().includes("conflict") },
-    { label: "Volume", types: ["volume", "missing-category"] as ProgramGap["type"][] },
-    { label: "Balance", types: ["balance", "movement-pattern"] as ProgramGap["type"][] },
-    { label: "Fatigue", types: ["fatigue", "recoverability"] as ProgramGap["type"][], match: (gap: ProgramGap) => !gap.issue.toLowerCase().includes("rule") && !gap.issue.toLowerCase().includes("conflict") },
-    { label: "Repetition", types: ["repetition"] as ProgramGap["type"][] },
-    { label: "Recovery / Spacing", types: ["frequency", "recoverability"] as ProgramGap["type"][] }
-  ].map((group) => ({
-    ...group,
-    gaps: visibleGaps.filter((gap) => (group.match ? group.match(gap) : group.types.includes(gap.type)))
-  })).filter((group) => group.gaps.length);
 
   function applyGap(gap: ProgramGap) {
     if (!program || !gap.action?.exerciseId || !gap.action.dayId) return;
@@ -6233,41 +7889,60 @@ function ProgramGapPanel({
   }
 
   return (
-    <Panel title="Program Gap Analysis" icon={ShieldAlert}>
-      <div className="space-y-3">
-        {groupedGaps.length ? groupedGaps.map((group) => (
-          <div key={group.label} className="rounded-lg border border-white/10 bg-white/[0.035] p-3">
-            <p className="label mb-2">{group.label}</p>
-            <div className="space-y-2">
-              {group.gaps.map((gap) => {
-                const exercise = gap.action?.exerciseId ? db.exercises.find((item) => item.id === gap.action?.exerciseId) : undefined;
-                return (
-                  <div key={gap.id} className="rounded-lg border border-white/10 bg-white/[0.055] p-3">
-                    <ProgramGapCard gap={gap} db={db} />
-                    {exercise && gap.action?.kind === "add-exercise" && (
-                      <button className="btn-secondary mt-3 w-full" onClick={() => applyGap(gap)}>
-                        <Plus className="h-4 w-4" />
-                        Add {exercise.name}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
+    <section className="border-t border-white/[0.06] pt-3">
+      <button
+        className="flex w-full items-center justify-between"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <span className="text-sm font-semibold text-white">Program Gap Analysis</span>
+        <ChevronRight className={`h-4 w-4 text-iron-500 transition ${expanded ? "rotate-90" : ""}`} />
+      </button>
+
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          <div>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Needs attention</p>
+            {visibleGaps.length > 0 ? (
+              <div className="mt-2 divide-y divide-white/[0.06] border-y border-white/[0.06]">
+                {visibleGaps.map((gap) => {
+                  const exercise = gap.action?.exerciseId ? db.exercises.find((item) => item.id === gap.action?.exerciseId) : undefined;
+                  return (
+                    <div key={gap.id} className="py-2.5">
+                      <p className="text-sm text-orange-200">{gap.issue}</p>
+                      <p className="mt-1 text-xs text-iron-500">{gap.type}</p>
+                      {exercise && gap.action?.kind === "add-exercise" && (
+                        <button className="mt-2 border border-[#0a84ff]/40 bg-[#0a84ff]/10 px-2.5 py-1 text-xs text-[#8fb9ff]" onClick={() => applyGap(gap)}>
+                          Add {exercise.name}
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-iron-400">None.</p>
+            )}
           </div>
-        )) : criticalGaps.length === 0 ? <EmptyState title="No critical gaps" detail="The active week passes all critical checks." /> : null}
-        {secondaryGaps.length > 0 && (
-          <button
-            className="flex w-full items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-bold text-iron-400 transition hover:bg-white/[0.06]"
-            onClick={() => setShowAll((v) => !v)}
-          >
-            {showAll ? "Hide" : `Show ${secondaryGaps.length} secondary warning${secondaryGaps.length > 1 ? "s" : ""}`}
-            <ChevronRight className={`h-3 w-3 transition ${showAll ? "rotate-90" : ""}`} />
-          </button>
-        )}
-        {gaps.length === 0 && <EmptyState title="No major program gaps" detail="The active week passes the current volume, balance, frequency, and fatigue checks." />}
-      </div>
-    </Panel>
+
+          <div>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Covered</p>
+            <p className="mt-2 text-sm text-iron-400">
+              {gaps.length === 0 ? "Current plan passes volume, balance, frequency, and fatigue checks." : "Use this checklist to clear remaining items."}
+            </p>
+          </div>
+
+          {secondaryGaps.length > 0 && (
+            <button
+              className="flex w-full items-center justify-between border border-white/[0.12] bg-white/[0.03] px-3 py-1.5 text-xs text-iron-300 transition hover:bg-white/[0.06]"
+              onClick={() => setShowAll((v) => !v)}
+            >
+              {showAll ? "Hide secondary warnings" : `Show ${secondaryGaps.length} secondary warning${secondaryGaps.length > 1 ? "s" : ""}`}
+              <ChevronRight className={`h-3.5 w-3.5 text-iron-500 transition ${showAll ? "rotate-90" : ""}`} />
+            </button>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -6299,6 +7974,7 @@ function TemplateEditor({
       targetDay.exercises.splice(to, 0, moved);
       targetDay.exercises.forEach((item, index) => {
         item.order = index + 1;
+        item.userEditedOrder = true;
       });
       targetTemplate.updatedAt = nowIso();
       return draft;
@@ -6326,7 +8002,7 @@ function TemplateEditor({
       <select className="field" value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
         {templates.map((item) => <option key={item.id} value={item.id}>{item.name.includes("Base") || item.name.includes("Starter") ? `Default: ${item.name}` : item.name}</option>)}
       </select>
-      <ExercisePicker db={db} user={user} onPick={(exercise) => addExercise(exercise.id)} />
+      <ExercisePicker db={db} user={user} updateDb={updateDb} onPick={(exercise) => addExercise(exercise.id)} />
       <div className="space-y-2">
         {day.exercises.map((planned) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
@@ -6970,7 +8646,7 @@ function LibraryScreen({
         </div>
       </div>
 
-      <div className="sticky bottom-0 border-t border-white/[0.08] bg-iron-950/95 px-4 py-3 backdrop-blur">
+      <div className="sticky bottom-0 border-t border-white/[0.08] bg-iron-950/95 px-4 pt-3 safe-bottom backdrop-blur">
         {editingExerciseId ? (
           <div className="grid gap-2 sm:grid-cols-2">
             <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={saveEditExercise}>
@@ -7011,12 +8687,12 @@ function LibraryScreen({
           <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
             <div className="border border-white/[0.08] bg-white/[0.02]">
               <div className="border-b border-white/[0.08] px-4 py-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-iron-500">Exercise Library</p>
                     <h2 className="text-lg font-semibold text-white">Exercises</h2>
                   </div>
-                  <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={startAddExercise}>
+                  <button className="tap-highlight inline-flex shrink-0 min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={startAddExercise}>
                     <Plus className="h-4 w-4" />
                     Add Exercise
                   </button>
@@ -7075,7 +8751,8 @@ function LibraryScreen({
 
               <div className="px-4 py-3 text-xs text-iron-500">{exercises.length} exercise{exercises.length === 1 ? "" : "s"}</div>
 
-              <div className="max-h-[42rem] overflow-y-auto border-t border-white/[0.08]">
+              <div className="max-h-[42rem] overflow-y-auto border-t border-white/[0.08] pb-safe"
+                style={{ paddingBottom: "max(0px, env(safe-area-inset-bottom))" }}>
                 {exercises.length ? exercises.map((exercise) => {
                   const childVariations = !query && !showVariations
                     ? db.exercises.filter((item) => item.parentExerciseId === exercise.id && !item.isArchived && (!item.ownerUserId || item.ownerUserId === user.id))
@@ -7158,7 +8835,7 @@ function LibraryScreen({
           </section>
 
           {isMobileInspectorOpen ? (
-            <div className="fixed inset-0 z-[60] xl:hidden bg-iron-950">
+            <div className="fixed inset-0 z-[60] xl:hidden bg-iron-950" style={{ height: "100dvh" }}>
               {inspectorBody}
             </div>
           ) : null}
@@ -7549,7 +9226,7 @@ function LibraryMusclePicker({
       .map((muscle) => getLibraryMuscleGroupForMuscle(muscle)?.id)
       .find(Boolean);
     if (firstSelectedGroup) setExpandedGroupId(firstSelectedGroup);
-  }, [open, selected]);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!open) return null;
 
@@ -8124,7 +9801,7 @@ function copyWeekExercises(sourceWeek: { workouts: WorkoutDay[] }, targetWeek: {
 }
 
 function WeekEditor({
-  db, user, program, block, weekNumber, updateDb, onClose, onResumeWorkout, initialDayId
+  db, user, program, block, weekNumber, updateDb, onClose, onResumeWorkout, onOpenExerciseAnalytics, initialDayId
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -8142,6 +9819,7 @@ function WeekEditor({
       loggerMode?: LoggerNavigationState["loggerMode"];
     }
   ) => Promise<void> | void;
+  onOpenExerciseAnalytics?: (state: ExerciseAnalyticsState) => void;
 }) {
   const week = block.weeks.find((w) => w.weekNumber === weekNumber);
   const prevWeek = block.weeks.find((w) => w.weekNumber === weekNumber - 1);
@@ -8267,6 +9945,14 @@ function WeekEditor({
         user={user}
         session={reviewSession}
         onBack={() => setReviewSessionId(undefined)}
+        onOpenExerciseAnalytics={(exerciseId, exerciseName) => onOpenExerciseAnalytics?.({
+          exerciseId,
+          exerciseName,
+          sessionId: reviewSession.id,
+          workoutDayId: reviewSession.workoutDayId,
+          returnScreen: "completed-review",
+          returnCompletedReviewState: { sessionId: reviewSession.id, returnScreen: "week" },
+        })}
         onEditWorkout={onResumeWorkout ? () => void onResumeWorkout(reviewSession.id, {
           previousScreen: "week",
           completedReviewState: { sessionId: reviewSession.id, returnScreen: "week" },
@@ -8284,49 +9970,54 @@ function WeekEditor({
         Back to Week
       </button>
 
-      <section className="border-b border-white/[0.06] pb-4">
-        <p className="text-xs font-medium text-iron-500">Editing active block</p>
-        <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">Editing {selectedDay?.name || `Week ${weekNumber}`}</h2>
-        <p className="mt-1 text-sm text-iron-400">
-          {(selectedDay?.scheduledDay || "Day").toUpperCase()} · Day {selectedDay?.dayIndex || 1} · {selectedDay?.focus || week.workouts[0]?.focus}
-        </p>
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-iron-500">
-          <span>Week {weekNumber} of {block.lengthWeeks}</span>
-          {copiedFromPrev && prevWeek && <span className="text-[#8fb9ff]">Copied from Week {weekNumber - 1}</span>}
-          {copied && !copiedFromPrev && prevWeek && <span className="text-orange-300">Split days differ from Week {weekNumber - 1}</span>}
+      <section className="space-y-3 border-b border-white/[0.06] pb-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-bold tracking-tight text-white">Editing {selectedDay?.name || `Week ${weekNumber}`}</h2>
+            <p className="mt-1 text-sm text-iron-400">
+              Week {weekNumber} of {block.lengthWeeks}
+              {copiedFromPrev && prevWeek && <> · <span className="text-[#8fb9ff]">Copied from Week {weekNumber - 1}</span></>}
+              {copied && !copiedFromPrev && prevWeek && <> · <span className="text-orange-300">Split days differ from Week {weekNumber - 1}</span></>}
+            </p>
+          </div>
+          <div className="hidden shrink-0 items-center gap-2 lg:flex">
+            <button className="apollo-primary-btn" onClick={saveAndClose}>
+              <Save className="h-4 w-4" />
+              Save changes
+            </button>
+            <button className="apollo-secondary-btn" onClick={discardDraft}>Cancel</button>
+          </div>
         </div>
+        <div className="flex flex-wrap items-center gap-2 lg:hidden">
+          <button className="apollo-primary-btn" onClick={saveAndClose}>
+            <Save className="h-4 w-4" />
+            Save changes
+          </button>
+          <button className="apollo-secondary-btn" onClick={discardDraft}>Cancel</button>
+        </div>
+        <WeekDayCardSelector
+          db={db}
+          days={week.workouts}
+          selectedDayId={selectedDay?.id}
+          compact
+          onSelect={(day) => {
+            const completedSession = db.sessions.find(
+              (session) =>
+                session.userId === user.id &&
+                session.workoutDayId === day.id &&
+                session.status === "completed"
+            );
+            if (completedSession) {
+              setReviewSessionId(completedSession.id);
+              return;
+            }
+            setSelectedDayIdx(Math.max(0, week.workouts.findIndex((item) => item.id === day.id)));
+          }}
+        />
       </section>
-
-      <div className="flex flex-wrap items-center gap-2 border-b border-white/[0.06] pb-4">
-        <button className="apollo-primary-btn" onClick={saveAndClose}>
-          <Save className="h-4 w-4" />
-          Save changes
-        </button>
-        <button className="apollo-secondary-btn" onClick={discardDraft}>
-          Cancel
-        </button>
-      </div>
-
-      <WeekDayCardSelector
-        db={db}
-        days={week.workouts}
-        selectedDayId={selectedDay?.id}
-        compact
-        onSelect={(day) => setSelectedDayIdx(Math.max(0, week.workouts.findIndex((item) => item.id === day.id)))}
-      />
 
       {selectedDay ? (
         <div className="space-y-4">
-          <div>
-            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">
-              {selectedCompletedSession ? "Completed session review" : "Planned day editor"}
-            </p>
-            <h3 className="mt-1 text-lg font-semibold tracking-[-0.01em] text-white">{selectedDay.name}</h3>
-            <p className="mt-1 text-sm text-iron-400">
-              {selectedDaySplitDay ? `${selectedDaySplitDay.name} · ` : ""}{selectedDay.focus}
-              {splitDayMismatch ? " · different split day from prior week" : ""}
-            </p>
-          </div>
           {selectedCompletedSession ? (
             <section className="border-y border-white/[0.06] py-4">
               <p className="text-sm text-iron-300">This day already has completed workout history. Review or edit the logged session without overwriting the planned day.</p>
@@ -8358,7 +10049,7 @@ function WeekEditor({
 }
 
 function WeekProgressScreen({
-  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout, onOpenCompletedSessionReview
+  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout, onOpenCompletedSessionReview, onOpenExerciseAnalytics
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -8377,6 +10068,7 @@ function WeekProgressScreen({
     }
   ) => Promise<void> | void;
   onOpenCompletedSessionReview?: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
+  onOpenExerciseAnalytics?: (state: ExerciseAnalyticsState) => void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
@@ -8510,6 +10202,32 @@ function WeekProgressScreen({
         updateDb={updateDb}
         onClose={() => { setEditorDayId(undefined); setPlanningWeekNumber(undefined); }}
         onResumeWorkout={onResumeWorkout}
+        onOpenExerciseAnalytics={onOpenExerciseAnalytics}
+      />
+    );
+  }
+
+  if (reviewSession && reviewSession.status === "completed") {
+    return (
+      <CompletedWorkoutReview
+        db={db}
+        user={user}
+        session={reviewSession}
+        onBack={() => setReviewSessionId(undefined)}
+        onOpenExerciseAnalytics={(exerciseId, exerciseName) => onOpenExerciseAnalytics?.({
+          exerciseId,
+          exerciseName,
+          sessionId: reviewSession.id,
+          workoutDayId: reviewSession.workoutDayId,
+          returnScreen: "completed-review",
+          returnCompletedReviewState: { sessionId: reviewSession.id, returnScreen: "week" },
+        })}
+        onEditWorkout={onResumeWorkout ? () => void onResumeWorkout(reviewSession.id, {
+          previousScreen: "week",
+          completedReviewState: { sessionId: reviewSession.id, returnScreen: "week" },
+          loggerMode: "completed-edit",
+        }) : undefined}
+        backLabel="Back to Week"
       />
     );
   }
@@ -8522,11 +10240,6 @@ function WeekProgressScreen({
         session={reviewSession}
         onBack={() => setReviewSessionId(undefined)}
         onContinue={() => void onResumeWorkout?.(reviewSession.id)}
-        onEditDay={() => {
-          setReviewSessionId(undefined);
-          setEditorDayId(reviewSession.workoutDayId);
-          setPlanningWeekNumber(reviewSession.weekNumber || selectedWeekNumber);
-        }}
       />
     );
   }
@@ -8852,6 +10565,7 @@ function CompletedWorkoutReview({
   session,
   onBack,
   onEditWorkout,
+  onOpenExerciseAnalytics,
   backLabel = "Back"
 }: {
   db: TrainingDatabase;
@@ -8859,6 +10573,7 @@ function CompletedWorkoutReview({
   session: WorkoutSession;
   onBack: () => void;
   onEditWorkout?: () => void;
+  onOpenExerciseAnalytics?: (exerciseId?: string, exerciseName?: string) => void;
   backLabel?: string;
 }) {
   const day = findWorkoutDayForSession(db, session);
@@ -8872,7 +10587,7 @@ function CompletedWorkoutReview({
         title={session.name}
         session={session}
         day={day}
-        statusText={`completed · ${summary.hardSets} hard · ${summary.skippedSets} skipped${summary.score ? ` · score ${summary.score}` : ""}`}
+        statusText={`completed · ${summary.hardSets} hard · ${summary.skippedSets} skipped · avg RPE ${summary.avgRpe ? summary.avgRpe.toFixed(1) : "-"}${summary.avgFeel ? ` · avg feel ${summary.avgFeel.toFixed(1)}` : ""}${summary.score ? ` · score ${summary.score}` : ""}`}
         backLabel={backLabel}
         onBack={onBack}
       />
@@ -8903,13 +10618,27 @@ function CompletedWorkoutReview({
             const completedSetCount = logged.sets.filter(isCompletedValidSet).length;
             const hardSetCount = logged.sets.filter(isHardSet).length;
             const skippedSetCount = logged.sets.filter((set) => set.skipped).length;
+            const openExerciseAnalytics = () => onOpenExerciseAnalytics?.(logged.exerciseId, exercise?.name || "Exercise");
             return (
               <div key={logged.id} className="py-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
+                <div
+                  className={`flex flex-wrap items-start justify-between gap-3 ${onOpenExerciseAnalytics ? "cursor-pointer transition hover:bg-white/[0.03]" : ""}`}
+                  onClick={onOpenExerciseAnalytics ? openExerciseAnalytics : undefined}
+                  onKeyDown={onOpenExerciseAnalytics ? (event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openExerciseAnalytics();
+                    }
+                  } : undefined}
+                  role={onOpenExerciseAnalytics ? "button" : undefined}
+                  tabIndex={onOpenExerciseAnalytics ? 0 : undefined}
+                  aria-label={onOpenExerciseAnalytics ? `Open analytics for ${exercise?.name || "exercise"}` : undefined}
+                >
                   <div>
                     <p className="text-sm font-medium text-white">{exercise?.name || "Unknown exercise"}</p>
                     <p className="mt-1 text-sm text-iron-400">{completedSetCount} completed sets · {hardSetCount} hard · {skippedSetCount} skipped</p>
                   </div>
+                  {onOpenExerciseAnalytics ? <ChevronRight className="h-3.5 w-3.5 text-iron-600" /> : null}
                 </div>
                 {exercise ? (
                   <LoggedSetsTable logged={logged} exercise={exercise} user={user} displayUnit={displayUnit} />
@@ -8935,20 +10664,260 @@ function CompletedWorkoutReview({
   );
 }
 
+function ExerciseAnalyticsView({
+  db,
+  user,
+  exercise,
+  exerciseId,
+  exerciseName,
+  contextSession,
+  contextDay,
+  onBack,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  exercise?: Exercise;
+  exerciseId?: string;
+  exerciseName?: string;
+  contextSession?: WorkoutSession;
+  contextDay?: WorkoutDay;
+  onBack: () => void;
+}) {
+  const resolvedExerciseName = exercise?.name || exerciseName || "Exercise";
+  const normalizedTargetName = resolvedExerciseName.trim().toLowerCase();
+  const matchesExercise = (session: WorkoutSession, logged: LoggedExercise) => {
+    if (exerciseId && logged.exerciseId === exerciseId) return true;
+    const loggedExerciseName = db.exercises.find((item) => item.id === logged.exerciseId)?.name?.trim().toLowerCase();
+    return !!loggedExerciseName && loggedExerciseName === normalizedTargetName;
+  };
+
+  const matchingCompletedLogs = db.sessions
+    .filter((session) => session.userId === user.id && session.status === "completed")
+    .flatMap((session) =>
+      session.loggedExercises
+        .filter((logged) => matchesExercise(session, logged))
+        .map((logged) => ({ session, logged }))
+    );
+
+  const sampleUnit = matchingCompletedLogs
+    .flatMap((item) => item.logged.sets)
+    .find((set) => isWeightUnit(set.unit))?.unit;
+  const displayUnit = getExerciseDisplayUnit(exercise, user, isWeightUnit(sampleUnit) ? sampleUnit : undefined);
+
+  const allCompletedSets = matchingCompletedLogs
+    .flatMap((item) => item.logged.sets.filter(isCompletedValidSet));
+  const allSkippedSets = matchingCompletedLogs
+    .flatMap((item) => item.logged.sets.filter((set) => set.skipped));
+  const avgRpe = safeAverageRpe(allCompletedSets);
+  const avgFeel = allCompletedSets.length
+    ? Number((allCompletedSets.reduce((sum, set) => sum + setRatingNumeric(set.setRating), 0) / allCompletedSets.length).toFixed(1))
+    : 0;
+  const hardSets = allCompletedSets.filter(isHardSet).length;
+
+  const historyRows = matchingCompletedLogs
+    .flatMap(({ session, logged }) =>
+      logged.sets
+        .filter(isCompletedValidSet)
+        .map((set) => ({
+          key: `${session.id}:${logged.id}:${set.id}`,
+          date: set.completedAt || session.completedAt || session.startedAt,
+          workout: session.name,
+          set,
+        }))
+    )
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  const lastPerformed = historyRows[0];
+  const historyEntries = collectExerciseHistoryEntries({
+    db,
+    user,
+    exerciseIds: exerciseId ? [exerciseId] : [],
+  });
+  const chartPoints = historyEntries
+    .map((entry) => {
+      const displayValues = getEntryDisplayValues(entry, displayUnit);
+      return {
+        label: entry.label,
+        value: displayValues.e1rm || 0,
+        date: entry.date,
+      };
+    })
+    .filter((item) => item.value > 0)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const bestRecentE1rm = chartPoints.length ? Math.max(...chartPoints.map((point) => point.value)) : 0;
+  const contextLogged = contextSession?.loggedExercises.find((logged) => matchesExercise(contextSession, logged));
+  const plannedFromContext = contextDay?.exercises.find((planned) => {
+    if (exerciseId && planned.exerciseId === exerciseId) return true;
+    const plannedName = db.exercises.find((item) => item.id === planned.exerciseId)?.name?.trim().toLowerCase();
+    return !!plannedName && plannedName === normalizedTargetName;
+  });
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-5">
+      <button className="btn-compact -ml-2" onClick={onBack}>
+        <ChevronLeft className="h-3.5 w-3.5" />
+        Back
+      </button>
+
+      <div className="space-y-1 border-b border-white/[0.06] pb-4">
+        <h2 className="text-2xl font-bold tracking-tight text-white">{resolvedExerciseName}</h2>
+        {contextDay && (
+          <p className="text-sm text-iron-400">
+            {contextDay.name} · Week {contextDay.weekNumber ?? "?"} Day {contextDay.dayIndex || 1} · {contextDay.focus}
+          </p>
+        )}
+      </div>
+
+      <section className="border-b border-white/[0.06] pb-4">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Planned / current context</p>
+        {plannedFromContext || contextLogged ? (
+          <>
+            {plannedFromContext && (
+              <p className="mt-2 text-sm text-iron-300">
+                Planned {plannedFromContext.plannedSets.length} sets
+                {plannedFromContext.plannedSets[0]?.targetReps ? ` · ${plannedFromContext.plannedSets[0].targetReps} reps` : ""}
+                {plannedFromContext.plannedSets[0]?.targetRpe ? ` · RPE ${plannedFromContext.plannedSets[0].targetRpe}` : ""}
+              </p>
+            )}
+            {contextLogged && (
+              <p className="mt-1 text-sm text-iron-300">
+                Completed sets in selected workout: {contextLogged.sets.filter(isCompletedValidSet).length}
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="mt-2 text-sm text-iron-500">No planned or selected-workout context available.</p>
+        )}
+      </section>
+
+      <section className="border-b border-white/[0.06] pb-4">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Summary stats</p>
+        {historyRows.length > 0 ? (
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-2 text-sm text-iron-300">
+            <span>Avg RPE {avgRpe ? avgRpe.toFixed(1) : "-"}</span>
+            <span>Avg feel {avgFeel ? avgFeel.toFixed(1) : "-"}</span>
+            <span>Hard sets {hardSets}</span>
+            <span>Skipped sets {allSkippedSets.length}</span>
+            <span>Best recent e1RM {bestRecentE1rm > 0 ? `${formatWeight(bestRecentE1rm, displayUnit)} ${displayUnit}` : "-"}</span>
+            <span>
+              Last performed {lastPerformed
+                ? `${formatExerciseLoadText({ exercise, user, weight: lastPerformed.set.actualWeight, unit: lastPerformed.set.unit || displayUnit })} × ${lastPerformed.set.actualReps}${lastPerformed.set.actualRpe ? ` @ ${lastPerformed.set.actualRpe}` : ""}`
+                : "-"}
+            </span>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-iron-500">No exercise history yet.</p>
+        )}
+      </section>
+
+      <section className="border-b border-white/[0.06] pb-4">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Chart</p>
+        {chartPoints.length >= 2 ? (
+          <div className="mt-3 overflow-hidden border border-white/[0.07] bg-[#0a1018] p-3">
+            <ExerciseE1rmChart points={chartPoints.map(({ label, value }) => ({ label, value }))} unit={displayUnit} title="e1RM trend" strokeColor="#0a84ff" />
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-iron-500">Not enough data yet.</p>
+        )}
+      </section>
+
+      <section className="border-b border-white/[0.06] pb-4">
+        <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">History</p>
+        {historyRows.length > 0 ? (
+          <div className="mt-3 overflow-hidden border border-white/[0.07] bg-[#0a1018]">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[42rem] text-left text-sm">
+                <thead>
+                  <tr className="border-b border-white/[0.06] text-[0.68rem] text-iron-600">
+                    <th className="px-3 py-2 font-medium">Date / workout</th>
+                    <th className="px-3 py-2 font-medium">Load</th>
+                    <th className="px-3 py-2 font-medium">Reps</th>
+                    <th className="px-3 py-2 font-medium">RPE</th>
+                    <th className="px-3 py-2 font-medium">Feel</th>
+                    <th className="px-3 py-2 font-medium">e1RM</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {historyRows.map((row) => {
+                    const e1rm = calculateE1RMFromSet(row.set);
+                    return (
+                      <tr key={row.key} className="border-t border-white/[0.05]">
+                        <td className="px-3 py-2 text-iron-300">{new Date(row.date).toLocaleDateString()} · {row.workout}</td>
+                        <td className="px-3 py-2 text-iron-200">{formatExerciseLoadText({ exercise, user, weight: row.set.actualWeight, unit: row.set.unit || displayUnit })}</td>
+                        <td className="px-3 py-2 text-iron-200">{row.set.actualReps}</td>
+                        <td className="px-3 py-2 text-iron-200">{row.set.actualRpe ?? "-"}</td>
+                        <td className="px-3 py-2 text-iron-200">{row.set.setRating ? `${row.set.setRating}/5` : "-"}</td>
+                        <td className="px-3 py-2 text-iron-200">{e1rm ? `${formatWeight(e1rm, row.set.unit || displayUnit)} ${row.set.unit || displayUnit}` : "-"}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-iron-500">No history yet.</p>
+        )}
+      </section>
+
+      {contextLogged && (
+        <section>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Selected workout sets</p>
+          <div className="mt-3">
+            {exercise ? (
+              <LoggedSetsTable logged={contextLogged} exercise={exercise} user={user} displayUnit={displayUnit} />
+            ) : (
+              <div className="overflow-hidden border border-white/[0.07] bg-[#0a1018]">
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[30rem] text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-white/[0.06] text-[0.68rem] text-iron-600">
+                        <th className="px-3 py-2 font-medium">Set</th>
+                        <th className="px-3 py-2 font-medium">Load</th>
+                        <th className="px-3 py-2 font-medium">Reps</th>
+                        <th className="px-3 py-2 font-medium">RPE</th>
+                        <th className="px-3 py-2 font-medium">Feel</th>
+                        <th className="px-3 py-2 font-medium">e1RM</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {contextLogged.sets.map((set, index) => {
+                        const e1rm = calculateE1RMFromSet(set);
+                        return (
+                          <tr key={set.id} className="border-t border-white/[0.05]">
+                            <td className="px-3 py-2 text-iron-300">{index + 1}</td>
+                            <td className="px-3 py-2 text-iron-200">{set.actualWeight ?? "-"}</td>
+                            <td className="px-3 py-2 text-iron-200">{set.actualReps ?? "-"}</td>
+                            <td className="px-3 py-2 text-iron-200">{set.actualRpe ?? "-"}</td>
+                            <td className="px-3 py-2 text-iron-200">{set.setRating ? `${set.setRating}/5` : "-"}</td>
+                            <td className="px-3 py-2 text-iron-200">{e1rm ? `${formatWeight(e1rm, set.unit || displayUnit)} ${set.unit || displayUnit}` : "-"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 function InProgressWorkoutReview({
   db,
   user,
   session,
   onBack,
   onContinue,
-  onEditDay,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
   session: WorkoutSession;
   onBack: () => void;
   onContinue: () => void;
-  onEditDay: () => void;
 }) {
   const day = findWorkoutDayForSession(db, session);
   const summary = getSessionSummary(session);
@@ -8961,7 +10930,7 @@ function InProgressWorkoutReview({
         title={session.name}
         session={session}
         day={day}
-        statusText={`${summary.hardSets} hard · ${summary.skippedSets} skipped · avg RPE ${summary.avgRpe ? summary.avgRpe.toFixed(1) : "-"} · avg feel ${summary.avgFeel ? summary.avgFeel.toFixed(1) : "-"}`}
+        statusText={`in progress · ${summary.hardSets} hard · ${summary.skippedSets} skipped · avg RPE ${summary.avgRpe ? summary.avgRpe.toFixed(1) : "-"}${summary.avgFeel ? ` · avg feel ${summary.avgFeel.toFixed(1)}` : ""}`}
         backLabel="Back to Week"
         onBack={onBack}
       />
@@ -8978,10 +10947,7 @@ function InProgressWorkoutReview({
         <p className="mt-2 text-sm text-iron-300">{plannedExercises.length} exercises · {plannedExercises.reduce((sum, planned) => sum + planned.plannedSets.length, 0)} planned sets</p>
       </section>
 
-      <div className="flex flex-wrap gap-2">
-        <button className="apollo-secondary-btn" onClick={onEditDay}>Edit day</button>
-        <button className="apollo-secondary-btn" onClick={onBack}>Back to Week</button>
-      </div>
+      <button className="apollo-secondary-btn" onClick={onBack}>Back to Week</button>
 
       <section>
         <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Exercises</p>
@@ -10018,6 +11984,28 @@ function buildOffProgramPlannedSets(targetSets: number, targetReps: number, targ
   }));
 }
 
+function normalizeLoggerRuntimePlannedSets(
+  plannedSets: PlannedSet[] | undefined,
+  fallbackCount = 1,
+  fallbackReps = 8,
+  fallbackRpe = 7,
+  fallbackWeight?: number,
+): PlannedSet[] {
+  const safeCount = Math.max(1, fallbackCount);
+  const source = plannedSets?.length
+    ? plannedSets
+    : buildOffProgramPlannedSets(safeCount, fallbackReps, fallbackRpe, fallbackWeight);
+  return source.map((set, index) => ({
+    ...set,
+    id: set.id || createId("pset"),
+    kind: set.kind || "working",
+    setNumber: index + 1,
+    targetReps: Math.max(1, Math.round(set.targetReps || fallbackReps)),
+    targetRpe: sanitizeRpe(set.targetRpe || fallbackRpe),
+    plannedWeight: typeof set.plannedWeight === "number" ? set.plannedWeight : (index === 0 ? fallbackWeight : undefined),
+  }));
+}
+
 function getLatestExercisePerformanceLog(db: TrainingDatabase, userId: string, exerciseId: string) {
   return (db.exercisePerformanceLogs ?? [])
     .filter((log) => log.exerciseId === exerciseId && log.userId === userId)
@@ -10770,7 +12758,19 @@ function buildPlannedExerciseFromExercise({
   totalRequiredForMuscle?: number;
 }): PlannedExercise {
   const block = program?.blocks[0];
-  const resolvedRole = exerciseRole ?? inferBaseExerciseRole(exercise);
+  const resolvedRole = classifyExerciseRole({
+    exercise,
+    dayType: inferWorkoutDayType({
+      name: day?.name,
+      targetMuscles: day?.targetMuscles,
+      movementPatterns: day?.movementPatterns,
+    }),
+    blockType: block?.type || "hypertrophy",
+    dayFocus: day?.focus,
+    orderHint: order,
+    explicitRole: exerciseRole ?? inferBaseExerciseRole(exercise),
+    isPriority: Boolean(block?.priorityExerciseIds.includes(exercise.id) || isSbdExercise(exercise)),
+  });
   const goalUsed = getGoalUsed(program?.goal || user.goal, block?.goalOverride ?? block?.goal);
   const prescription = getBlockExercisePrescription({
     exercise,
@@ -10781,6 +12781,13 @@ function buildPlannedExerciseFromExercise({
     order,
     isPriority: Boolean(block?.priorityExerciseIds.includes(exercise.id) || isSbdExercise(exercise)),
     dayFocus: day?.focus,
+    splitDay: day
+      ? {
+          name: day.name,
+          muscleGroups: day.targetMuscles || [],
+          movementPatterns: day.movementPatterns || [],
+        }
+      : undefined,
     exerciseRole: resolvedRole,
     requirementSlotIndex,
     totalRequiredForMuscle,

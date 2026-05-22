@@ -67,6 +67,15 @@ textarea {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Prevent iOS Safari from zooming on input focus (requires font-size >= 16px) */
+@media (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}
+
 @layer components {
   /* ── Surfaces ──────────────────────────────────────────────────── */
   /* panel: use for modals, sheets, and large contextual cards only */
@@ -248,7 +257,15 @@ textarea {
   }
 
   .apollo-picker-panel {
-    @apply mx-auto flex h-full w-full max-w-3xl flex-col bg-[#0d1016] sm:my-6 sm:h-[min(90vh,56rem)] sm:rounded-sm sm:border sm:border-white/[0.08];
+    @apply mx-auto flex h-full w-full max-w-3xl flex-col bg-[#0d1016] sm:my-6 sm:rounded-sm sm:border sm:border-white/[0.08];
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+  @media (min-width: 640px) {
+    .apollo-picker-panel {
+      height: min(90dvh, 56rem);
+      max-height: min(90dvh, 56rem);
+    }
   }
 
   /* ── Live Logger input rows ─────────────────────────────────── */
