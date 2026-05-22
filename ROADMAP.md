@@ -1,5 +1,46 @@
 # ROADMAP.md
 
+## Manual Requirement Slot Assignment Wins — Completed (Session 62)
+
+### Delivered
+- Requirement allocation now assigns any planned exercise with an explicit `fulfillsRequirementId` to that exact slot before inferred muscle-specific allocation runs.
+- Requirement-slot picker manual selections now store the selected target slot explicitly, while broad `Add Exercise` in the week/block day editor stays unassigned.
+- Auto-fill specificity behavior remains intact for unassigned or auto-targeted exercises because inferred allocation still runs after the explicit-assignment pass.
+
+### Next steps
+- Manually verify mixed manual + auto-fill flows in Week Planner and Block Builder, especially Chest vs Upper Chest and manual filter override behavior.
+
+## Upper Chest Autofill Candidate Source Sync — Completed (Session 61)
+
+### Delivered
+- Unified requirement autofill and requirement-scoped picker muscle matching so both start from the same visible candidate source before duplicate rejection and ranking.
+- Removed the extra requirement/day-pattern candidate gate that could leave Upper Chest with visible picker matches but zero autofill candidates.
+- Added a clearer duplicate-only warning path and corrected the built-in `Incline Dumbbell Press` metadata to be upper-chest biased (`upper-chest` + `chest`).
+
+### Next steps
+- Manually verify the Upper Chest day-editor flow in Block Builder and Week Planner, plus parent-muscle fallback behavior for Chest/Back/Shoulders slots.
+
+## Block Builder Setup UI Cleanup — Completed (Session 59)
+
+### Delivered
+- Removed the redundant `Start week` row from the main Block Builder Basics setup while keeping the new-block flow implicitly anchored to Week 1.
+- Fixed the Block Builder inline selects so `Goal` and `Template` now render with a single chevron instead of native-select plus custom-icon overlap.
+- Tightened builder secondary-action semantics so disabled Apollo secondary buttons visibly read as unavailable, and planning-rule rows now present as deliberate expandable controls.
+
+### Next steps
+- Manually verify the Block Builder setup on phone and desktop widths, especially disabled-state readability before a draft exists.
+
+## Requirement Autofill Specificity + Unified Status — Completed (Session 58)
+
+### Delivered
+- Replaced the old split counting paths in the Week planner / Block Builder day editor with one shared requirement allocator for slot counts, missing-state warnings, and completion state.
+- Changed requirement matching to respect specificity ordering so exact upper-chest/lats/upper-back/mid-back/side-delts targets are filled before broader chest/back/shoulders parent slots.
+- Updated auto-fill candidate ranking so parent requirements prefer general parent movements when available and only fall back to child-biased movements after specific slots are handled.
+- Preserved explicit/manual requirement slot assignments and limited auto-fill to remaining open slots.
+
+### Next steps
+- Manually verify Chest + Upper Chest and Back + Lats/Upper Back/Mid Back combinations in the day editor UI.
+
 ## Universal Workout Prescription + Ordering Pass — Completed (Session 57)
 
 ### Delivered

@@ -1,5 +1,30 @@
 # DECISIONS.md
 
+## Manual Requirement Slot Assignment Wins Decisions (Session 62)
+
+- Manual requirement-slot selection is explicit user intent and must override inferred muscle-specific allocation. If the user is filling `Chest`, the chosen exercise fills `Chest` even if its muscle metadata also matches `Upper Chest`.
+- Requirement counting priority is explicit assigned slot first, then inferred specificity for anything left unassigned.
+- Broad `Add Exercise` entry points are not equivalent to requirement-slot pickers; they should not silently tag a requirement unless the picker was opened for a specific target slot.
+
+## Upper Chest Autofill Candidate Source Sync Decisions (Session 61)
+
+- Requirement-scoped picker results and requirement autofill candidates must come from the same requirement-matching source so the UI never shows a visible match that autofill silently excludes.
+- Requirement autofill may rank candidates after generation, but duplicate rejection should happen after candidate generation and should only exclude exact day-level duplicates.
+- A filled parent requirement such as `Chest` must not block a still-open child requirement such as `Upper Chest`; specificity ordering remains the source of truth.
+- Temporary requirement-autofill debug logging may exist behind a hard gate, but default behavior must stay silent (`REQUIREMENT_AUTOFILL_DEBUG = false`).
+
+## Block Builder Setup UI Cleanup Decisions (Session 59)
+
+- The primary Block Builder Basics section should show only fields that matter during initial block creation. `Start week` is redundant there because new drafts always begin from Week 1.
+- Builder inline selects should use one consistent custom-select treatment: hide the native arrow and render a single explicit chevron so the row does not look broken on browsers that already draw select affordances.
+- Secondary/gray builder controls must communicate real state. If a control is actionable, it should have hover/expand behavior and proper button semantics; if unavailable, disabled styling must be obvious instead of looking like a dead click target.
+
+## Requirement Autofill Specificity + Unified Status Decisions (Session 58)
+
+- Requirement allocation in the Week planner / Block Builder day editor must use one shared source of truth for chips, warnings, and completion state rather than mixing one-off autofill strings with separate counters.
+- Requirement matching now honors specificity in this order: exact primary, exact secondary, child-specific before parent-general, then parent fallback. For broad parent requirements like chest/back/shoulders, general matches are preferred over child-biased matches when both are available.
+- Explicit `fulfillsRequirementId` assignments are treated as manual intent and preserved. Auto-fill only assigns new exercises into still-open requirement slots.
+
 ## Universal Workout Prescription + Ordering Decisions (Session 57)
 
 - Exercise role classification should be richer than the older `main/secondary/isolation` split. Planning should distinguish main strength lifts, main hypertrophy compounds, machine compounds, heavy hinges, delt/arm/calf/core accessories, and small-muscle isolations.
