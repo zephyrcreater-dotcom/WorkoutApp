@@ -64,11 +64,22 @@ export type ExerciseCategoryLabel =
   | "bodyweight"
   | "conditioning";
 export type ExerciseRole =
+  | "main_strength_lift"
+  | "main_hypertrophy_compound"
   | "main_lift"
   | "primary_compound"
   | "secondary_compound"
+  | "machine_compound"
   | "accessory_compound"
+  | "heavy_hinge"
   | "isolation"
+  | "small_muscle_isolation"
+  | "delt_accessory"
+  | "rear_delt_accessory"
+  | "arm_accessory"
+  | "calf_accessory"
+  | "core_accessory"
+  | "conditioning_optional"
   | "pump_accessory"
   | "technique_variation"
   | "hypertrophy_accessory"
@@ -541,6 +552,8 @@ export interface PlannedExercise {
   order: number;
   exerciseRole?: ExerciseRole;
   fatigueTag?: ExerciseFatigueTag;
+  userEditedPrescription?: boolean;
+  userEditedOrder?: boolean;
   plannedSets: PlannedSet[];
   restSeconds: number;
   notes?: string;

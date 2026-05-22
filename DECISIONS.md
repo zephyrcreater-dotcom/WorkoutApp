@@ -1,5 +1,26 @@
 # DECISIONS.md
 
+## Universal Workout Prescription + Ordering Decisions (Session 57)
+
+- Exercise role classification should be richer than the older `main/secondary/isolation` split. Planning should distinguish main strength lifts, main hypertrophy compounds, machine compounds, heavy hinges, delt/arm/calf/core accessories, and small-muscle isolations.
+- Prescription math should depend on both role and day type. A hack squat on Legs/Lower as the lead quad movement should not be treated like a generic heavy hinge or a barbell strength lift.
+- Ordering should be coach-chosen for generated and auto-fill outputs: compounds first, secondary work second, accessories later, with Push/Pull/Legs/Upper/Lower/Full Body-specific tie-breaks.
+- Manual user edits should create opt-out signals. User-edited prescriptions and manual reorder actions must prevent later auto logic from silently overwriting those choices.
+
+## Requirement Picker Filter Mode Decisions (Session 56)
+
+- Requirement-scoped picker state and manual filter state must stay separate. A picker can derive its effective muscle filter from the selected requirement without pretending the normal manual dropdown is still interactive.
+- Requirement mode should present scope explicitly with a chip-style summary or equivalent and may offer a `Change filter` action to switch into manual filtering.
+- Manual `Add Exercise` remains a broad picker with editable muscle/equipment/pattern/fatigue filters.
+
+## Week Planning Role-Aware Prescription Decisions (Session 55)
+
+- Week planning prescription logic should live in the shared training-intelligence helpers so generated weeks and Block Builder inserts stay aligned.
+- Hypertrophy prescriptions should be role-aware first, then refined by movement pattern, muscle group, equipment, fatigue, and week number rather than flattening toward one generic default.
+- Week 2 hypertrophy progression should be conservative for compounds and more aggressive for lower-fatigue accessories, but it should not increase sets, reps, and RPE all at once on every movement.
+- Heavy hinge and deadlift-family work should stay intentionally conservative in hypertrophy weeks: lower set counts, lower RPE ceiling, and restrained progression.
+- Same-day similar compounds should not automatically receive identical prescriptions when slot order gives enough context to separate a first movement from a secondary one.
+
 ## Library UI Redesign: Exercise Inspector + Condensed Muscle Picker Decisions (Session 36)
 
 - The Library exercise list should behave like a compact training library, not a row of tiny tools. Rows now prioritize scan speed, selection, and status, while higher-impact actions live in the inspector.

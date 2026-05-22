@@ -43,6 +43,7 @@ interface CloudSyncState {
 
 const AUTO_SYNC_DELAY_MS = 3000;
 const LOCAL_SCOPE: DatabaseStorageScope = { mode: "local-only" };
+const LOGGER_SYNC_DEBUG = false;
 
 function canUseWindow(): boolean {
   return typeof window !== "undefined";
@@ -60,6 +61,17 @@ function shouldDebugSync(): boolean {
 function logSync(event: string, detail?: Record<string, unknown>) {
   if (!shouldDebugSync()) return;
   console.info(`[sync] ${event}`, detail || {});
+}
+
+function logLoggerSync(event: string, detail?: Record<string, unknown>) {
+  if (!LOGGER_SYNC_DEBUG) return;
+  console.info(`[logger-sync] ${event}`, detail || {});
+}
+
+function parseTimestamp(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function isSeedLikeDatabase(database?: TrainingDatabase): boolean {
@@ -99,6 +111,11 @@ export function useTrainingDb() {
   const hasHydratedFromCloudRef = useRef(false);
   const isSavingToCloudRef = useRef(false);
   const lastSavedSerializedSnapshotRef = useRef<string | undefined>(undefined);
+  const latestLocalMutationSeqRef = useRef(0);
+  const latestAppliedPersistSeqRef = useRef(0);
+  const pendingLocalMutationCountRef = useRef(0);
+  const lastLocalMutationAtRef = useRef<string | undefined>(undefined);
+  const persistChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const updateCloudState = useCallback((patch: Partial<CloudSyncState>) => {
     setCloud((current) => ({ ...current, ...patch }));
@@ -214,7 +231,7 @@ export function useTrainingDb() {
 
   const persistDb = useCallback(async (
     next: TrainingDatabase,
-    options?: { preserveUpdatedAt?: boolean; scheduleCloud?: boolean; reason?: string }
+    options?: { preserveUpdatedAt?: boolean; scheduleCloud?: boolean; reason?: string; mutationSeq?: number }
   ) => {
     const scope = authModeRef.current === "cloud"
       ? currentCloudScope()
@@ -226,8 +243,23 @@ export function useTrainingDb() {
     const identity = scope.mode === "cloud-cache" && sessionRef.current
       ? { mode: "supabase" as const, supabaseUserId: sessionRef.current.user.id, email: sessionRef.current.user.email }
       : { mode: "local" as const };
+    logLoggerSync("PERSIST_START", {
+      reason: options?.reason || "local-mutation",
+      mutationSeq: options?.mutationSeq,
+      source: scope.mode === "cloud-cache" ? "cloud-cache" : "local-storage",
+      updatedAt: next.updatedAt,
+      pendingLocalMutations: pendingLocalMutationCountRef.current,
+      sessionCount: next.sessions.length,
+    });
     const saved = await saveForScope(scope, bindDatabaseToIdentity(next, identity), { preserveUpdatedAt: options?.preserveUpdatedAt });
-    applyDbToState(saved);
+    logLoggerSync("PERSIST_SUCCESS", {
+      reason: options?.reason || "local-mutation",
+      mutationSeq: options?.mutationSeq,
+      source: scope.mode === "cloud-cache" ? "cloud-cache" : "local-storage",
+      updatedAt: saved.updatedAt,
+      pendingLocalMutations: pendingLocalMutationCountRef.current,
+      sessionCount: saved.sessions.length,
+    });
     if (options?.scheduleCloud && scope.mode === "cloud-cache") {
       const snapshot = buildAppSnapshot(saved);
       const serialized = JSON.stringify(snapshot);
@@ -252,7 +284,7 @@ export function useTrainingDb() {
       }
     }
     return saved;
-  }, [applyDbToState, clearPendingCloudSave, currentCloudScope, pushSnapshotToCloud, saveForScope, updateCloudState]);
+  }, [clearPendingCloudSave, currentCloudScope, pushSnapshotToCloud, saveForScope, updateCloudState]);
 
   const hydrateCloudMode = useCallback(async (session: Session, reason: "initial-session" | "signed-in") => {
     const scope = getCloudScope(session.user.id);
@@ -271,6 +303,14 @@ export function useTrainingDb() {
       lastError: undefined,
     });
     logSync("hydrate-start", { reason, userId: session.user.id });
+    logLoggerSync("HYDRATE_FROM_STORAGE", {
+      source: "cloud-cache",
+      reason,
+      userId: session.user.id,
+      cachedUpdatedAt: cachedBound?.updatedAt,
+      inMemoryUpdatedAt: dbRef.current?.updatedAt,
+      pendingLocalMutations: pendingLocalMutationCountRef.current,
+    });
 
     try {
       const remote = await fetchAppSnapshot(session.user.id);
@@ -279,6 +319,15 @@ export function useTrainingDb() {
           mode: "supabase",
           supabaseUserId: session.user.id,
           email: session.user.email,
+        });
+        logLoggerSync("HYDRATE_FROM_SUPABASE", {
+          source: "supabase-read",
+          reason,
+          userId: session.user.id,
+          remoteUpdatedAt: remote.updated_at,
+          remoteEnvelopeUpdatedAt: remote.data.updatedAt,
+          inMemoryUpdatedAt: dbRef.current?.updatedAt,
+          pendingLocalMutations: pendingLocalMutationCountRef.current,
         });
         const saved = await replaceDatabase(scope, remoteBound, { preserveUpdatedAt: true });
         applyDbToState(saved);
@@ -525,8 +574,81 @@ export function useTrainingDb() {
 
   const updateDb = useCallback(async (updater: (draft: TrainingDatabase) => TrainingDatabase) => {
     if (!dbRef.current) return;
-    const next = updater(structuredClone(dbRef.current));
-    await persistDb(next, { scheduleCloud: true, reason: "local-update" });
+    const base = dbRef.current;
+    const next = updater(structuredClone(base));
+    const baseSerialized = JSON.stringify(base);
+    const nextSerialized = JSON.stringify(next);
+    if (baseSerialized === nextSerialized) {
+      logLoggerSync("SKIP_REMOTE_BECAUSE_LOCAL_DIRTY", {
+        reason: "unchanged-local-update",
+        updatedAt: base.updatedAt,
+        pendingLocalMutations: pendingLocalMutationCountRef.current,
+      });
+      return;
+    }
+
+    const optimisticUpdatedAt = new Date().toISOString();
+    next.updatedAt = optimisticUpdatedAt;
+    const mutationSeq = latestLocalMutationSeqRef.current + 1;
+    latestLocalMutationSeqRef.current = mutationSeq;
+    pendingLocalMutationCountRef.current += 1;
+    lastLocalMutationAtRef.current = optimisticUpdatedAt;
+
+    logLoggerSync("LOCAL_ACTION_START", {
+      mutationSeq,
+      updatedAt: optimisticUpdatedAt,
+      pendingLocalMutations: pendingLocalMutationCountRef.current,
+      sessionCount: next.sessions.length,
+      source: "local-action",
+    });
+
+    applyDbToState(next);
+    logLoggerSync("LOCAL_ACTION_END", {
+      mutationSeq,
+      updatedAt: optimisticUpdatedAt,
+      pendingLocalMutations: pendingLocalMutationCountRef.current,
+      sessionCount: next.sessions.length,
+      source: "local-action",
+    });
+
+    persistChainRef.current = persistChainRef.current.then(async () => {
+      try {
+        const saved = await persistDb(next, {
+          preserveUpdatedAt: true,
+          scheduleCloud: true,
+          reason: "local-update",
+          mutationSeq,
+        });
+        if (mutationSeq === latestLocalMutationSeqRef.current) {
+          latestAppliedPersistSeqRef.current = mutationSeq;
+          applyDbToState(saved);
+          logLoggerSync("ACTIVE_WORKOUT_REPLACED", {
+            mutationSeq,
+            updatedAt: saved.updatedAt,
+            source: "persist-success-latest",
+          });
+        } else {
+          logLoggerSync("APPLY_REMOTE_WORKOUT", {
+            mutationSeq,
+            updatedAt: saved.updatedAt,
+            source: "persist-success-stale-skip",
+            latestMutationSeq: latestLocalMutationSeqRef.current,
+          });
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Failed to persist local workout state.";
+        setError(message);
+        logLoggerSync("PERSIST_ERROR", {
+          mutationSeq,
+          message,
+          pendingLocalMutations: pendingLocalMutationCountRef.current,
+        });
+      } finally {
+        pendingLocalMutationCountRef.current = Math.max(0, pendingLocalMutationCountRef.current - 1);
+      }
+    });
+
+    await persistChainRef.current;
   }, [persistDb]);
 
   const importDb = useCallback(async (next: TrainingDatabase) => {

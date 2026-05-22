@@ -8,16 +8,19 @@ import {
   isCompound,
   isHeavyCompound,
   isLowBackFatigueExercise,
+  orderExercisesForDay,
   isSbdExercise
 } from "./programmingLogic";
 import {
   buildFatigueBudget,
+  classifyExerciseRole,
   getExerciseIncrement,
   getGoalUsed,
   getRequirementSlotPlan,
   getSameExerciseBaseline,
   getExerciseFatigueTag,
   inferBaseExerciseRole,
+  inferWorkoutDayType,
   recommendWeightForExercise,
   scoreExerciseForSlot,
 } from "./trainingIntelligence";
@@ -282,7 +285,20 @@ function chooseExercisesForDay(
         }
       }
     }
-    return result;
+    return orderExercisesForDay(
+      result.map((item) => ({
+        ...item,
+        exerciseRole: classifyExerciseRole({
+          exercise: item.exercise,
+          blockType: request.blockType,
+          dayFocus: splitDay?.focus,
+          orderHint: (item.slotIndex ?? 0) + 1,
+          explicitRole: item.exerciseRole,
+          isPriority: request.priorityExerciseIds.includes(item.exercise.id),
+        }),
+      })),
+      { splitDay, blockType: request.blockType }
+    );
   }
 
   for (const exercise of uniqueOrdered) {
@@ -291,7 +307,20 @@ function chooseExercisesForDay(
     weeklyExerciseCounts[exercise.id] = (weeklyExerciseCounts[exercise.id] ?? 0) + 1;
     if (result.length >= (request.goal === "general-health" ? 4 : 6)) break;
   }
-  return result;
+  return orderExercisesForDay(
+    result.map((item, index) => ({
+      ...item,
+      exerciseRole: classifyExerciseRole({
+        exercise: item.exercise,
+        blockType: request.blockType,
+        dayFocus: splitDay?.focus,
+        orderHint: index + 1,
+        explicitRole: item.exerciseRole,
+        isPriority: request.priorityExerciseIds.includes(item.exercise.id),
+      }),
+    })),
+    { splitDay, blockType: request.blockType }
+  );
 }
 
 function plannedExerciseFor(
@@ -302,13 +331,26 @@ function plannedExerciseFor(
   request: ProgramRequest,
   weekNumber = 1,
   requirementId?: ID,
+  splitDay?: SplitDay,
   dayFocus?: SplitDay["focus"],
   slotIndex = 0,
   totalRequiredForMuscle = 1,
   exerciseRole?: ExerciseRole
 ): PlannedExercise {
   const isPriorityLift = request.priorityExerciseIds.includes(exercise.id);
-  const resolvedRole = exerciseRole ?? inferBaseExerciseRole(exercise);
+  const resolvedRole = classifyExerciseRole({
+    exercise,
+    dayType: inferWorkoutDayType({
+      name: splitDay?.name,
+      targetMuscles: splitDay?.muscleGroups,
+      movementPatterns: splitDay?.movementPatterns,
+    }),
+    blockType: request.blockType,
+    dayFocus,
+    orderHint: order,
+    explicitRole: exerciseRole ?? inferBaseExerciseRole(exercise),
+    isPriority: isPriorityLift,
+  });
   const prescription = getExercisePrescription({
     exercise,
     goal: getGoalUsed(request.goal, request.blockGoalOverride),
@@ -316,6 +358,7 @@ function plannedExerciseFor(
     order,
     isPriority: isPriorityLift,
     dayFocus,
+    splitDay,
     requirementSlotIndex: slotIndex,
     totalRequiredForMuscle,
     exerciseRole: resolvedRole,
@@ -396,6 +439,7 @@ export function generateProgram(user: UserProfile, db: TrainingDatabase, request
             request,
             weekIndex + 1,
             item.requirementId,
+            splitDay,
             focus,
             item.slotIndex ?? order,
             item.totalRequiredForMuscle ?? 1,

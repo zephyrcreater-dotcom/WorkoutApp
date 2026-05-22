@@ -1,5 +1,38 @@
 # ROADMAP.md
 
+## Universal Workout Prescription + Ordering Pass — Completed (Session 57)
+
+### Delivered
+- Expanded the shared workout-planning logic so generated and auto-filled days classify exercises with richer coach-style roles before prescription math runs.
+- Added day-type-aware ordering for Push, Pull, Legs, Upper, Lower, and Full Body days so compounds sort ahead of accessories in a more believable training flow.
+- Tightened hypertrophy, strength, powerbuilding, and peaking prescriptions so machine quad compounds, heavy hinges, pulls, presses, delts, arms, calves, and core work land in more role-appropriate set/rep/RPE ranges.
+- Added lightweight manual-edit protection so user-adjusted sets/reps/RPE and manually reordered template exercises are not blindly overwritten by later auto logic.
+
+### Next steps
+- Manually verify generated Week/Block workouts in the UI across PPL, Upper/Lower, and Full Body templates, especially after mixing manual picks with auto-fill.
+
+## Requirement Picker Filter Interaction Fix — Completed (Session 56)
+
+### Delivered
+- Fixed the Week/Block exercise picker so requirement-scoped mode no longer renders a dead disabled muscle dropdown.
+- Added a clear scoped state with a `Change filter` action that switches the picker into manual muscle filtering.
+- Preserved requirement auto-advance and kept manual `Add Exercise` as a broad picker with editable filters.
+
+### Next steps
+- Manually verify scoped vs manual picker behavior in both Week planner and Block Builder flows.
+
+## Week Planning Prescription Quality Pass — Completed (Session 55)
+
+### Delivered
+- Reworked shared week/block prescription logic so hypertrophy days use role-aware sets, reps, RPE, and rep ranges instead of generic defaults.
+- Added explicit handling for heavy hinges, presses, pulls, squats, delts, arms, calves, and common leg isolations.
+- Added deterministic Week 2 hypertrophy progression that selectively increases either effort, reps, or sets depending on movement role and fatigue cost.
+- Preserved the existing manual-edit flow so user-set prescriptions are still edited locally instead of being regenerated on every save or day switch.
+
+### Next steps
+- Manually verify Week 1 vs Week 2 prescriptions across Push/Pull/Legs templates in the app UI.
+- Revisit whether the exercise cards should render rep ranges more prominently anywhere they currently only emphasize the anchor rep number.
+
 ## Library UI Redesign: Exercise Inspector + Condensed Muscle Picker — Completed (Session 36)
 
 ### Delivered
