@@ -45,8 +45,10 @@ export interface PrescriptionInput {
   goalType: TrainingGoal;
   blockType: BlockType;
   dayFocus: DayFocus;
+  dayType?: WorkoutDayType;
   exercise: Exercise;
   exerciseRole: ExerciseRole;
+  orderHint?: number;
   requirementSlotIndex: number;
   totalRequiredForMuscle: number;
   weekNumber?: number;
@@ -54,14 +56,116 @@ export interface PrescriptionInput {
   isPriority?: boolean;
 }
 
+export type WorkoutDayType =
+  | "push"
+  | "pull"
+  | "legs"
+  | "upper"
+  | "lower"
+  | "full_body"
+  | "mixed";
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
+}
+
+function isPressPattern(pattern: MovementPattern): boolean {
+  return pattern === "horizontal-press" || pattern === "incline-press" || pattern === "vertical-press";
+}
+
+function isPullPattern(pattern: MovementPattern): boolean {
+  return pattern === "horizontal-pull" || pattern === "vertical-pull";
+}
+
+function isLowerPattern(pattern: MovementPattern): boolean {
+  return pattern === "squat" || pattern === "hinge" || pattern === "single-leg" || pattern === "knee-extension" || pattern === "knee-flexion" || pattern === "hip-extension" || pattern === "ankle-extension";
+}
+
+function lowerCaseName(exercise: Exercise): string {
+  return exercise.name.toLowerCase();
+}
+
+function isMachineCompoundLike(exercise: Exercise): boolean {
+  const name = lowerCaseName(exercise);
+  return (exercise.category === "machine" || name.includes("smith") || name.includes("belt squat"))
+    && (
+      exercise.kind.includes("compound")
+      || exercise.exerciseCategory === "machine_compound"
+      || exercise.movementPattern === "squat"
+      || isPressPattern(exercise.movementPattern)
+      || isPullPattern(exercise.movementPattern)
+      || name.includes("press")
+      || name.includes("row")
+      || name.includes("pulldown")
+      || name.includes("hack squat")
+      || name.includes("leg press")
+    );
+}
+
+function isQuadMachineCompound(exercise: Exercise): boolean {
+  const name = lowerCaseName(exercise);
+  return hasPrimaryMuscle(exercise, "quads")
+    && (
+      name.includes("hack squat")
+      || name.includes("leg press")
+      || name.includes("belt squat")
+      || name.includes("smith squat")
+      || name.includes("machine squat")
+      || (isMachineCompoundLike(exercise) && (exercise.movementPattern === "squat" || exercise.movementPattern === "single-leg"))
+    );
+}
+
+function isMainShoulderPress(exercise: Exercise): boolean {
+  const name = lowerCaseName(exercise);
+  return exercise.movementPattern === "vertical-press"
+    || name.includes("overhead press")
+    || name.includes("shoulder press")
+    || name.includes("ohp");
+}
+
+export function inferWorkoutDayType(input: {
+  name?: string;
+  targetMuscles?: MuscleGroup[];
+  movementPatterns?: MovementPattern[];
+}): WorkoutDayType {
+  const name = (input.name || "").toLowerCase();
+  if (name.includes("push")) return "push";
+  if (name.includes("pull")) return "pull";
+  if (name.includes("leg")) return "legs";
+  if (name.includes("upper")) return "upper";
+  if (name.includes("lower")) return "lower";
+  if (name.includes("full")) return "full_body";
+
+  const muscles = new Set(input.targetMuscles || []);
+  const patterns = new Set(input.movementPatterns || []);
+  const upperPush = ["chest", "upper-chest", "lower-chest", "front-delts", "side-delts", "triceps"].some((muscle) => muscles.has(muscle as MuscleGroup));
+  const upperPull = ["back", "lats", "upper-back", "mid-back", "rear-delts", "biceps", "traps", "forearms"].some((muscle) => muscles.has(muscle as MuscleGroup));
+  const lower = ["quads", "hamstrings", "glutes", "calves", "adductors", "abductors"].some((muscle) => muscles.has(muscle as MuscleGroup));
+  const hasPress = Array.from(patterns).some(isPressPattern);
+  const hasPull = Array.from(patterns).some(isPullPattern);
+  const hasLower = Array.from(patterns).some(isLowerPattern);
+
+  if ((upperPush || hasPress) && !(upperPull || hasPull) && !(lower || hasLower)) return "push";
+  if ((upperPull || hasPull) && !(upperPush || hasPress) && !(lower || hasLower)) return "pull";
+  if ((lower || hasLower) && !(upperPush || upperPull || hasPress || hasPull)) return "legs";
+  if ((upperPush || upperPull || hasPress || hasPull) && !(lower || hasLower)) return "upper";
+  if ((lower || hasLower) && !(upperPush || upperPull || hasPress || hasPull)) return "lower";
+  if ((lower || hasLower) && (upperPush || upperPull || hasPress || hasPull)) return "full_body";
+  return "mixed";
 }
 
 export interface WeekProgressionModifier {
   rpeAdjust: number;
   repsAdjust: number;
   setsAdjust: number;
+}
+
+interface PrescriptionShape {
+  sets: number;
+  reps: number;
+  targetRpe: number;
+  restSeconds: number;
+  repRange: { min: number; max: number };
 }
 
 export function getWeekProgressionModifier(input: {
@@ -73,7 +177,7 @@ export function getWeekProgressionModifier(input: {
   fatigueTag: ExerciseFatigueTag;
 }): WeekProgressionModifier {
   const { goalType, blockType, weekIndex, totalWeeks, exerciseRole, fatigueTag } = input;
-  const isMain = exerciseRole === "main_lift" || exerciseRole === "primary_compound";
+  const isMain = exerciseRole === "main_strength_lift" || exerciseRole === "main_hypertrophy_compound";
   const isDeload = blockType === "deload";
   const isPeaking = blockType === "peaking";
   const isVolume = blockType === "accumulation" || blockType === "hypertrophy";
@@ -124,9 +228,340 @@ export function getExerciseFatigueTag(exercise: Exercise): ExerciseFatigueTag {
   return "low";
 }
 
+function hasPrimaryMuscle(exercise: Exercise, muscle: MuscleGroup): boolean {
+  return exercise.primaryMuscles.includes(muscle) || exercise.directVolumeMuscles.includes(muscle);
+}
+
+function isHeavyHingeExercise(exercise: Exercise): boolean {
+  const name = exercise.name.toLowerCase();
+  return exercise.movementPattern === "hinge"
+    && (
+      name.includes("deadlift")
+      || name.includes("rdl")
+      || name.includes("romanian")
+      || name.includes("good morning")
+      || name.includes("stiff leg")
+      || (exercise.category === "barbell" && !name.includes("hip thrust"))
+    );
+}
+
+function getHypertrophyBasePrescription(input: {
+  dayType: WorkoutDayType;
+  exercise: Exercise;
+  exerciseRole: ExerciseRole;
+  fatigueTag: ExerciseFatigueTag;
+  orderHint: number;
+  requirementSlotIndex: number;
+  totalRequiredForMuscle: number;
+}): PrescriptionShape {
+  const { dayType, exercise, fatigueTag, orderHint, requirementSlotIndex, totalRequiredForMuscle } = input;
+  const exerciseRole = normalizeExerciseRole(input.exerciseRole, exercise);
+  const slot = requirementSlotIndex + 1;
+  const name = lowerCaseName(exercise);
+  const isBarbell = exercise.category === "barbell";
+  const isMachine = exercise.category === "machine";
+  const isCable = exercise.category === "cable";
+  const isIsolation = exerciseRole === "isolation" || exerciseRole === "small_muscle_isolation";
+  const isPress = ["horizontal-press", "incline-press", "vertical-press"].includes(exercise.movementPattern);
+  const isPull = ["horizontal-pull", "vertical-pull"].includes(exercise.movementPattern);
+  const isSquatPattern = exercise.movementPattern === "squat" || exercise.movementPattern === "single-leg";
+  const isHeavyHinge = isHeavyHingeExercise(exercise);
+  const hitsSideDelts = hasPrimaryMuscle(exercise, "side-delts");
+  const hitsRearDelts = hasPrimaryMuscle(exercise, "rear-delts");
+  const hitsCalves = hasPrimaryMuscle(exercise, "calves");
+  const hitsBiceps = hasPrimaryMuscle(exercise, "biceps");
+  const hitsTriceps = hasPrimaryMuscle(exercise, "triceps");
+  const hitsQuads = hasPrimaryMuscle(exercise, "quads");
+  const hitsHamstrings = hasPrimaryMuscle(exercise, "hamstrings");
+  const hitsGlutes = hasPrimaryMuscle(exercise, "glutes");
+  const isHipThrust = name.includes("hip thrust") || name.includes("glute bridge");
+  const isLegExtension = name.includes("leg extension");
+  const isLegCurl = name.includes("leg curl") || name.includes("hamstring curl");
+  const isMainSlot = orderHint === 1 || slot === 1;
+  const mainQuadMachine = isQuadMachineCompound(exercise) && isMainSlot;
+  const pullStyleCompound = dayType === "pull" || dayType === "upper";
+
+  if (isHeavyHinge) {
+    return {
+      sets: fatigueTag === "high" ? 2 : 3,
+      reps: fatigueTag === "high" ? 6 : 8,
+      targetRpe: fatigueTag === "high" ? 7 : 7.5,
+      restSeconds: 165,
+      repRange: { min: 5, max: 10 },
+    };
+  }
+
+  if (exerciseRole === "main_strength_lift" || exerciseRole === "main_hypertrophy_compound") {
+    if (mainQuadMachine) {
+      return {
+        sets: totalRequiredForMuscle >= 2 || weekNumberLikeSlot(orderHint, slot) ? 4 : 3,
+        reps: 10,
+        targetRpe: 8,
+        restSeconds: 150,
+        repRange: { min: 8, max: 12 },
+      };
+    }
+    if (isPress) {
+      return {
+        sets: isMainSlot ? 3 : 2,
+        reps: isMainShoulderPress(exercise) ? 8 : 8,
+        targetRpe: 8,
+        restSeconds: isBarbell ? 165 : 150,
+        repRange: isMainShoulderPress(exercise) ? { min: 6, max: 10 } : { min: 6, max: 10 },
+      };
+    }
+    if (isPull) {
+      return {
+        sets: isMainSlot ? 4 : 3,
+        reps: 10,
+        targetRpe: 8,
+        restSeconds: isBarbell ? 150 : 135,
+        repRange: { min: 8, max: 12 },
+      };
+    }
+    if (isSquatPattern) {
+      return {
+        sets: isMainSlot ? 4 : 3,
+        reps: hitsQuads && !isBarbell ? 10 : hitsQuads ? 8 : 6,
+        targetRpe: 8,
+        restSeconds: 165,
+        repRange: hitsQuads && !isBarbell ? { min: 8, max: 12 } : hitsQuads ? { min: 5, max: 10 } : { min: 5, max: 8 },
+      };
+    }
+    return {
+      sets: 3,
+      reps: 8,
+      targetRpe: 8,
+      restSeconds: 150,
+      repRange: { min: 6, max: 10 },
+    };
+  }
+
+  if (exerciseRole === "secondary_compound" || exerciseRole === "machine_compound") {
+    if (isPress) {
+      return {
+        sets: totalRequiredForMuscle > 1 && slot > 1 ? 2 : 3,
+        reps: isBarbell ? 8 : 10,
+        targetRpe: 7.5,
+        restSeconds: isBarbell ? 150 : 120,
+        repRange: isBarbell ? { min: 8, max: 10 } : { min: 8, max: 12 },
+      };
+    }
+    if (isPull) {
+      return {
+        sets: pullStyleCompound && isMainSlot ? 4 : 3,
+        reps: isMachine || isCable ? 10 : 9,
+        targetRpe: 8,
+        restSeconds: 120,
+        repRange: { min: 8, max: 12 },
+      };
+    }
+    if (isHipThrust) {
+      return {
+        sets: 3,
+        reps: 10,
+        targetRpe: 8,
+        restSeconds: 135,
+        repRange: { min: 8, max: 12 },
+      };
+    }
+    if (isSquatPattern || hitsQuads || hitsHamstrings || hitsGlutes) {
+      return {
+        sets: mainQuadMachine ? 4 : 3,
+        reps: isMachine ? 10 : 8,
+        targetRpe: fatigueTag === "high" ? 7.5 : 8,
+        restSeconds: 135,
+        repRange: isMachine ? { min: 8, max: 12 } : { min: 6, max: 10 },
+      };
+    }
+    return {
+      sets: 3,
+      reps: 10,
+      targetRpe: 7.5,
+      restSeconds: 120,
+      repRange: { min: 8, max: 12 },
+    };
+  }
+
+  if (isIsolation) {
+    if (hitsCalves) {
+      return {
+        sets: 4,
+        reps: 15,
+        targetRpe: 8.5,
+        restSeconds: 60,
+        repRange: { min: 10, max: 20 },
+      };
+    }
+    if (hitsSideDelts || hitsRearDelts) {
+      return {
+        sets: 4,
+        reps: 16,
+        targetRpe: 8.5,
+        restSeconds: 60,
+        repRange: { min: 12, max: 20 },
+      };
+    }
+    if (hitsBiceps) {
+      return {
+        sets: 3,
+        reps: isCable ? 12 : 10,
+        targetRpe: 8.5,
+        restSeconds: 60,
+        repRange: isCable ? { min: 10, max: 15 } : { min: 8, max: 15 },
+      };
+    }
+    if (hitsTriceps) {
+      return {
+        sets: 3,
+        reps: name.includes("extension") || name.includes("skull") ? 10 : 12,
+        targetRpe: 8.5,
+        restSeconds: 60,
+        repRange: name.includes("extension") || name.includes("skull") ? { min: 8, max: 12 } : { min: 10, max: 15 },
+      };
+    }
+    if (isLegExtension || isLegCurl) {
+      return {
+        sets: 4,
+        reps: isLegCurl ? 12 : 14,
+        targetRpe: 8.5,
+        restSeconds: 75,
+        repRange: { min: 10, max: 20 },
+      };
+    }
+    return {
+      sets: 3,
+      reps: isMachine || isCable ? 12 : 10,
+      targetRpe: 8.5,
+      restSeconds: 60,
+      repRange: isMachine || isCable ? { min: 10, max: 15 } : { min: 8, max: 15 },
+    };
+  }
+
+  if (exerciseRole === "delt_accessory" || exerciseRole === "rear_delt_accessory") {
+    return {
+      sets: 4,
+      reps: 16,
+      targetRpe: 8.5,
+      restSeconds: 60,
+      repRange: { min: 12, max: 20 },
+    };
+  }
+
+  if (exerciseRole === "arm_accessory") {
+    return {
+      sets: hitsBiceps || hitsTriceps ? 3 : 2,
+      reps: isCable ? 12 : 10,
+      targetRpe: 8.5,
+      restSeconds: 60,
+      repRange: isCable ? { min: 10, max: 20 } : { min: 8, max: 15 },
+    };
+  }
+
+  if (exerciseRole === "calf_accessory") {
+    return {
+      sets: 4,
+      reps: 15,
+      targetRpe: 8.5,
+      restSeconds: 60,
+      repRange: { min: 10, max: 20 },
+    };
+  }
+
+  if (exerciseRole === "core_accessory") {
+    return {
+      sets: 3,
+      reps: 12,
+      targetRpe: 7.5,
+      restSeconds: 45,
+      repRange: { min: 8, max: 20 },
+    };
+  }
+
+  return {
+    sets: 3,
+    reps: 10,
+    targetRpe: 7.5,
+    restSeconds: 90,
+    repRange: { min: 8, max: 12 },
+  };
+}
+
+function weekNumberLikeSlot(orderHint: number, slot: number): boolean {
+  return orderHint <= 2 || slot <= 1;
+}
+
+function applyHypertrophyProgression(input: {
+  exercise: Exercise;
+  exerciseRole: ExerciseRole;
+  fatigueTag: ExerciseFatigueTag;
+  weekNumber: number;
+  blockLengthWeeks: number;
+  shape: PrescriptionShape;
+}): PrescriptionShape {
+  const { exercise, fatigueTag, weekNumber, blockLengthWeeks } = input;
+  const exerciseRole = normalizeExerciseRole(input.exerciseRole, exercise);
+  const shape: PrescriptionShape = {
+    ...input.shape,
+    repRange: { ...input.shape.repRange },
+  };
+  const weekStep = Math.max(0, weekNumber - 1);
+  const cappedStep = Math.min(weekStep, Math.max(0, blockLengthWeeks - 1));
+  const isIsolation = ["isolation", "small_muscle_isolation", "delt_accessory", "rear_delt_accessory", "arm_accessory", "calf_accessory", "core_accessory"].includes(exerciseRole);
+  const isCompound = ["main_strength_lift", "main_hypertrophy_compound", "secondary_compound", "machine_compound"].includes(exerciseRole);
+  const isHeavyHinge = isHeavyHingeExercise(exercise);
+  const hitsCalves = hasPrimaryMuscle(exercise, "calves");
+  const hitsRearOrSideDelts = hasPrimaryMuscle(exercise, "rear-delts") || hasPrimaryMuscle(exercise, "side-delts");
+  const hitsArms = hasPrimaryMuscle(exercise, "biceps") || hasPrimaryMuscle(exercise, "triceps");
+  const canAddSet = !isHeavyHinge && fatigueTag !== "high" && shape.sets < 5;
+
+  if (weekStep <= 0) return shape;
+
+  if (isCompound) {
+    if (isHeavyHinge) {
+      shape.repRange = { min: 5, max: 8 };
+      if (weekStep >= 3) shape.targetRpe = Math.min(8, shape.targetRpe + 0.5);
+      return shape;
+    }
+    if (cappedStep === 1) {
+      shape.targetRpe += 0.5;
+    } else if (cappedStep === 2) {
+      shape.reps += 1;
+      shape.repRange = {
+        min: Math.max(shape.repRange.min, Math.min(shape.repRange.max, shape.repRange.min + 1)),
+        max: shape.repRange.max,
+      };
+    } else if (canAddSet) {
+      shape.sets += 1;
+    } else {
+      shape.targetRpe += 0.5;
+    }
+    return shape;
+  }
+
+  if (isIsolation) {
+    if (cappedStep === 1 && (hitsCalves || hitsRearOrSideDelts || hitsArms) && canAddSet) {
+      shape.sets += 1;
+    } else if (cappedStep >= 2) {
+      shape.targetRpe += 0.5;
+      if (cappedStep >= 3 && shape.reps < shape.repRange.max) shape.reps += 1;
+    }
+    if (hitsRearOrSideDelts || hitsCalves) {
+      shape.repRange = {
+        min: Math.max(shape.repRange.min, 12),
+        max: Math.max(shape.repRange.max, 20),
+      };
+      shape.reps = Math.max(shape.reps, 15);
+    }
+    return shape;
+  }
+
+  return shape;
+}
+
 export function getExerciseRoleForGoal(exercise: Exercise, goalType: TrainingGoal): ExerciseRole {
   const goalRole = exercise.roleHints?.[goalType] ?? exercise.defaultRoleByGoal?.[goalType];
-  if (goalRole) return goalRole;
+  if (goalRole) return normalizeExerciseRole(goalRole, exercise);
   return inferBaseExerciseRole(exercise);
 }
 
@@ -139,28 +574,101 @@ function fatigueLevelToNumber(level: FatigueLevel): number {
   }
 }
 
+export function normalizeExerciseRole(role: ExerciseRole | undefined, exercise: Exercise): ExerciseRole {
+  if (!role) return inferBaseExerciseRole(exercise);
+  switch (role) {
+    case "main_lift":
+    case "technique_variation":
+      return "main_strength_lift";
+    case "primary_compound":
+      return isMachineCompoundLike(exercise) ? "machine_compound" : "main_hypertrophy_compound";
+    case "secondary_compound":
+      return isHeavyHingeExercise(exercise) ? "heavy_hinge" : "secondary_compound";
+    case "accessory_compound":
+      if (isHeavyHingeExercise(exercise)) return "heavy_hinge";
+      return isMachineCompoundLike(exercise) ? "machine_compound" : "secondary_compound";
+    case "hypertrophy_accessory":
+    case "pump_accessory":
+    case "isolation":
+      if (hasPrimaryMuscle(exercise, "calves")) return "calf_accessory";
+      if (hasPrimaryMuscle(exercise, "rear-delts")) return "rear_delt_accessory";
+      if (hasPrimaryMuscle(exercise, "side-delts") || hasPrimaryMuscle(exercise, "front-delts") || exercise.movementPattern === "shoulder-abduction") return "delt_accessory";
+      if (hasPrimaryMuscle(exercise, "biceps") || hasPrimaryMuscle(exercise, "triceps") || exercise.movementPattern === "elbow-flexion" || exercise.movementPattern === "elbow-extension") return "arm_accessory";
+      if (exercise.movementPattern === "brace" || exercise.movementPattern === "trunk-stability" || exercise.movementPattern === "trunk-flexion") return "core_accessory";
+      return role === "isolation" ? "isolation" : "small_muscle_isolation";
+    case "support_stability":
+      return "core_accessory";
+    case "timed_core":
+      return exercise.bestTrackedBy.includes("time") || exercise.exerciseCategory === "conditioning"
+        ? "conditioning_optional"
+        : "core_accessory";
+    default:
+      return role;
+  }
+}
+
 export function inferBaseExerciseRole(exercise: Exercise): ExerciseRole {
   const id = exercise.id;
-  const name = exercise.name.toLowerCase();
-  if (id === "ex_push_up" || name.includes("push-up")) return "accessory_compound";
-  if (id === "ex_back_extension" || name.includes("back extension")) return "support_stability";
-  if (id === "ex_assisted_pull_up" || name.includes("assisted pull-up")) return "accessory_compound";
-  if (id === "ex_cable_triceps_pressdown" || name.includes("pressdown")) return "isolation";
-  if (id === "ex_cable_lateral_raise" || name.includes("lateral raise")) return "isolation";
-  if (id === "ex_rdl" || name.includes("romanian deadlift")) return "secondary_compound";
-  if (id === "ex_hip_thrust" || name.includes("hip thrust")) return "secondary_compound";
-  if (id === "ex_pull_up" || name.includes("pull-up")) return "primary_compound";
-  if (exercise.bestTrackedBy.includes("time") || exercise.exerciseCategory === "conditioning") return "timed_core";
-  if (exercise.isSBDMainLift || exercise.exerciseCategory === "sbd") return "main_lift";
-  if (exercise.exerciseCategory === "main_compound") return "primary_compound";
+  const name = lowerCaseName(exercise);
+  if (exercise.bestTrackedBy.includes("time") || exercise.exerciseCategory === "conditioning") return "conditioning_optional";
+  if (exercise.movementPattern === "brace" || exercise.movementPattern === "trunk-stability" || exercise.movementPattern === "trunk-flexion") return "core_accessory";
+  if (hasPrimaryMuscle(exercise, "calves")) return "calf_accessory";
+  if (hasPrimaryMuscle(exercise, "rear-delts")) return "rear_delt_accessory";
+  if (hasPrimaryMuscle(exercise, "side-delts") || hasPrimaryMuscle(exercise, "front-delts") || id === "ex_cable_lateral_raise" || name.includes("lateral raise")) return "delt_accessory";
+  if (hasPrimaryMuscle(exercise, "biceps") || hasPrimaryMuscle(exercise, "triceps") || name.includes("pressdown")) return "arm_accessory";
+  if (exercise.isSBDMainLift || exercise.exerciseCategory === "sbd" || exercise.kind.includes("variation")) return "main_strength_lift";
+  if (isHeavyHingeExercise(exercise)) return "heavy_hinge";
+  if (exercise.exerciseCategory === "machine_compound" || isMachineCompoundLike(exercise)) return "machine_compound";
+  if (exercise.exerciseCategory === "main_compound") return "main_hypertrophy_compound";
   if (exercise.exerciseCategory === "secondary_compound") return "secondary_compound";
-  if (exercise.exerciseCategory === "machine_compound") return "accessory_compound";
-  if (exercise.exerciseCategory === "isolation") return "isolation";
-  if (exercise.movementPattern === "brace") return "support_stability";
-  if (exercise.kind.includes("variation")) return "technique_variation";
-  if (exercise.kind.includes("isolation")) return "hypertrophy_accessory";
+  if (exercise.exerciseCategory === "isolation") return hasPrimaryMuscle(exercise, "chest") || hasPrimaryMuscle(exercise, "quads") || hasPrimaryMuscle(exercise, "hamstrings") ? "isolation" : "small_muscle_isolation";
+  if (id === "ex_push_up" || name.includes("push-up") || id === "ex_assisted_pull_up" || name.includes("assisted pull-up")) return "secondary_compound";
+  if (id === "ex_back_extension" || name.includes("back extension")) return "core_accessory";
+  if (id === "ex_pull_up" || name.includes("pull-up")) return "main_hypertrophy_compound";
+  if (exercise.kind.includes("isolation")) return hasPrimaryMuscle(exercise, "chest") || hasPrimaryMuscle(exercise, "quads") || hasPrimaryMuscle(exercise, "hamstrings") ? "isolation" : "small_muscle_isolation";
   if (exercise.kind.includes("compound")) return "secondary_compound";
-  return "pump_accessory";
+  return "small_muscle_isolation";
+}
+
+export function classifyExerciseRole(input: {
+  exercise: Exercise;
+  dayType?: WorkoutDayType;
+  blockType?: BlockType;
+  dayFocus?: DayFocus;
+  orderHint?: number;
+  explicitRole?: ExerciseRole;
+  isPriority?: boolean;
+}): ExerciseRole {
+  const { exercise, dayType = "mixed", blockType = "hypertrophy", dayFocus, orderHint = 1, explicitRole, isPriority = false } = input;
+  if (explicitRole) return normalizeExerciseRole(explicitRole, exercise);
+
+  const baseRole = inferBaseExerciseRole(exercise);
+  const name = lowerCaseName(exercise);
+  const strengthContext = blockType === "strength" || blockType === "intensification" || blockType === "peaking" || dayFocus === "strength" || dayFocus === "technical";
+
+  if (baseRole === "conditioning_optional" || baseRole === "core_accessory" || baseRole === "calf_accessory" || baseRole === "rear_delt_accessory" || baseRole === "delt_accessory" || baseRole === "arm_accessory") {
+    return baseRole;
+  }
+  if (baseRole === "heavy_hinge") {
+    if (strengthContext && (exercise.isSBDMainLift || name.includes("deadlift"))) return "main_strength_lift";
+    return "heavy_hinge";
+  }
+  if (exercise.isSBDMainLift || exercise.exerciseCategory === "sbd") return "main_strength_lift";
+  if (strengthContext && (isPriority || orderHint === 1) && (exercise.kind.includes("variation") || exercise.category === "barbell")) {
+    return "main_strength_lift";
+  }
+  if ((dayType === "push" || dayType === "upper" || dayType === "full_body") && isPressPattern(exercise.movementPattern) && orderHint === 1) {
+    return isMachineCompoundLike(exercise) ? "machine_compound" : "main_hypertrophy_compound";
+  }
+  if ((dayType === "pull" || dayType === "upper" || dayType === "full_body") && isPullPattern(exercise.movementPattern) && orderHint === 1) {
+    return isMachineCompoundLike(exercise) ? "machine_compound" : "main_hypertrophy_compound";
+  }
+  if ((dayType === "legs" || dayType === "lower" || dayType === "full_body") && hasPrimaryMuscle(exercise, "quads") && orderHint === 1) {
+    if (strengthContext && exercise.category === "barbell") return "main_strength_lift";
+    return isMachineCompoundLike(exercise) || isQuadMachineCompound(exercise) ? "machine_compound" : "main_hypertrophy_compound";
+  }
+  if (isMachineCompoundLike(exercise)) return "machine_compound";
+  return baseRole;
 }
 
 export function buildFatigueBudget(exercises: Exercise[]): DayFatigueBudget {
@@ -170,12 +678,12 @@ export function buildFatigueBudget(exercises: Exercise[]): DayFatigueBudget {
     const isPress = exercise.movementPattern === "horizontal-press" || exercise.movementPattern === "vertical-press";
     const isHinge = exercise.movementPattern === "hinge";
     const isAxial = exercise.movementPattern === "squat" || exercise.movementPattern === "hinge" || exercise.movementPattern === "carry";
-    if (exercise.isSBDMainLift || role === "main_lift") budget.sbdMainFatigue += fatigue === "high" ? 2 : 1;
+    if (exercise.isSBDMainLift || role === "main_strength_lift") budget.sbdMainFatigue += fatigue === "high" ? 2 : 1;
     if (exercise.movementPattern === "hinge" || exercise.id === "ex_back_extension") budget.lowBackFatigue += fatigue === "high" ? 2 : 1;
     if (isPress) budget.pressingFatigue += fatigue === "high" ? 2 : 1;
     if (isHinge) budget.hingeFatigue += fatigue === "high" ? 2 : 1;
     if (isAxial) budget.axialFatigue += fatigue === "high" ? 2 : 1;
-    if (role === "isolation" || role === "hypertrophy_accessory" || role === "pump_accessory") budget.localIsolationFatigue += 1;
+    if (["isolation", "small_muscle_isolation", "delt_accessory", "rear_delt_accessory", "arm_accessory", "calf_accessory", "core_accessory"].includes(role)) budget.localIsolationFatigue += 1;
     return budget;
   }, {
     sbdMainFatigue: 0,
@@ -265,7 +773,7 @@ export function getRequirementSlotPlan(input: {
     if (slot === 1) {
       const wantsMainLift = specificGoal || input.dayFocus === "strength" || strengthBlock;
       return {
-        role: wantsMainLift && targets.specificity === "high" ? "main_lift" : "primary_compound",
+        role: wantsMainLift && targets.specificity === "high" ? "main_strength_lift" : "main_hypertrophy_compound",
         preferredPatterns: ["horizontal-press", ...preferredPatterns],
         preferredCategories: wantsMainLift
           ? ["sbd", "main_compound", "secondary_compound"]
@@ -284,7 +792,7 @@ export function getRequirementSlotPlan(input: {
       };
     }
     return {
-      role: input.goalType === "bodybuilding" || input.goalType === "powerbuilding" ? "hypertrophy_accessory" : "isolation",
+      role: "isolation",
       preferredPatterns: ["isolation", ...preferredPatterns],
       preferredCategories: ["isolation", "machine_compound", "secondary_compound"],
       preferredFatigue: "low",
@@ -295,7 +803,7 @@ export function getRequirementSlotPlan(input: {
   if (input.targetMuscle === "back" || input.targetMuscle === "lats" || input.targetMuscle === "upper-back") {
     if (slot === 1) {
       return {
-        role: "primary_compound",
+        role: "main_hypertrophy_compound",
         preferredPatterns: input.targetMuscle === "upper-back" ? ["horizontal-pull", "vertical-pull"] : preferredPatterns,
         preferredCategories: ["main_compound", "secondary_compound"],
         preferredFatigue: "moderate",
@@ -312,7 +820,7 @@ export function getRequirementSlotPlan(input: {
       };
     }
     return {
-      role: "hypertrophy_accessory",
+      role: input.targetMuscle === "upper-back" ? "rear_delt_accessory" : "small_muscle_isolation",
       preferredPatterns: ["horizontal-pull", "isolation", "vertical-pull"],
       preferredCategories: ["isolation", "machine_compound", "secondary_compound"],
       preferredFatigue: "low",
@@ -323,16 +831,16 @@ export function getRequirementSlotPlan(input: {
   if (input.targetMuscle === "quads") {
     if (slot === 1) {
       return {
-        role: specificGoal || strengthBlock ? "main_lift" : "primary_compound",
+        role: specificGoal || strengthBlock ? "main_strength_lift" : "main_hypertrophy_compound",
         preferredPatterns: ["squat", "single-leg"],
-        preferredCategories: ["sbd", "main_compound", "secondary_compound"],
-        preferredFatigue: "high",
+        preferredCategories: ["machine_compound", "sbd", "main_compound", "secondary_compound"],
+        preferredFatigue: strengthBlock ? "high" : "moderate",
         allowHighFatigue: true,
       };
     }
     if (slot === 2) {
       return {
-        role: "secondary_compound",
+        role: "machine_compound",
         preferredPatterns: ["single-leg", "squat"],
         preferredCategories: ["secondary_compound", "machine_compound", "main_compound"],
         preferredFatigue: "moderate",
@@ -340,7 +848,7 @@ export function getRequirementSlotPlan(input: {
       };
     }
     return {
-      role: "hypertrophy_accessory",
+      role: "isolation",
       preferredPatterns: ["isolation", "single-leg"],
       preferredCategories: ["isolation", "machine_compound"],
       preferredFatigue: "low",
@@ -351,7 +859,7 @@ export function getRequirementSlotPlan(input: {
   if (input.targetMuscle === "hamstrings" || input.targetMuscle === "glutes") {
     if (slot === 1) {
       return {
-        role: strengthBlock ? "primary_compound" : "secondary_compound",
+        role: strengthBlock ? "heavy_hinge" : "secondary_compound",
         preferredPatterns: ["hinge", "single-leg"],
         preferredCategories: ["secondary_compound", "main_compound", "sbd"],
         preferredFatigue: specificGoal ? "high" : "moderate",
@@ -359,7 +867,7 @@ export function getRequirementSlotPlan(input: {
       };
     }
     return {
-      role: "hypertrophy_accessory",
+      role: input.targetMuscle === "glutes" ? "secondary_compound" : "isolation",
       preferredPatterns: ["isolation", "single-leg", "hinge"],
       preferredCategories: ["isolation", "machine_compound", "secondary_compound"],
       preferredFatigue: "low",
@@ -378,7 +886,7 @@ export function getRequirementSlotPlan(input: {
       };
     }
     return {
-      role: slot === 1 ? "isolation" : "pump_accessory",
+      role: "arm_accessory",
       preferredPatterns: ["isolation"],
       preferredCategories: ["isolation", "machine_compound"],
       preferredFatigue: "low",
@@ -388,7 +896,13 @@ export function getRequirementSlotPlan(input: {
 
   if (["biceps", "side-delts", "rear-delts", "calves"].includes(input.targetMuscle)) {
     return {
-      role: slot === 1 ? "isolation" : "pump_accessory",
+      role: input.targetMuscle === "side-delts"
+        ? "delt_accessory"
+        : input.targetMuscle === "rear-delts"
+          ? "rear_delt_accessory"
+          : input.targetMuscle === "calves"
+            ? "calf_accessory"
+            : "arm_accessory",
       preferredPatterns: ["isolation"],
       preferredCategories: ["isolation", "machine_compound"],
       preferredFatigue: "low",
@@ -398,7 +912,7 @@ export function getRequirementSlotPlan(input: {
 
   if (["abs", "obliques"].includes(input.targetMuscle)) {
     return {
-      role: "support_stability",
+      role: "core_accessory",
       preferredPatterns: ["brace", "isolation"],
       preferredCategories: ["isolation", "bodyweight"],
       preferredFatigue: "low",
@@ -407,7 +921,7 @@ export function getRequirementSlotPlan(input: {
   }
 
   return {
-    role: slot === 1 ? "primary_compound" : "secondary_compound",
+    role: slot === 1 ? "main_hypertrophy_compound" : "secondary_compound",
     preferredPatterns,
     preferredCategories: ["main_compound", "secondary_compound", "machine_compound", "isolation"],
     preferredFatigue: slot === 1 ? "moderate" : "low",
@@ -418,13 +932,14 @@ export function getRequirementSlotPlan(input: {
 function roleFitScore(desired: ExerciseRole, actual: ExerciseRole): number {
   if (desired === actual) return 28;
   const closePairs = new Set([
-    "main_lift:primary_compound",
-    "primary_compound:secondary_compound",
-    "secondary_compound:accessory_compound",
-    "secondary_compound:primary_compound",
-    "isolation:hypertrophy_accessory",
-    "hypertrophy_accessory:pump_accessory",
-    "support_stability:timed_core",
+    "main_strength_lift:main_hypertrophy_compound",
+    "main_hypertrophy_compound:secondary_compound",
+    "secondary_compound:machine_compound",
+    "machine_compound:secondary_compound",
+    "isolation:small_muscle_isolation",
+    "small_muscle_isolation:arm_accessory",
+    "delt_accessory:rear_delt_accessory",
+    "core_accessory:conditioning_optional",
   ]);
   return closePairs.has(`${desired}:${actual}`) ? 16 : 0;
 }
@@ -453,13 +968,13 @@ export function scoreExerciseForSlot(input: {
   if (exercise.primaryMuscles.includes(targetMuscle) || exercise.directVolumeMuscles.includes(targetMuscle)) score += 12;
   if (fatigue === slotPlan.preferredFatigue) score += 10;
   if (!slotPlan.allowHighFatigue && fatigue === "high") score -= 24;
-  if (blockType === "peaking" && fatigue === "high" && slotPlan.role !== "main_lift") score -= 20;
-  if (goalType === "bodybuilding" && baseRole === "main_lift") score -= 12;
+  if (blockType === "peaking" && fatigue === "high" && slotPlan.role !== "main_strength_lift") score -= 20;
+  if (goalType === "bodybuilding" && baseRole === "main_strength_lift") score -= 12;
   if (goalType === "bodybuilding" && input.slotIndex >= 1 &&
-    (baseRole === "hypertrophy_accessory" || baseRole === "isolation" || baseRole === "pump_accessory")) score += 10;
-  if ((goalType === "maintenance" || goalType === "general-health") && fatigue === "high" && slotPlan.role !== "main_lift") score -= 10;
+    (baseRole === "small_muscle_isolation" || baseRole === "isolation" || baseRole === "delt_accessory" || baseRole === "rear_delt_accessory" || baseRole === "arm_accessory" || baseRole === "calf_accessory")) score += 10;
+  if ((goalType === "maintenance" || goalType === "general-health") && fatigue === "high" && slotPlan.role !== "main_strength_lift") score -= 10;
   if (goalType === "powerbuilding" && input.slotIndex >= 2 &&
-    (baseRole === "hypertrophy_accessory" || baseRole === "isolation")) score += 8;
+    (baseRole === "small_muscle_isolation" || baseRole === "isolation" || baseRole === "delt_accessory" || baseRole === "arm_accessory")) score += 8;
 
   const sameMovement = selectedExercises.filter((item) => item.movementPattern === exercise.movementPattern).length;
   const sameCategory = selectedExercises.filter((item) => item.exerciseCategory === exercise.exerciseCategory).length;
@@ -491,18 +1006,18 @@ export function scoreExerciseForSlot(input: {
     const pressingLevel = fatigueLevelToNumber(fp.pressingFatigue);
     const lowBackLevel = fatigueLevelToNumber(fp.lowBackFatigue);
     const systemicLevel = fatigueLevelToNumber(fp.systemicFatigue);
-    if (pressingLevel >= 3 && budget.pressingFatigue >= 2 && slotPlan.role !== "main_lift") score -= (pressingLevel - 2) * 14;
-    if (lowBackLevel >= 3 && budget.lowBackFatigue >= 2 && slotPlan.role !== "main_lift") score -= (lowBackLevel - 2) * 14;
-    if (systemicLevel >= 4 && slotPlan.role !== "main_lift" && selectedExercises.some((item) => getExerciseFatigueTag(item) === "high")) score -= 22;
+    if (pressingLevel >= 3 && budget.pressingFatigue >= 2 && slotPlan.role !== "main_strength_lift") score -= (pressingLevel - 2) * 14;
+    if (lowBackLevel >= 3 && budget.lowBackFatigue >= 2 && slotPlan.role !== "main_strength_lift") score -= (lowBackLevel - 2) * 14;
+    if (systemicLevel >= 4 && slotPlan.role !== "main_strength_lift" && selectedExercises.some((item) => getExerciseFatigueTag(item) === "high")) score -= 22;
   }
 
   const highFatigueCount = selectedExercises.filter((item) => getExerciseFatigueTag(item) === "high").length;
   const lowBackCount = selectedExercises.filter((item) => item.movementPattern === "squat" || item.movementPattern === "hinge").length;
-  if (fatigue === "high" && highFatigueCount >= 1 && slotPlan.role !== "main_lift") score -= 26;
-  if ((exercise.movementPattern === "squat" || exercise.movementPattern === "hinge") && lowBackCount >= 1 && slotPlan.role !== "main_lift") score -= 18;
-  if (selectedExercises.some((item) => item.isSBDMainLift) && exercise.isSBDMainLift && slotPlan.role !== "main_lift") score -= 30;
+  if (fatigue === "high" && highFatigueCount >= 1 && slotPlan.role !== "main_strength_lift") score -= 26;
+  if ((exercise.movementPattern === "squat" || exercise.movementPattern === "hinge") && lowBackCount >= 1 && slotPlan.role !== "main_strength_lift") score -= 18;
+  if (selectedExercises.some((item) => item.isSBDMainLift) && exercise.isSBDMainLift && slotPlan.role !== "main_strength_lift") score -= 30;
 
-  if (targetMuscle === "chest" && selectedExercises.some((item) => item.name.toLowerCase().includes("bench")) && exercise.name.toLowerCase().includes("bench") && slotPlan.role !== "main_lift") {
+  if (targetMuscle === "chest" && selectedExercises.some((item) => item.name.toLowerCase().includes("bench")) && exercise.name.toLowerCase().includes("bench") && slotPlan.role !== "main_strength_lift") {
     score -= 22;
   }
   if ((targetMuscle === "back" || targetMuscle === "lats") && selectedExercises.some((item) => item.movementPattern === "vertical-pull") && exercise.movementPattern === "vertical-pull") {
@@ -512,12 +1027,12 @@ export function scoreExerciseForSlot(input: {
   score -= similarBenchPenalty(exercise, selectedExercises, weeklyExerciseCounts);
 
   const budget = dayBudget ?? buildFatigueBudget(selectedExercises);
-  if (budget.sbdMainFatigue >= 2 && (exercise.isSBDMainLift || baseRole === "main_lift") && slotPlan.role !== "main_lift") score -= 28;
+  if (budget.sbdMainFatigue >= 2 && (exercise.isSBDMainLift || baseRole === "main_strength_lift") && slotPlan.role !== "main_strength_lift") score -= 28;
   if (budget.lowBackFatigue >= 2 && (exercise.movementPattern === "hinge" || exercise.id === "ex_back_extension")) score -= exercise.id === "ex_back_extension" ? 14 : 24;
-  if (budget.hingeFatigue >= 2 && exercise.movementPattern === "hinge" && slotPlan.role !== "main_lift") score -= 18;
-  if (budget.pressingFatigue >= 3 && (exercise.id === "ex_close_grip_bench" || exercise.name.toLowerCase().includes("bench")) && slotPlan.role !== "main_lift") score -= 20;
+  if (budget.hingeFatigue >= 2 && exercise.movementPattern === "hinge" && slotPlan.role !== "main_strength_lift") score -= 18;
+  if (budget.pressingFatigue >= 3 && (exercise.id === "ex_close_grip_bench" || exercise.name.toLowerCase().includes("bench")) && slotPlan.role !== "main_strength_lift") score -= 20;
   if (exercise.id === "ex_back_extension" && budget.lowBackFatigue >= 1) score -= 16;
-  if (exercise.id === "ex_push_up" && (slotPlan.role === "isolation" || slotPlan.role === "hypertrophy_accessory")) score += 6;
+  if (exercise.id === "ex_push_up" && (slotPlan.role === "isolation" || slotPlan.role === "small_muscle_isolation")) score += 6;
 
   return score;
 }
@@ -527,14 +1042,30 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
     goalType,
     blockType,
     dayFocus,
+    dayType,
     exercise,
-    exerciseRole,
+    exerciseRole: rawExerciseRole,
     requirementSlotIndex,
+    orderHint,
     totalRequiredForMuscle,
     weekNumber = 1,
     blockLengthWeeks = 4,
     isPriority = false,
   } = input;
+  const resolvedOrderHint = orderHint ?? requirementSlotIndex + 1;
+  const resolvedDayType = dayType ?? inferWorkoutDayType({
+    targetMuscles: exercise.primaryMuscles,
+    movementPatterns: exercise.movementPatterns?.length ? exercise.movementPatterns : [exercise.movementPattern],
+  });
+  const exerciseRole = classifyExerciseRole({
+    exercise,
+    dayType: resolvedDayType,
+    blockType,
+    dayFocus,
+    orderHint: resolvedOrderHint,
+    explicitRole: rawExerciseRole,
+    isPriority,
+  });
 
   const targets = getTrainingTargets(goalType, blockType, exercise.exerciseCategory);
   const fatigueTag = getExerciseFatigueTag(exercise);
@@ -549,74 +1080,118 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
   const intensifying = blockType === "intensification" || blockType === "strength";
   const peaking = blockType === "peaking";
   const deload = blockType === "deload";
+  const hypertrophyWeek = dayFocus === "hypertrophy" && (goalType === "bodybuilding" || goalType === "powerbuilding" || blockType === "hypertrophy" || blockType === "accumulation");
+  const normalizedRole = normalizeExerciseRole(exerciseRole, exercise);
+  const isRoleAccessory = ["isolation", "small_muscle_isolation", "delt_accessory", "rear_delt_accessory", "arm_accessory", "calf_accessory", "core_accessory", "conditioning_optional"].includes(normalizedRole);
 
   let sets = targets.defaultSetsPerExercise;
   let reps = clamp(Math.round((targets.selectedRepRange.min + targets.selectedRepRange.max) / 2), 3, 20);
   let targetRpe = Number(((targets.selectedRpeRange.min + targets.selectedRpeRange.max) / 2).toFixed(1));
   let restSeconds = 90;
-  const reason = `${goalType}_${blockType}_${exerciseRole}`;
+  let repRange = normalizedRole === "main_strength_lift"
+    ? { min: Math.max(1, reps - 1), max: reps + 1 }
+    : { min: Math.max(1, reps - 2), max: reps + 3 };
+  const reason = `${goalType}_${blockType}_${normalizedRole}`;
 
-  switch (exerciseRole) {
-    case "main_lift":
-      sets = peaking ? 3 : intensifying ? 4 : 4;
-      reps = peaking ? 2 : intensifying ? 4 : 5;
-      targetRpe = peaking ? 8.5 : blockType === "accumulation" ? 7.5 : 8;
-      restSeconds = 180;
-      break;
-    case "primary_compound":
-      sets = deload ? 2 : blockType === "accumulation" ? 4 : 3;
-      reps = goalType === "bodybuilding" ? 8 : intensifying ? 5 : 6;
-      targetRpe = deload ? 6 : goalType === "bodybuilding" ? 8 : 7.5;
-      restSeconds = 150;
-      break;
-    case "secondary_compound":
-      sets = deload ? 2 : 3;
-      reps = peaking ? 6 : goalType === "bodybuilding" ? 10 : 7;
-      targetRpe = deload ? 6 : 7.5;
-      restSeconds = 120;
-      break;
-    case "accessory_compound":
-      sets = deload ? 2 : 3;
-      reps = exercise.id === "ex_push_up" ? 15 : goalType === "powerlifting" ? 8 : 10;
-      targetRpe = deload ? 6 : exercise.id === "ex_push_up" ? 8 : 7.5;
-      restSeconds = 105;
-      break;
-    case "isolation":
-    case "hypertrophy_accessory":
-    case "pump_accessory":
-      sets = deload ? 2 : totalRequiredForMuscle >= 3 && requirementSlotIndex >= 2 ? 2 : 3;
-      reps = goalType === "powerlifting" ? 12 : 15;
-      targetRpe = deload ? 6.5 : goalType === "bodybuilding" ? 8.5 : 8;
-      restSeconds = 60;
-      break;
-    case "technique_variation":
-      sets = deload ? 2 : 3;
-      reps = peaking ? 3 : 5;
-      targetRpe = deload ? 6 : 7;
-      restSeconds = 150;
-      break;
-    case "support_stability":
-    case "timed_core":
-      sets = exercise.id === "ex_back_extension" ? 3 : 2;
-      reps = exercise.id === "ex_back_extension" ? 15 : 12;
-      targetRpe = exercise.id === "ex_back_extension" ? 7.5 : 7;
-      restSeconds = exercise.id === "ex_back_extension" ? 75 : 45;
-      break;
+  if (hypertrophyWeek && !deload && !peaking) {
+    const hypertrophyShape = getHypertrophyBasePrescription({
+      dayType: resolvedDayType,
+      exercise,
+      exerciseRole: normalizedRole,
+      fatigueTag,
+      orderHint: resolvedOrderHint,
+      requirementSlotIndex,
+      totalRequiredForMuscle,
+    });
+    sets = hypertrophyShape.sets;
+    reps = hypertrophyShape.reps;
+    targetRpe = hypertrophyShape.targetRpe;
+    restSeconds = hypertrophyShape.restSeconds;
+    repRange = hypertrophyShape.repRange;
+
+    if (weekNumber >= 2) {
+      const progressed = applyHypertrophyProgression({
+        exercise,
+        exerciseRole: normalizedRole,
+        fatigueTag,
+        weekNumber,
+        blockLengthWeeks,
+        shape: { sets, reps, targetRpe, restSeconds, repRange },
+      });
+      sets = progressed.sets;
+      reps = progressed.reps;
+      targetRpe = progressed.targetRpe;
+      restSeconds = progressed.restSeconds;
+      repRange = progressed.repRange;
+    }
+  } else {
+    switch (normalizedRole) {
+      case "main_strength_lift":
+        sets = peaking ? 3 : intensifying ? 4 : 4;
+        reps = peaking ? 2 : intensifying ? 4 : 5;
+        targetRpe = peaking ? 8.5 : blockType === "accumulation" ? 7.5 : 8;
+        restSeconds = 180;
+        break;
+      case "main_hypertrophy_compound":
+        sets = deload ? 2 : blockType === "accumulation" ? 4 : 3;
+        reps = goalType === "bodybuilding" ? 8 : intensifying ? 6 : 8;
+        targetRpe = deload ? 6 : 8;
+        restSeconds = 150;
+        break;
+      case "secondary_compound":
+        sets = deload ? 2 : 3;
+        reps = peaking ? 6 : goalType === "bodybuilding" ? 10 : 8;
+        targetRpe = deload ? 6 : 7.5;
+        restSeconds = 120;
+        break;
+      case "machine_compound":
+        sets = deload ? 2 : 3;
+        reps = isQuadMachineCompound(exercise) ? 10 : 10;
+        targetRpe = deload ? 6 : 8;
+        restSeconds = 120;
+        break;
+      case "heavy_hinge":
+        sets = deload ? 2 : 2;
+        reps = peaking ? 5 : 6;
+        targetRpe = deload ? 6 : 7;
+        restSeconds = 165;
+        break;
+      case "isolation":
+      case "small_muscle_isolation":
+      case "delt_accessory":
+      case "rear_delt_accessory":
+      case "arm_accessory":
+      case "calf_accessory":
+        sets = deload ? 2 : totalRequiredForMuscle >= 3 && requirementSlotIndex >= 2 ? 2 : 3;
+        reps = normalizedRole === "delt_accessory" || normalizedRole === "rear_delt_accessory" || normalizedRole === "calf_accessory"
+          ? 15
+          : goalType === "powerlifting" ? 12 : 12;
+        targetRpe = deload ? 6.5 : 8.5;
+        restSeconds = 60;
+        break;
+      case "core_accessory":
+      case "conditioning_optional":
+        sets = exercise.id === "ex_back_extension" ? 3 : 2;
+        reps = exercise.id === "ex_back_extension" ? 15 : 12;
+        targetRpe = exercise.id === "ex_back_extension" ? 7.5 : 7;
+        restSeconds = exercise.id === "ex_back_extension" ? 75 : 45;
+        break;
+    }
   }
 
   if (goalType === "bodybuilding") {
-    if (exerciseRole === "secondary_compound" || exerciseRole === "accessory_compound") {
+    if (normalizedRole === "secondary_compound" || normalizedRole === "machine_compound") {
       reps = Math.max(reps, 8);
       targetRpe = Math.max(targetRpe, 8);
     }
-    if (exerciseRole === "main_lift") {
+    if (normalizedRole === "main_strength_lift") {
       targetRpe = Math.min(targetRpe, 8);
       sets = Math.min(sets, 4);
     }
   }
 
   if (goalType === "powerlifting" && blockType === "accumulation") {
-    if (exerciseRole === "main_lift") {
+    if (normalizedRole === "main_strength_lift") {
       sets = 4;
       reps = 5;
       targetRpe = 7.5;
@@ -631,19 +1206,19 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
       reps = 10;
       targetRpe = 7.5;
     }
-    if (exerciseRole === "secondary_compound") {
+    if (normalizedRole === "secondary_compound") {
       reps = 6;
       targetRpe = 7.5;
     }
   }
 
   if (dayFocus === "strength") {
-    if (exerciseRole === "secondary_compound") reps = Math.max(5, reps - 1);
-    if (exerciseRole === "accessory_compound") reps = Math.max(6, reps - 1);
+    if (normalizedRole === "secondary_compound") reps = Math.max(5, reps - 1);
+    if (normalizedRole === "machine_compound") reps = Math.max(8, reps - 1);
   }
   if (dayFocus === "hypertrophy") {
-    if (exerciseRole === "secondary_compound") reps += 1;
-    if (exerciseRole === "isolation" || exerciseRole === "hypertrophy_accessory" || exerciseRole === "pump_accessory") {
+    if (normalizedRole === "secondary_compound") reps += 1;
+    if (isRoleAccessory) {
       reps = Math.max(reps, 12);
       targetRpe = Math.max(targetRpe, 8);
     }
@@ -653,7 +1228,7 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
     sets = Math.max(1, sets - 1);
     targetRpe = Math.min(targetRpe, 6.5);
   }
-  if (dayFocus === "technical" && exerciseRole === "main_lift") {
+  if (dayFocus === "technical" && normalizedRole === "main_strength_lift") {
     reps = Math.min(reps, 4);
     targetRpe = Math.min(targetRpe, 7);
   }
@@ -662,10 +1237,10 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
     reps = Math.max(1, reps + weekMod.repsAdjust);
     sets = Math.max(1, sets + weekMod.setsAdjust);
   }
-  if (fatigueTag === "high" && exerciseRole !== "main_lift") {
+  if (fatigueTag === "high" && normalizedRole !== "main_strength_lift") {
     sets = Math.max(2, sets - 1);
   }
-  if (isPriority && exerciseRole !== "main_lift") {
+  if (isPriority && normalizedRole !== "main_strength_lift" && !isRoleAccessory) {
     sets = Math.min(sets + 1, 4);
   }
 
@@ -686,19 +1261,20 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
   }
 
   const roundedRpe = clamp(Math.round(targetRpe * 2) / 2, 6, peaking ? 9.5 : 9);
-  const repRange = exerciseRole === "main_lift"
-    ? { min: Math.max(1, reps - 1), max: reps + 1 }
-    : { min: Math.max(1, reps - 2), max: reps + 3 };
+  repRange = {
+    min: clamp(Math.min(repRange.min, reps), 1, 30),
+    max: clamp(Math.max(repRange.max, reps), 1, 30),
+  };
 
   return {
     sets,
     reps,
     targetRpe: roundedRpe,
     repRange,
-    rpeRange: exerciseRole === "main_lift" ? targets.mainLiftRpeRange : targets.accessoryRpeRange,
+    rpeRange: normalizedRole === "main_strength_lift" ? targets.mainLiftRpeRange : targets.accessoryRpeRange,
     restSeconds,
-    required: exerciseRole === "main_lift" || exerciseRole === "primary_compound" || exerciseRole === "secondary_compound",
-    role: exerciseRole,
+    required: ["main_strength_lift", "main_hypertrophy_compound", "secondary_compound", "machine_compound", "heavy_hinge"].includes(normalizedRole),
+    role: normalizedRole,
     fatigueTag,
     prescriptionReasonCode: reason,
   };

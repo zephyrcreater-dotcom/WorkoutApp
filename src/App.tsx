@@ -66,16 +66,19 @@ import {
   getBlockExercisePrescription,
   isCompound,
   isSbdExercise,
+  orderExercisesForDay,
   sessionFatigueScore
 } from "./lib/programmingLogic";
 import {
   buildFatigueBudget,
+  classifyExerciseRole,
   getExerciseFatigueTag,
   getGoalUsed,
   getSameExerciseBaseline,
   getRequirementSlotPlan,
   getTrainingTargets,
   inferBaseExerciseRole,
+  inferWorkoutDayType,
   mapBlockType,
   mapTrainingGoal,
   recommendWeightForExercise,
@@ -1681,6 +1684,7 @@ function TodayScreen({
               <ExercisePicker
                 db={db}
                 user={user}
+                updateDb={updateDb}
                 selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
                 alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
                 onPick={(exercise) => {
@@ -2354,6 +2358,7 @@ function TodayScreen({
                           <ExercisePicker
                             db={db}
                             user={user}
+                            updateDb={updateDb}
                             alreadyAddedIds={editDraft.exercises.map((item) => item.exerciseId)}
                             onPick={(exercise) => {
                               const planned = buildPlannedExerciseFromExercise({
@@ -2801,6 +2806,7 @@ function LiveLogger({
   navigation: LoggerNavigationState;
   onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
 }) {
+  const LOGGER_DEBUG = false;
   const sessionRecord = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
   const [activeExerciseId, setActiveExerciseId] = useState(sessionRecord?.loggedExercises[sessionRecord.currentExerciseIndex || 0]?.id || sessionRecord?.loggedExercises[0]?.id);
   const resumeState = useMemo(
@@ -2846,24 +2852,27 @@ function LiveLogger({
     ? Math.min(resumeState.currentSetIndex, plannedSets.length)
     : activeExerciseLog ? getResumeSetIndex(activeExerciseLog, plannedSets) : 0;
   const [selectedLoggingIndex, setSelectedLoggingIndex] = useState<number | null>(null);
+  const [focusedActualSetId, setFocusedActualSetId] = useState<string | null>(null);
   const [editingSetId, setEditingSetId] = useState<string | null>(null);
   const lineupItems = useMemo(
     () => activeExerciseLog ? buildLoggerLineupItems(activeExerciseLog, plannedSets) : [],
     [activeExerciseLog, plannedSets]
   );
-  const editingLineupItem = editingSetId ? lineupItems.find((item) => item.actualSet?.id === editingSetId) : undefined;
-  const effectiveSetIndex = editingLineupItem
-    ? (editingLineupItem.plannedIndex ?? currentSetIndex)
+  const activeActualSetId = editingSetId ?? focusedActualSetId;
+  const selectedActualLineupItem = activeActualSetId ? lineupItems.find((item) => item.actualSet?.id === activeActualSetId) : undefined;
+  const editingLineupItem = editingSetId ? selectedActualLineupItem : undefined;
+  const effectiveSetIndex = selectedActualLineupItem
+    ? (selectedActualLineupItem.plannedIndex ?? currentSetIndex)
     : (selectedLoggingIndex ?? currentSetIndex);
-  const currentPlannedSet = editingLineupItem?.plannedSet ?? plannedSets[effectiveSetIndex];
+  const currentPlannedSet = selectedActualLineupItem?.plannedSet ?? plannedSets[effectiveSetIndex];
   const lastSet = activeExerciseLog?.sets.at(-1);
-  const selectedActualSet = editingLineupItem?.actualSet;
+  const selectedActualSet = selectedActualLineupItem?.actualSet;
   const previousCompletedSet = activeExerciseLog ? findPreviousCompletedSet(activeExerciseLog.sets, effectiveSetIndex) : undefined;
-  const draftKey = editingLineupItem?.actualSet
-    ? `edit:${editingLineupItem.actualSet.id}`
+  const draftKey = selectedActualSet
+    ? `${editingSetId ? "edit" : "view"}:${selectedActualSet.id}`
     : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
   const [setDraft, setSetDraft] = useState(() => buildDraftFromSet({
-    actualSet: editingLineupItem?.actualSet,
+    actualSet: selectedActualSet,
     plannedSet: currentPlannedSet,
     previousCompletedSet,
     draftKey,
@@ -2922,12 +2931,52 @@ function LiveLogger({
   });
   const adjustedWeight = weightRec?.recommendedWeight ?? undefined;
   const selectionDraftSeed = useMemo(() => buildDraftFromSet({
-    actualSet: editingLineupItem?.actualSet,
+    actualSet: selectedActualSet,
     plannedSet: currentPlannedSet,
     previousCompletedSet,
     draftKey,
     recommendedWeight: adjustedWeight,
-  }), [adjustedWeight, currentPlannedSet, draftKey, editingLineupItem?.actualSet, previousCompletedSet]);
+  }), [adjustedWeight, currentPlannedSet, draftKey, previousCompletedSet, selectedActualSet]);
+
+  function loggerDebugSnapshot() {
+    const activeExerciseName = exercise?.name || "(unknown)";
+    const setIds = plannedSets.map((set) => set.id);
+    const effectiveItem = lineupItems.find((item) => item.plannedIndex === effectiveSetIndex || item.actualSet?.id === activeActualSetId);
+    return {
+      sessionId: session?.id,
+      activeExerciseId,
+      activeExerciseIndex,
+      activeExerciseName,
+      activeSetId: selectedActualSet?.id ?? null,
+      activeSetIndex: effectiveSetIndex,
+      plannedSetIds: setIds,
+      plannedSetCount: plannedSets.length,
+      actualSetIds: liveExerciseLog?.sets.map((set) => set.id) || [],
+      actualSetCount: liveExerciseLog?.sets.length || 0,
+      currentSetIndex,
+      selectedLoggingIndex,
+      focusedActualSetId,
+      editingSetId,
+      dirty: draftDirty,
+      primaryActionLabel,
+      primaryAction: derivedPrimaryAction,
+      effectiveLineupKey: effectiveItem?.key,
+      sessionStatus: session?.status,
+    };
+  }
+
+  function loggerDebug(label: string, extra?: Record<string, unknown>) {
+    if (!LOGGER_DEBUG) return;
+    console.log(`[LOGGER_DEBUG] ${label}`, { ...loggerDebugSnapshot(), ...(extra || {}) });
+  }
+
+  const needsRuntimePlannedSetNormalization = !!session?.id && session.loggedExercises.some((log) => {
+    const hasProgramPlannedExercise = !!findPlannedExercise(db, session, log);
+    if (hasProgramPlannedExercise) return false;
+    const needsNormalization = !log.offProgramPlannedSets?.length
+      || log.offProgramPlannedSets.some((set, index) => !set.id || set.setNumber !== index + 1);
+    return needsNormalization;
+  });
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -2940,9 +2989,25 @@ function LiveLogger({
 
   useEffect(() => {
     if (draftDirty) return;
+    loggerDebug("HYDRATE_ACTIVE_SET_START", { source: "selectionDraftSeed" });
     setSetDraft(selectionDraftSeed);
     setShowSetNotes(false);
+    loggerDebug("HYDRATE_ACTIVE_SET_END", { source: "selectionDraftSeed" });
   }, [draftDirty, selectionDraftSeed]);
+
+  useEffect(() => {
+    loggerDebug("DIRTY_STATE_CHANGE", { dirty: draftDirty });
+  }, [draftDirty]);
+
+  useEffect(() => {
+    loggerDebug("ACTIVE_SET_CHANGE", {
+      activeSetId: selectedActualSet?.id ?? null,
+      effectiveSetIndex,
+      selectedLoggingIndex,
+      focusedActualSetId,
+      editingSetId,
+    });
+  }, [selectedActualSet?.id, effectiveSetIndex, selectedLoggingIndex, focusedActualSetId, editingSetId]);
 
   useEffect(() => {
     const ref = swipeSkipHoldTimerRef;
@@ -2956,8 +3021,10 @@ function LiveLogger({
   }, [draftKey]);
 
   useEffect(() => {
+    loggerDebug("ACTIVE_EXERCISE_CHANGE", { effect: "reset-ui-on-activeExerciseId" });
     // Reset set navigation and UI state when switching exercises
     setSelectedLoggingIndex(null);
+    setFocusedActualSetId(null);
     setEditingSetId(null);
     setDraftDirty(false);
     setPendingDeleteTarget(null);
@@ -2969,14 +3036,17 @@ function LiveLogger({
   }, [activeExerciseId]);
 
   useEffect(() => {
+    loggerDebug("EFFECT_SESSION_ID_CHANGE_START", { effect: "reset-ui-on-sessionId" });
     setPendingDeleteTarget(null);
     setSelectedLoggingIndex(null);
+    setFocusedActualSetId(null);
     setEditingSetId(null);
     setDraftDirty(false);
     setShowSkipExerciseConfirm(false);
     setOpenSwipeSetId(undefined);
     swipeGestureRef.current = null;
     setSwipeDrag(null);
+    loggerDebug("EFFECT_SESSION_ID_CHANGE_END", { effect: "reset-ui-on-sessionId" });
   }, [sessionId]);
 
   useEffect(() => {
@@ -2987,28 +3057,65 @@ function LiveLogger({
   }, [isSwipeEnabled]);
 
   useEffect(() => {
-    if (resumeState.kind === "ready" && activeExerciseId !== resumeState.activeExerciseId) {
+    const activeExists = !!session?.loggedExercises.some((item) => item.id === activeExerciseId);
+    if (resumeState.kind === "ready" && (!activeExerciseId || !activeExists) && activeExerciseId !== resumeState.activeExerciseId) {
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_START", {
+        reason: !activeExerciseId ? "missing-active-id" : "active-id-not-found",
+        nextActiveExerciseId: resumeState.activeExerciseId,
+      });
       setActiveExerciseId(resumeState.activeExerciseId);
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_END", { nextActiveExerciseId: resumeState.activeExerciseId });
       return;
     }
-    if (session && !activeExerciseId) setActiveExerciseId(session.loggedExercises[session.currentExerciseIndex || 0]?.id);
+    if (session && !activeExerciseId) {
+      const nextId = session.loggedExercises[session.currentExerciseIndex || 0]?.id;
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_START", { reason: "session-fallback", nextActiveExerciseId: nextId });
+      setActiveExerciseId(nextId);
+      loggerDebug("EFFECT_HYDRATE_ACTIVE_EXERCISE_END", { nextActiveExerciseId: nextId });
+    }
   }, [activeExerciseId, resumeState, session]);
 
   useEffect(() => {
-    if (resumeState.kind !== "ready" || !session) return;
-    if (
-      session.currentExerciseIndex === resumeState.activeExerciseIndex
-      && (session.currentSetIndex ?? getResumeSetIndex(activeExerciseLog!, plannedSets)) === resumeState.currentSetIndex
-    ) return;
+    // Intentionally no DB synchronization from resumeState here.
+    // Current set/exercise persistence must come from explicit user actions only.
+  }, [resumeState]);
+
+  useEffect(() => {
+    if (!session?.id || !needsRuntimePlannedSetNormalization) return;
+    loggerDebug("NORMALIZE_WORKOUT_START", { effect: "normalize-off-program-planned-sets" });
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === session.id);
       if (!target) return draft;
-      target.currentExerciseIndex = resumeState.activeExerciseIndex;
-      target.currentSetIndex = resumeState.currentSetIndex;
-      target.updatedAt = nowIso();
+      let changed = false;
+      for (const log of target.loggedExercises) {
+        const hasProgramPlannedExercise = !!findPlannedExercise(draft, target, log);
+        const shouldUseRuntimePlan = !hasProgramPlannedExercise;
+        if (!shouldUseRuntimePlan) continue;
+        const exerciseDef = draft.exercises.find((ex) => ex.id === log.exerciseId);
+        const existingFirstWeight = log.offProgramPlannedSets?.[0]?.plannedWeight;
+        const fallbackWeight = typeof existingFirstWeight === "number"
+          ? existingFirstWeight
+          : getOffProgramStartingWeight({
+            db: draft,
+            user,
+            exercise: exerciseDef,
+            targetReps: 8,
+            targetRpe: 7,
+          });
+        const normalized = normalizeLoggerRuntimePlannedSets(log.offProgramPlannedSets, 1, 8, 7, fallbackWeight);
+        const needsNormalization = !log.offProgramPlannedSets?.length
+          || log.offProgramPlannedSets.some((set, index) => !set.id || set.setNumber !== index + 1);
+        if (needsNormalization) {
+          log.offProgramPlannedSets = normalized;
+          log.offProgram = true;
+          changed = true;
+        }
+      }
+      if (changed) target.updatedAt = nowIso();
       return draft;
     });
-  }, [activeExerciseLog, plannedSets, resumeState, session, updateDb]);
+    loggerDebug("NORMALIZE_WORKOUT_END", { effect: "normalize-off-program-planned-sets" });
+  }, [db, needsRuntimePlannedSetNormalization, session, updateDb, user]);
 
   useEffect(() => {
     if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") return;
@@ -3052,6 +3159,12 @@ function LiveLogger({
     const editingSetStillExists = lineupItems.some((item) => item.actualSet?.id === editingSetId);
     if (!editingSetStillExists) setEditingSetId(null);
   }, [editingSetId, lineupItems]);
+
+  useEffect(() => {
+    if (!focusedActualSetId) return;
+    const focusedSetStillExists = lineupItems.some((item) => item.actualSet?.id === focusedActualSetId);
+    if (!focusedSetStillExists) setFocusedActualSetId(null);
+  }, [focusedActualSetId, lineupItems]);
 
   useEffect(() => {
     if (!pendingDeleteTarget) return;
@@ -3165,7 +3278,7 @@ function LiveLogger({
         </div>
         {showAddExercisePicker && (
           <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
-            <section className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
+            <section className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <h3 className="text-xl font-black">Add exercise</h3>
                 <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
@@ -3173,6 +3286,7 @@ function LiveLogger({
               <ExercisePicker
                 db={db}
                 user={user}
+                updateDb={updateDb}
                 onPick={(ex) => {
                   setShowAddExercisePicker(false);
                   setPendingOffProgramExercise(ex);
@@ -3294,20 +3408,33 @@ function LiveLogger({
     && (draftWeight > 0 || (liveExercise.category === "bodyweight" && draftReps > 0));
   const currentSetWouldCompleteExercise = currentPendingSetIsUncovered && uncoveredPlannedSets.length <= 1;
   const currentSetWouldCompleteWorkout = currentSetWouldCompleteExercise && !hasMoreExercises;
-  const primaryAction = currentSetWouldCompleteWorkout
-    ? "finish-workout"
-    : currentSetWouldCompleteExercise
-      ? "finish-exercise"
-      : "next-set";
-  const primaryActionLabel = isEditingLoggedSet
+  const activeLineupIndex = editingLineupItem
+    ? lineupItems.findIndex((item) => item.key === editingLineupItem.key)
+    : selectedActualLineupItem
+      ? lineupItems.findIndex((item) => item.key === selectedActualLineupItem.key)
+      : selectedLoggingIndex !== null
+      ? lineupItems.findIndex((item) => item.plannedIndex === selectedLoggingIndex)
+      : lineupItems.findIndex((item) => item.plannedIndex === effectiveSetIndex);
+  const clampedActiveLineupIndex = activeLineupIndex >= 0
+    ? activeLineupIndex
+    : (lineupItems.length ? Math.min(effectiveSetIndex, lineupItems.length - 1) : -1);
+  const activeLineupItem = clampedActiveLineupIndex >= 0 ? lineupItems[clampedActiveLineupIndex] : undefined;
+  const hasNextSetInExercise = clampedActiveLineupIndex >= 0 && clampedActiveLineupIndex < lineupItems.length - 1;
+  const dirtySetIsValid = draftDirty && hasDraftValidValues;
+  const derivedPrimaryAction: "save-changes" | "save-set" | "next-set" | "finish-exercise" = isEditingLoggedSet
+    ? "save-changes"
+    : dirtySetIsValid
+      ? "save-set"
+      : hasNextSetInExercise
+        ? "next-set"
+        : "finish-exercise";
+  const primaryActionLabel = derivedPrimaryAction === "save-changes"
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
-    : primaryAction === "finish-workout" ? "Finish Workout"
-    : primaryAction === "finish-exercise" ? "Finish Exercise"
-    // If current pending set has valid values, it must be saved before finishing — show Save Set
-    : hasDraftValidValues ? "Save Set"
-    // Out-of-order: user jumped to a pending set that isn't the natural next set — call it "Save Set"
-    : selectedLoggingIndex !== null && selectedLoggingIndex !== currentSetIndex ? "Save Set"
-    : "Next Set";
+    : derivedPrimaryAction === "save-set"
+      ? "Save Set"
+      : derivedPrimaryAction === "next-set"
+        ? "Next Set"
+        : "Finish Exercise";
   const plannedLineupItems = lineupItems.filter((item) => !item.isExtra);
   const completedPlannedCount = plannedLineupItems.filter((item) => !!item.actualSet).length;
   const totalPlannedCount = plannedLineupItems.length;
@@ -3407,7 +3534,8 @@ function LiveLogger({
     };
   }
 
-  function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-exercise" | "finish-workout" = "stay") {
+  function logSet(rating: SetRating = setDraft.setRating, afterAction: "stay" | "next-set" | "next-exercise" | "finish-workout" = "stay") {
+    loggerDebug("SAVE_SET_START", { rating, afterAction, isEditingLoggedSet });
     const actualWeight = Number(setDraft.actualWeight) || 0;
     const actualReps = Number(setDraft.actualReps) || 0;
     // Zero weight on a weight-based exercise is not a completed working set — skip it instead.
@@ -3481,7 +3609,10 @@ function LiveLogger({
         return draft;
       });
       setEditingSetId(null);
+      setFocusedActualSetId(updatedSet.id);
+      setSelectedLoggingIndex(null);
       setDraftDirty(false);
+      loggerDebug("SAVE_SET_END", { mode: "edit-existing", updatedSetId: updatedSet.id });
       // After saving an edit, re-anchor to the first planned set not yet covered.
       // loggedPlannedSetIds reflects pre-save state; editing an existing set doesn't change coverage.
       const firstUncoveredIdx = plannedSets.findIndex((ps) => !loggedPlannedSetIds.has(ps.id));
@@ -3573,14 +3704,22 @@ function LiveLogger({
       }
       return draft;
     });
-    setSelectedLoggingIndex(null);
+    const optimisticNextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, loggedSet] }, plannedSets);
+    setSelectedLoggingIndex(afterAction === "stay" ? effectiveSetIndex : afterAction === "next-set" ? optimisticNextUncoveredIndex : null);
     setEditingSetId(null);
+    setFocusedActualSetId(afterAction === "stay" ? loggedSet.id : null);
     setDraftDirty(false);
     setRestRemaining(planned?.restSeconds || user.settings.defaultRestSeconds);
     // Coverage-based: pre-compute where getResumeSetIndex will land after this set is pushed,
     // so the draft key matches the effect's expected key and avoids a stale intermediate render.
-    const nextUncoveredIndex = getResumeSetIndex({ ...liveExerciseLog, sets: [...liveExerciseLog.sets, loggedSet] }, plannedSets);
+    const nextUncoveredIndex = optimisticNextUncoveredIndex;
     setSetDraft(emptySetDraft(plannedSets[nextUncoveredIndex] ?? null, loggedSet, `${liveExerciseLog.id}:${nextUncoveredIndex}`));
+    if (afterAction === "next-set") {
+      setTimeout(() => {
+        const nextItem = lineupItems.find((item) => item.plannedIndex === nextUncoveredIndex);
+        if (nextItem) focusLineupItem(nextItem);
+      }, 0);
+    }
     if (afterAction === "next-exercise") {
       const targetIdx = findEarliestIncompleteExerciseIndex(liveSession, db, activeExerciseIndex);
       const nextLog = targetIdx !== undefined ? liveSession.loggedExercises[targetIdx] : undefined;
@@ -3617,6 +3756,7 @@ function LiveLogger({
       setCompletionSummary(summary);
       setShowCompletionSummary(true);
     }
+    loggerDebug("SAVE_SET_END", { mode: "create-new", afterAction });
   }
 
   function skipSet() {
@@ -3681,6 +3821,41 @@ function LiveLogger({
       setCompletionSummary(summary);
       setShowCompletionSummary(true);
     }
+  }
+
+  function selectExactLineupItemForEditing(lineupItem?: (typeof lineupItems)[number]) {
+    if (!lineupItem) return;
+    setOpenSwipeSetId(undefined);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
+    setPendingDeleteTarget(null);
+    if (lineupItem.actualSet?.id) {
+      setFocusedActualSetId(lineupItem.actualSet.id);
+      setSelectedLoggingIndex(null);
+      setEditingSetId(lineupItem.actualSet.id);
+      return;
+    }
+    if (lineupItem.plannedIndex !== undefined) {
+      setFocusedActualSetId(null);
+      setEditingSetId(null);
+      setSelectedLoggingIndex(lineupItem.plannedIndex);
+    }
+  }
+
+  function focusLineupItem(lineupItem?: (typeof lineupItems)[number]) {
+    if (!lineupItem) return;
+    setOpenSwipeSetId(undefined);
+    swipeGestureRef.current = null;
+    setSwipeDrag(null);
+    setPendingDeleteTarget(null);
+    setEditingSetId(null);
+    if (lineupItem.actualSet?.id) {
+      setFocusedActualSetId(lineupItem.actualSet.id);
+      setSelectedLoggingIndex(null);
+      return;
+    }
+    setFocusedActualSetId(null);
+    if (lineupItem.plannedIndex !== undefined) setSelectedLoggingIndex(lineupItem.plannedIndex);
   }
 
   // Skips a specific planned set by index — used by swipe-to-skip on set rows.
@@ -3755,31 +3930,77 @@ function LiveLogger({
     }
   }
 
-  function addSet() {
-    const base = currentPlannedSet || plannedSets.at(-1);
-    const extra: PlannedSet = {
-      ...(base || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 }),
-      id: createId("pset"),
-      kind: "working",
-      setNumber: (plannedSets.length || currentSetIndex) + 1,
-      percentageOfTopSet: base?.percentageOfTopSet,
-      notes: "Added set."
-    };
+  function addSet(targetLogId?: string) {
+    loggerDebug("ADD_SET_START", { targetLogId });
+    const targetExerciseLogId = targetLogId || liveExerciseLog.id;
+    const isAddingToActiveExercise = targetExerciseLogId === liveExerciseLog.id;
+    const nextSetIndex = isAddingToActiveExercise ? plannedSets.length : undefined;
     void updateDb((draft) => {
       const targetProgram = draft.programs.find((program) => program.id === liveSession.programId);
-      const targetPlanned = targetProgram?.blocks.flatMap((block) => block.weeks).flatMap((week) => week.workouts).flatMap((day) => day.exercises).find((item) => item.id === liveExerciseLog.plannedExerciseId);
-      if (targetPlanned) targetPlanned.plannedSets.push(extra);
       const target = draft.sessions.find((item) => item.id === liveSession.id);
+      const log = target?.loggedExercises.find((item) => item.id === targetExerciseLogId);
+      const targetPlanned = targetProgram?.blocks
+        .flatMap((block) => block.weeks)
+        .flatMap((week) => week.workouts)
+        .flatMap((day) => day.exercises)
+        .find((item) => item.id === log?.plannedExerciseId);
+      if (targetPlanned) {
+        const base = targetPlanned.plannedSets.at(-1) || targetPlanned.plannedSets[0] || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 };
+        const extra: PlannedSet = {
+          ...base,
+          id: createId("pset"),
+          kind: "working",
+          setNumber: targetPlanned.plannedSets.length + 1,
+          percentageOfTopSet: base.percentageOfTopSet,
+          notes: "Added set."
+        };
+        targetPlanned.plannedSets.push(extra);
+      }
+      if (log && !targetPlanned) {
+        const exerciseDef = draft.exercises.find((ex) => ex.id === log.exerciseId);
+        const baseSet = normalizeLoggerRuntimePlannedSets(log.offProgramPlannedSets, 1, 8, 7)[0];
+        const runtimeExtra: PlannedSet = {
+          ...baseSet,
+          id: createId("pset"),
+          setNumber: Math.max(1, (log.offProgramPlannedSets?.length || 0) + 1),
+          notes: "Added set.",
+          plannedWeight: baseSet.plannedWeight ?? getOffProgramStartingWeight({
+            db: draft,
+            user,
+            exercise: exerciseDef,
+            targetReps: baseSet.targetReps || 8,
+            targetRpe: baseSet.targetRpe || 7,
+          }),
+        };
+        log.offProgramPlannedSets = normalizeLoggerRuntimePlannedSets([...(log.offProgramPlannedSets || []), runtimeExtra], 1, 8, 7);
+        log.offProgram = true;
+      }
       if (target) {
         if (editingCompletedWorkout && target.status === "completed") {
           target.status = "in-progress";
         } else if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) {
           target.status = "in-progress";
         }
+        if (log) {
+          const logIndex = target.loggedExercises.findIndex((item) => item.id === log.id);
+          if (logIndex >= 0) {
+            target.currentExerciseIndex = logIndex;
+            const updatedPlanned = findPlannedExercise(draft, target, log);
+            const updatedPlannedSets = getLoggedExercisePlannedSets(log, updatedPlanned);
+            target.currentSetIndex = Math.max(0, updatedPlannedSets.length - 1);
+          }
+        }
         target.updatedAt = nowIso();
       }
       return draft;
     });
+    setDraftDirty(false);
+    setEditingSetId(null);
+    setFocusedActualSetId(null);
+    if (isAddingToActiveExercise && nextSetIndex !== undefined) {
+      setSelectedLoggingIndex(nextSetIndex);
+    }
+    loggerDebug("ADD_SET_END", { targetExerciseLogId, nextSetIndex });
   }
 
 
@@ -3969,6 +4190,7 @@ function LiveLogger({
   }
 
   function finishExercise() {
+    loggerDebug("FINISH_EXERCISE_START");
     // If the user is mid-edit of a logged/skipped set with unsaved changes, save first.
     if (isEditingLoggedSet && draftDirty) {
       logSet(setDraft.setRating, "stay");
@@ -3991,9 +4213,27 @@ function LiveLogger({
       logSet(setDraft.setRating, afterSave);
       return;
     }
+    // If the user selected a different pending set via row action, ensure we still save
+    // that exact selected pending set before finishing/advancing.
+    if (draftDirty && !isEditingLoggedSet && selectedLoggingIndex !== null) {
+      const selectedPlanned = plannedSets[selectedLoggingIndex];
+      const selectedIsUncovered = !!selectedPlanned && !loggedPlannedSetIds.has(selectedPlanned.id);
+      if (selectedIsUncovered) {
+        const selectedHasValidValues = currentDraftWeight > 0 || (!liveExercise.bestTrackedBy.includes("time") && currentDraftReps > 0);
+        if (selectedHasValidValues) {
+          const remainingAfterSave = uncoveredPlannedSets.filter((ps) => ps.id !== selectedPlanned.id);
+          const afterSave = remainingAfterSave.length === 0
+            ? (hasMoreExercises ? "next-exercise" : "finish-workout")
+            : "stay";
+          logSet(setDraft.setRating, afterSave);
+          return;
+        }
+      }
+    }
     // If any planned sets are still uncovered (no logged set matched), confirm skip.
     if (!allPlannedSetsCovered) {
       setShowFinishConfirm(true);
+      loggerDebug("FINISH_EXERCISE_END", { result: "show-skip-confirm" });
       return;
     }
     setSelectedLoggingIndex(null);
@@ -4004,6 +4244,7 @@ function LiveLogger({
     } else {
       navigateToNextExercise();
     }
+    loggerDebug("FINISH_EXERCISE_END", { result: hasMoreExercises ? "next-exercise" : "finish-workout" });
   }
 
   function abandonWorkout() {
@@ -4075,6 +4316,13 @@ function LiveLogger({
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       if (!target) return draft;
       const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise, targetReps: 8, targetRpe: 7 });
+      const runtimePlannedSets = normalizeLoggerRuntimePlannedSets(
+        buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
+        3,
+        8,
+        7,
+        plannedWeight
+      );
       target.loggedExercises.push({
         id: newLogId,
         exerciseId: exercise.id,
@@ -4083,7 +4331,7 @@ function LiveLogger({
         sets: [],
         weakPointTags: [],
         offProgram: true,
-        offProgramPlannedSets: buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
+        offProgramPlannedSets: runtimePlannedSets,
       });
       if (editingCompletedWorkout && target.status === "completed") {
         target.status = "in-progress";
@@ -4139,7 +4387,17 @@ function LiveLogger({
               <button
                 className="btn-danger"
                 onClick={() => {
+                  loggerDebug("DELETE_SET_START", { pendingDeleteTarget });
                   const targetDelete = pendingDeleteTarget;
+                  const deletingLineupIndex = targetDelete
+                    ? lineupItems.findIndex((item) => {
+                      if (targetDelete.actualSetId && item.actualSet?.id === targetDelete.actualSetId) return true;
+                      if (targetDelete.plannedSetId && item.plannedSet?.id === targetDelete.plannedSetId) return true;
+                      return item.key === targetDelete.lineupKey;
+                    })
+                    : -1;
+                  const previousLineupItem = deletingLineupIndex > 0 ? lineupItems[deletingLineupIndex - 1] : undefined;
+                  const nextLineupItem = deletingLineupIndex >= 0 ? lineupItems[deletingLineupIndex + 1] : undefined;
                   setPendingDeleteTarget(null);
                   void updateDb((draft) => {
                     const target = draft.sessions.find((item) => item.id === liveSession.id);
@@ -4149,7 +4407,7 @@ function LiveLogger({
                         const deletedIndex = log.sets.findIndex((set) => set.id === targetDelete.actualSetId);
                         const deletedSet = deletedIndex >= 0 ? log.sets[deletedIndex] : undefined;
                         if (deletedIndex >= 0) log.sets.splice(deletedIndex, 1);
-                        if (deletedSet?.plannedSetId) {
+                        if (deletedSet?.plannedSetId && deletedSet.added) {
                           log.deletedPlannedSetIds = Array.from(new Set([...(log.deletedPlannedSetIds || []), deletedSet.plannedSetId]));
                         }
                       } else if (targetDelete.plannedSetId) {
@@ -4174,7 +4432,19 @@ function LiveLogger({
                   swipeGestureRef.current = null;
                   setSwipeDrag(null);
                   if (targetDelete?.actualSetId && editingSetId === targetDelete.actualSetId) setEditingSetId(null);
-                  setSelectedLoggingIndex(null);
+                  if (targetDelete?.actualSetId && focusedActualSetId === targetDelete.actualSetId) {
+                    setFocusedActualSetId(null);
+                  }
+                  if (previousLineupItem) {
+                    focusLineupItem(previousLineupItem);
+                  } else if (nextLineupItem) {
+                    focusLineupItem(nextLineupItem);
+                  } else {
+                    setSelectedLoggingIndex(null);
+                    setFocusedActualSetId(null);
+                    setEditingSetId(null);
+                  }
+                  loggerDebug("DELETE_SET_END", { deletedActualSetId: targetDelete?.actualSetId, deletedPlannedSetId: targetDelete?.plannedSetId });
                 }}
               >
                 Delete Set
@@ -4195,10 +4465,14 @@ function LiveLogger({
                 label: "Add Set",
                 icon: <Plus className="h-4 w-4" />,
                 onClick: () => {
-                  if (menuLog && menuLog.id !== activeExerciseLog.id) {
-                    setActiveExerciseId(menuLog.id);
-                    setSelectedLoggingIndex(null);
-                    setEditingSetId(null);
+                  if (menuLog) {
+                    if (menuLog.id !== activeExerciseLog.id) {
+                      setActiveExerciseId(menuLog.id);
+                      setSelectedLoggingIndex(null);
+                      setEditingSetId(null);
+                    }
+                    addSet(menuLog.id);
+                    return;
                   }
                   addSet();
                 },
@@ -4220,7 +4494,11 @@ function LiveLogger({
       })()}
       {setContextMenuId && (() => {
         const menuActual = liveExerciseLog.sets.find((s) => s.id === setContextMenuId);
-        const menuLineup = lineupItems.find((item) => item.actualSet?.id === setContextMenuId || (item.actualSet === undefined && item.plannedSet?.id === setContextMenuId));
+        const menuLineup = lineupItems.find((item) =>
+          item.actualSet?.id === setContextMenuId
+          || item.plannedSet?.id === setContextMenuId
+          || item.key === setContextMenuId
+        );
         const canSkip = !isPastLastPlannedSet && !isEditingLoggedSet;
         return (
           <ActionSheet
@@ -4231,13 +4509,7 @@ function LiveLogger({
                 label: menuActual ? "Edit Set" : "Jump to Set",
                 icon: <Pencil className="h-4 w-4" />,
                 onClick: () => {
-                  if (menuActual) {
-                    setSelectedLoggingIndex(null);
-                    setEditingSetId(menuActual.id);
-                  } else if (menuLineup?.plannedIndex !== undefined) {
-                    setEditingSetId(null);
-                    setSelectedLoggingIndex(menuLineup.plannedIndex);
-                  }
+                  selectExactLineupItemForEditing(menuLineup);
                 },
               },
               {
@@ -4245,7 +4517,13 @@ function LiveLogger({
                 icon: <X className="h-4 w-4" />,
                 destructive: true,
                 disabled: !canSkip,
-                onClick: skipSet,
+                onClick: () => {
+                  if (menuLineup?.plannedIndex !== undefined) {
+                    skipAtPlannedIndex(menuLineup.plannedIndex);
+                    return;
+                  }
+                  skipSet();
+                },
               },
               {
                 label: "Delete Set",
@@ -4470,7 +4748,9 @@ function LiveLogger({
                   const set = lineupItem.plannedSet;
                   const actual = lineupItem.actualSet;
                   const isEditingThisRow = !!actual && editingSetId === actual.id;
-                  const isSelected = isEditingThisRow || (!isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
+                  const isSelected = isEditingThisRow
+                    || (!!actual && focusedActualSetId === actual.id)
+                    || (!selectedActualLineupItem && !isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
                   const isLoggedSet = !!actual;
                   const statusLabel = isEditingThisRow ? "Editing" : actual?.skipped ? "Skipped" : actual ? "Done" : isSelected ? "Current" : "Pending";
                   // Pending rows use planned set id so they can also be swiped.
@@ -4583,16 +4863,7 @@ function LiveLogger({
                             setOpenSwipeSetId(undefined);
                             return;
                           }
-                          setOpenSwipeSetId(undefined);
-                          if (actual) {
-                            setSelectedLoggingIndex(null);
-                            setEditingSetId(actual.id);
-                            return;
-                          }
-                          if (lineupItem.plannedIndex !== undefined) {
-                            setEditingSetId(null);
-                            setSelectedLoggingIndex(lineupItem.plannedIndex);
-                          }
+                          selectExactLineupItemForEditing(lineupItem);
                         }}
                         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") e.currentTarget.click(); }}
                         onTouchStart={(event) => {
@@ -4807,33 +5078,27 @@ function LiveLogger({
                       logSet(setDraft.setRating, "stay");
                       return;
                     }
-                    if (isPastLastPlannedSet) {
-                      if (hasMoreExercises) finishExercise();
-                      else finishWorkout();
+                    if (derivedPrimaryAction === "save-set") {
+                      logSet(setDraft.setRating, "stay");
                       return;
                     }
-                    if (primaryAction === "finish-workout") {
-                      if (hasDraftValidValues) {
-                        logSet(setDraft.setRating, "finish-workout");
-                      } else {
-                        finishExercise();
+                    if (derivedPrimaryAction === "next-set") {
+                      loggerDebug("NEXT_SET_START", { fromLineupIndex: clampedActiveLineupIndex });
+                      if (hasDraftValidValues && currentPendingSetIsUncovered && !isPastLastPlannedSet) {
+                        logSet(setDraft.setRating, "next-set");
+                        loggerDebug("NEXT_SET_END", { mode: "commit-and-advance" });
+                        return;
                       }
+                      focusLineupItem(activeLineupItem ? lineupItems[clampedActiveLineupIndex + 1] : undefined);
+                      loggerDebug("NEXT_SET_END", { mode: "advance-only", toLineupIndex: clampedActiveLineupIndex + 1 });
                       return;
                     }
-                    if (primaryAction === "finish-exercise") {
-                      if (hasDraftValidValues) {
-                        logSet(setDraft.setRating, "next-exercise");
-                      } else {
-                        finishExercise();
-                      }
-                      return;
-                    }
-                    logSet(setDraft.setRating, "stay");
+                    finishExercise();
                   }}
                 >
-                  <Check className="h-4 w-4" /> {isPastLastPlannedSet && !isEditingLoggedSet ? (hasMoreExercises ? "Next Exercise" : finishWorkoutLabel) : primaryActionLabel}
+                  <Check className="h-4 w-4" /> {primaryActionLabel}
                 </button>
-                <button className="tap-highlight shrink-0 inline-flex min-h-10 items-center justify-center gap-2 rounded border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]" onClick={addSet}>+ Set</button>
+                <button className="tap-highlight shrink-0 inline-flex min-h-10 items-center justify-center gap-2 rounded border border-white/[0.1] bg-white/[0.07] px-4 py-2 text-sm font-medium text-iron-100 transition hover:bg-white/[0.1] active:scale-[0.97]" onClick={() => addSet()}>+ Set</button>
               </div>
             </div>
               </div>
@@ -4853,7 +5118,7 @@ function LiveLogger({
           </div>
           {showAddExercisePicker && (
             <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
-              <section className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
+              <section className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
                 <div className="mb-4 flex items-center justify-between gap-3">
                   <h3 className="text-xl font-black">Add exercise</h3>
                   <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
@@ -4861,6 +5126,7 @@ function LiveLogger({
                 <ExercisePicker
                   db={db}
                   user={user}
+                  updateDb={updateDb}
                   onPick={(exercise) => {
                     setShowAddExercisePicker(false);
                     setPendingOffProgramExercise(exercise);
@@ -4911,6 +5177,18 @@ function BuilderScreen({
   updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
   setScreen: (screen: Screen) => void;
 }) {
+  type TemplateLaunchMeta = {
+    id: string;
+    name: string;
+    splitPreview: string;
+    daysPerWeek: number;
+    goalFocus: string;
+    suitability: string;
+    goodFor: string;
+    includesSBD: boolean;
+    estimatedSessions: number;
+  };
+
   const splitTemplates = db.splitTemplates.filter((split) => !split.ownerUserId || split.ownerUserId === user.id);
 
   const defaultSplitId = splitTemplates[0]?.id || db.splitTemplates[0]?.id || "";
@@ -5010,7 +5288,109 @@ function BuilderScreen({
     });
   }
 
-  async function createProgram(mode: ProgramBuildMode) {
+  const sbdExerciseIds = new Set(["ex_squat_comp", "ex_bench_comp", "ex_deadlift_comp", "ex_paused_squat", "ex_box_squat", "ex_paused_bench", "ex_deficit_deadlift"]);
+
+  function hasSbdName(name?: string): boolean {
+    if (!name) return false;
+    const lowered = name.toLowerCase();
+    return lowered.includes("squat") || lowered.includes("bench") || lowered.includes("deadlift");
+  }
+
+  function getTemplatePreview(split: SplitTemplate): string {
+    if (split.days?.length) return split.days.map((day) => day.name).join(" · ");
+    return `${split.daysPerWeek} day split`;
+  }
+
+  function getTemplateBestFor(split: SplitTemplate): string | undefined {
+    const source = split.description?.trim() || split.notes?.trim();
+    if (!source) return undefined;
+    const sentence = source.split(/[.!?]/)[0]?.trim();
+    return sentence || undefined;
+  }
+
+  function deriveTemplateMeta(split: SplitTemplate): TemplateLaunchMeta {
+    const preview = getTemplatePreview(split);
+    const includesSBD = split.days.some((day) => hasSbdName(day.mainLiftFocus) || hasSbdName(day.name) || day.movementPatterns.some((pattern) => pattern === "squat" || pattern === "hinge"))
+      || hasSbdName(split.name)
+      || split.goal === "powerlifting"
+      || split.goal === "powerbuilding";
+
+    const known: Record<string, Pick<TemplateLaunchMeta, "suitability" | "goodFor">> = {
+      split_bodybuilding_ppl_3: {
+        suitability: "beginner/intermediate friendly",
+        goodFor: "simple structure, lower time commitment",
+      },
+      split_bodybuilding_ppl_6: {
+        suitability: "intermediate/advanced",
+        goodFor: "higher frequency and more weekly volume",
+      },
+      split_upper_lower_4: {
+        suitability: "beginner/intermediate friendly",
+        goodFor: "balanced recovery and predictable scheduling",
+      },
+      split_powerbuilding_ul_4: {
+        suitability: "intermediate friendly",
+        goodFor: "SBD exposure with bodybuilding accessories",
+      },
+      split_full_body_3: {
+        suitability: "beginner/intermediate friendly",
+        goodFor: "simple full-body progression and busy schedules",
+      },
+    };
+
+    const fallbackSuitability =
+      split.daysPerWeek >= 6 ? "intermediate/advanced" :
+      split.daysPerWeek <= 3 ? "beginner/intermediate friendly" :
+      "intermediate friendly";
+
+    const fallbackGoodFor = getTemplateBestFor(split)
+      || (split.goal === "powerbuilding"
+        ? "balanced strength and hypertrophy work"
+        : split.goal === "bodybuilding"
+          ? "hypertrophy progress with clear weekly structure"
+          : "simple full-body progression and busy schedules");
+
+    return {
+      id: split.id,
+      name: split.name,
+      splitPreview: preview,
+      daysPerWeek: split.daysPerWeek,
+      goalFocus: split.goal === "powerbuilding" ? "strength + hypertrophy" : split.goal,
+      suitability: known[split.id]?.suitability ?? fallbackSuitability,
+      goodFor: known[split.id]?.goodFor ?? fallbackGoodFor,
+      includesSBD,
+      estimatedSessions: split.daysPerWeek * request.blockLengthWeeks,
+    };
+  }
+
+  const templateLaunchList = useMemo(
+    () => splitTemplates.map(deriveTemplateMeta),
+    [splitTemplates, request.blockLengthWeeks]
+  );
+
+  const hasSbdExposure = useMemo(() => {
+    const fromActive = !!activeProgram?.blocks.some((block) =>
+      block.weeks.some((week) => week.workouts.some((day) =>
+        day.exercises.some((planned) => sbdExerciseIds.has(planned.exerciseId))
+      ))
+    );
+    if (fromActive) return true;
+    const fromHistory = db.sessions
+      .filter((session) => session.userId === user.id && session.status === "completed")
+      .some((session) => session.loggedExercises.some((logged) => sbdExerciseIds.has(logged.exerciseId)));
+    return fromHistory;
+  }, [activeProgram, db.sessions, user.id]);
+
+  const recommendedTemplateMeta = useMemo(() => {
+    const powerbuilding4 = templateLaunchList.find((template) => template.id === "split_powerbuilding_ul_4")
+      || templateLaunchList.find((template) => template.name.toLowerCase().includes("powerbuilding") && template.daysPerWeek === 4);
+    const fallback = templateLaunchList.find((template) => template.id === "split_bodybuilding_ppl_3")
+      || templateLaunchList.find((template) => template.id === "split_upper_lower_4")
+      || templateLaunchList[0];
+    return hasSbdExposure && powerbuilding4 ? powerbuilding4 : fallback;
+  }, [hasSbdExposure, templateLaunchList]);
+
+  async function createProgram(mode: ProgramBuildMode, options?: { replaceExistingDraft?: boolean; splitIdOverride?: string; successMessage?: string }) {
     if (request.daysPerWeek < 1 || request.daysPerWeek > 7) {
       setGenerationState({ status: "error", message: "Choose between 1 and 7 training days per week." });
       return;
@@ -5018,20 +5398,32 @@ function BuilderScreen({
     setBuildMode(mode);
     setGenerationState({ status: "loading", message: mode === "manual" ? "Creating a manual block draft..." : "Suggesting a complete program draft..." });
     try {
-      const program = generateProgram(user, db, { ...request, buildMode: mode, splitTemplateId: selectedSplitId, splitDays: generatedSplit });
+      const resolvedSplitId = options?.splitIdOverride ?? selectedSplitId;
+      const resolvedSplit = db.splitTemplates.find((split) => split.id === resolvedSplitId);
+      const splitDays = resolvedSplit?.days.length ? resolvedSplit.days : generatedSplit;
+      const resolvedProgramName = request.name.trim() || `${resolvedSplit?.name || "Custom"} Block`;
+      const draftRequest = {
+        ...request,
+        name: resolvedProgramName,
+        buildMode: mode,
+        splitTemplateId: resolvedSplitId,
+        daysPerWeek: resolvedSplit?.daysPerWeek ?? request.daysPerWeek,
+        splitDays
+      };
+      const program = generateProgram(user, db, draftRequest);
       program.blocks = program.blocks.map((block) => ({
         ...block,
-        splitTemplateId: selectedSplitId,
-        blockType: request.blockType,
-        goal: request.goal,
-        numberOfWeeks: request.blockLengthWeeks,
+        splitTemplateId: resolvedSplitId || undefined,
+        blockType: draftRequest.blockType,
+        goal: draftRequest.goal,
+        numberOfWeeks: draftRequest.blockLengthWeeks,
         status: "draft",
-        loopMode: request.splitLoopMode,
+        loopMode: draftRequest.splitLoopMode,
         weeks: block.weeks.map((week) => ({
           ...week,
           workouts: week.workouts.map((workout, dayIndex) => {
-            const splitOffset = request.splitLoopMode === "weekly-reset" ? dayIndex : ((week.weekNumber - 1) * request.daysPerWeek) + dayIndex;
-            const splitDay = generatedSplit.find((item) => workout.name.toLowerCase().includes(item.name.toLowerCase())) || generatedSplit[splitOffset % generatedSplit.length];
+            const splitOffset = draftRequest.splitLoopMode === "weekly-reset" ? dayIndex : ((week.weekNumber - 1) * draftRequest.daysPerWeek) + dayIndex;
+            const splitDay = splitDays.find((item) => workout.name.toLowerCase().includes(item.name.toLowerCase())) || splitDays[splitOffset % splitDays.length];
             return {
               ...workout,
               blockId: block.id,
@@ -5046,15 +5438,64 @@ function BuilderScreen({
         }))
       }));
       await updateDb((draft) => {
-        draft.programs = draft.programs.filter((item) => !(item.userId === user.id && item.status === "draft"));
+        if (options?.replaceExistingDraft !== false) {
+          draft.programs = draft.programs.filter((item) => !(item.userId === user.id && item.status === "draft"));
+        }
         draft.programs.unshift(program);
         draft.programGaps = analyzeProgramGaps(program, draft);
         return draft;
       });
-      setGenerationState({ status: "success", message: mode === "manual" ? "Manual draft created. Add exercises in the weekly overview, then activate it when ready." : "Suggested draft created. Review and edit it before activating." });
+      setGenerationState({ status: "success", message: options?.successMessage || (mode === "manual" ? "Draft saved. Fill requirement slots in the day editor, then deploy when ready." : "Suggested draft created. Review and edit it before activating.") });
     } catch (error) {
       setGenerationState({ status: "error", message: error instanceof Error ? error.message : "Program generation failed." });
     }
+  }
+
+  function syncDraftProgramBasics() {
+    if (!draftProgram) return;
+    const resolvedName = request.name.trim() || `${selectedSplit?.name || "Custom"} Block`;
+    void updateDb((draft) => {
+      const targetProgram = draft.programs.find((program) => program.id === draftProgram.id);
+      if (!targetProgram) return draft;
+      targetProgram.name = resolvedName;
+      targetProgram.goal = request.goal;
+      targetProgram.splitTemplateId = selectedSplitId || undefined;
+      targetProgram.updatedAt = nowIso();
+      targetProgram.changeLog ||= [];
+      targetProgram.changeLog.unshift({ id: createId("change"), at: nowIso(), label: "Updated draft basics", detail: "Updated block name, goal, and template selection." });
+      const targetBlock = targetProgram.blocks[0];
+      if (targetBlock) {
+        targetBlock.goal = request.goal;
+        targetBlock.splitTemplateId = selectedSplitId || undefined;
+        targetBlock.trainingDaysPerWeek = request.daysPerWeek;
+        targetBlock.lengthWeeks = request.blockLengthWeeks;
+      }
+      draft.programGaps = analyzeProgramGaps(targetProgram, draft);
+      return draft;
+    });
+  }
+
+  async function startNewBlock(splitId?: string, blank = false) {
+    const hasExistingDraft = !!draftProgram;
+    if (hasExistingDraft && !confirm("Start a new block draft? Your current draft will be replaced unless you resume it first.")) return;
+    const chosenSplitId = blank ? "" : (splitId ?? selectedSplitId);
+    const chosenSplit = db.splitTemplates.find((item) => item.id === chosenSplitId);
+    setSelectedSplitId(chosenSplitId || "");
+    setRequest((current) => ({
+      ...defaultRequest,
+      goal: chosenSplit?.goal ?? current.goal,
+      splitTemplateId: chosenSplitId || undefined,
+      daysPerWeek: chosenSplit?.daysPerWeek ?? defaultRequest.daysPerWeek,
+      name: "",
+    }));
+    setBlocksView("builder");
+    await createProgram("manual", {
+      replaceExistingDraft: true,
+      splitIdOverride: chosenSplitId || undefined,
+      successMessage: blank
+        ? "Custom draft started. Build your split and requirement slots manually."
+        : "New draft started. Select a day to fill requirement slots."
+    });
   }
 
   function activateProgram(program?: Program) {
@@ -5110,7 +5551,7 @@ function BuilderScreen({
               {[activeProgram && "1 active", draftProgram && "1 draft", archivedCount > 0 && `${archivedCount} archived`].filter(Boolean).join(" · ") || "No blocks yet"}
             </p>
           </div>
-          <button className="apollo-primary-btn" onClick={() => setBlocksView("builder")}>
+          <button className="apollo-primary-btn" onClick={() => void startNewBlock()}>
             <Plus className="h-4 w-4" />
             New block
           </button>
@@ -5158,42 +5599,83 @@ function BuilderScreen({
           </section>
         )}
 
-        {/* Templates */}
+        {/* Recommended for you */}
+        {recommendedTemplateMeta && (
+          <section>
+            <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Recommended for you</p>
+            <div className="border border-white/[0.08] bg-white/[0.03] p-4">
+              <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-[#8fb9ff]">Recommended</p>
+              <p className="mt-1 text-base font-semibold text-white">{recommendedTemplateMeta.name}</p>
+              <p className="mt-1 text-xs text-iron-300">
+                {recommendedTemplateMeta.goalFocus === "strength + hypertrophy"
+                  ? "Balanced for strength + hypertrophy"
+                  : `Built for ${recommendedTemplateMeta.goalFocus}`}
+              </p>
+              <p className="mt-1 text-xs text-iron-500">
+                {hasSbdExposure
+                  ? "Fits your recent training: squat, bench, and deadlift exposure."
+                  : "Safe default recommendation based on your current setup."}
+              </p>
+              <button
+                className="mt-3 inline-flex items-center gap-2 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]"
+                onClick={() => void startNewBlock(recommendedTemplateMeta.id)}
+              >
+                Use template
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* Start from template */}
         <section>
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Templates</p>
+            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Start from template</p>
           </div>
           <div className="divide-y divide-white/[0.06] border-y border-white/[0.06]">
-            {splitTemplates.slice(0, 5).map((split) => (
-              <div key={split.id} className="flex items-center justify-between gap-3 py-3">
+            {templateLaunchList.slice(0, 8).map((template) => (
+              <div key={template.id} className="flex items-center justify-between gap-3 py-3">
                 <div className="flex min-w-0 items-center gap-3">
                   <div className="flex h-7 w-7 shrink-0 items-center justify-center border border-white/[0.1] bg-white/[0.04]">
                     <ClipboardList className="h-3.5 w-3.5 text-iron-400" />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-medium text-white">{split.name}</p>
-                    <p className="mt-0.5 text-xs text-iron-500">{split.daysPerWeek}-day</p>
+                    <p className="text-sm font-medium text-white">{template.name}</p>
+                    <p className="mt-0.5 truncate text-xs text-iron-400">{template.splitPreview}</p>
+                    <p className="mt-0.5 text-xs text-iron-500">
+                      {template.daysPerWeek} days/week · {template.goalFocus} · {template.suitability}
+                    </p>
+                    <p className="mt-0.5 truncate text-xs text-iron-500">Good for: {template.goodFor}</p>
                   </div>
                 </div>
                 <button
                   className="shrink-0 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]"
-                  onClick={() => {
-                    setSelectedSplitId(split.id);
-                    setRequest((d) => ({ ...d, splitTemplateId: split.id, daysPerWeek: split.daysPerWeek ?? d.daysPerWeek }));
-                    setBlocksView("builder");
-                  }}
+                  onClick={() => void startNewBlock(template.id)}
                 >
-                  Use
+                  Use template
                 </button>
               </div>
             ))}
           </div>
         </section>
 
+        {/* Custom block */}
+        <section>
+          <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Custom block</p>
+          <div className="flex items-center justify-between gap-3 border-y border-white/[0.06] py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">Custom Block</p>
+              <p className="mt-0.5 text-xs text-iron-500">Start blank and build your own split, requirements, and exercise slots.</p>
+            </div>
+            <button className="shrink-0 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]" onClick={() => void startNewBlock(undefined, true)}>
+              Start blank
+            </button>
+          </div>
+        </section>
+
         {/* Archived */}
         {archivedPrograms.length > 0 && (
           <section>
-            <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Archived · {archivedPrograms.length}</p>
+            <p className="mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Archived / Previous blocks · {archivedPrograms.length}</p>
             <div className="divide-y divide-white/[0.06] border-y border-white/[0.06]">
               {archivedPrograms.map((program) => (
                 <div key={program.id} className="flex items-center justify-between gap-3 py-3">
@@ -5233,38 +5715,38 @@ function BuilderScreen({
             Blocks
           </button>
           <div className="flex flex-wrap items-center gap-2">
-            {draftProgram && (
-              <button className="apollo-secondary-btn hidden sm:flex" onClick={() => activateProgram(draftProgram)}>
-                <CheckCircle2 className="h-4 w-4" />
-                Activate
-              </button>
-            )}
             <button
               className="apollo-secondary-btn"
-              onClick={() => { setBuildMode("manual"); void createProgram("manual"); }}
+              onClick={() => {
+                if (draftProgram) {
+                  syncDraftProgramBasics();
+                  setGenerationState({ status: "success", message: "Draft saved." });
+                  return;
+                }
+                setBuildMode("manual");
+                void createProgram("manual", { replaceExistingDraft: true, successMessage: "Draft saved." });
+              }}
               disabled={generationState.status === "loading"}
             >
-              Save draft
+              Save Draft
             </button>
             <button
               className="apollo-primary-btn"
-              onClick={() => { setBuildMode("suggested"); void createProgram("suggested"); }}
-              disabled={generationState.status === "loading"}
+              onClick={() => {
+                if (draftProgram) {
+                  syncDraftProgramBasics();
+                  activateProgram(draftProgram);
+                }
+              }}
+              disabled={generationState.status === "loading" || !draftProgram}
             >
-              <Wand2 className="h-4 w-4" />
-              <span className="hidden sm:inline">Generate weeks</span>
-              <span className="sm:hidden">Generate</span>
+              <CheckCircle2 className="h-4 w-4" />
+              <span>Deploy Block</span>
             </button>
           </div>
         </div>
-        {draftProgram && (
-          <button className="apollo-secondary-btn mt-2 w-full sm:hidden" onClick={() => activateProgram(draftProgram)}>
-            <CheckCircle2 className="h-4 w-4" />
-            Activate Draft
-          </button>
-        )}
         <h1 className="mt-3 text-2xl font-bold tracking-[-0.02em] text-white">Build training block</h1>
-        <p className="mt-0.5 text-sm text-iron-400">Configure the plan before generating weeks</p>
+        <p className="mt-0.5 text-sm text-iron-400">Select a template, then fill requirement slots manually or with Choose for me.</p>
         {/* Progress indicator */}
         {(() => {
           const steps = [
@@ -5298,7 +5780,6 @@ function BuilderScreen({
           {generationState.message}
         </div>
       )}
-
       {/* Two-column layout on desktop */}
       <div className="mt-4 lg:grid lg:grid-cols-3 lg:gap-6">
         {/* Left: form */}
@@ -5312,7 +5793,7 @@ function BuilderScreen({
                 <span className="text-sm text-iron-300">Name</span>
                 <input
                   className="min-w-0 flex-1 bg-transparent text-right text-sm text-white placeholder-iron-600 outline-none"
-                  placeholder="e.g. Powerbuilding Hypertrophy"
+                  placeholder={`${selectedSplit?.name || "Custom"} Block`}
                   value={request.name}
                   onChange={(e) => setRequest((d) => ({ ...d, name: e.target.value }))}
                 />
@@ -5354,6 +5835,7 @@ function BuilderScreen({
                       const newSplit = db.splitTemplates.find((s) => s.id === newId);
                       setSelectedSplitId(newId);
                       setRequest((d) => ({ ...d, splitTemplateId: newId, daysPerWeek: newSplit?.daysPerWeek ?? d.daysPerWeek }));
+                      void startNewBlock(newId);
                     }}
                   >
                     {db.splitTemplates.map((split) => (
@@ -5522,7 +6004,7 @@ function BuilderScreen({
           ) : (
             <section className="border-b border-white/[0.06] py-5">
               <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Weekly split &amp; exercises</p>
-              <p className="mt-2 text-sm text-iron-500">Click Generate weeks to build your training plan and edit days.</p>
+              <p className="mt-2 text-sm text-iron-500">Start a new block or choose a template to open the day editor and requirement slots.</p>
             </section>
           )}
 
@@ -5556,9 +6038,10 @@ function BuilderScreen({
               const sorted = Object.entries(vol).filter(([,v]) => v > 0).sort((a,b) => b[1]-a[1]).slice(0,8);
               // Derive required muscles from all split days in the working program
               const splitTemplate = db.splitTemplates.find((s) => s.id === workingProgram.splitTemplateId);
-              const requiredMuscles = new Set<string>(
-                splitTemplate?.days.flatMap((sd) => sd.targetMuscles ?? sd.muscleGroups ?? []) ?? []
-              );
+              const requiredMuscles = new Set<string>([
+                ...(splitTemplate?.days.flatMap((sd) => sd.targetMuscles ?? sd.muscleGroups ?? []) ?? []),
+                ...(splitTemplate?.days.flatMap((sd) => (sd.requirements ?? []).map((req) => req.targetMuscle)) ?? [])
+              ]);
               const coveredMuscles = sorted.filter(([m]) => requiredMuscles.has(m)).map(([m]) => m);
               const extraMuscles = sorted.filter(([m]) => !requiredMuscles.has(m)).map(([m]) => m);
               return (
@@ -5592,6 +6075,23 @@ function BuilderScreen({
                           <span className="w-10 text-right text-xs text-iron-400">{sets} set</span>
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {sorted.length === 0 && (
+                    <div className="mt-4">
+                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Planned requirement groups</p>
+                      {requiredMuscles.size > 0 ? (
+                        <div className="mt-2 flex flex-wrap gap-1">
+                          {[...requiredMuscles].map((muscle) => (
+                            <span key={muscle} className="rounded border border-white/[0.12] bg-white/[0.04] px-2 py-0.5 text-[0.65rem] capitalize text-iron-300">
+                              {muscle.replace(/-/g, " ")}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-xs text-iron-500">No requirement groups defined yet.</p>
+                      )}
+                      <p className="mt-2 text-xs text-iron-500">No exercises selected yet.</p>
                     </div>
                   )}
                 </>
@@ -6038,6 +6538,78 @@ function WorkoutDayEditor({
 
   const currentReq = requirements[currentReqIndex] as SplitDayRequirement | undefined;
   const alreadyAddedIds = day.exercises.map((planned) => planned.exerciseId);
+  const findNextUnmetRequirementIndex = (exercises: { exerciseId: string; fulfillsRequirementId?: string; isExtra?: boolean }[]) =>
+    requirements.findIndex((req) => Math.min(countFulfilled(exercises as typeof day.exercises, req), req.requiredExerciseCount) < req.requiredExerciseCount);
+  const isUserEditedPrescription = (planned: PlannedExercise) => planned.userEditedPrescription === true;
+  const isUserEditedOrder = (exercises: PlannedExercise[]) => exercises.some((planned) => planned.userEditedOrder);
+
+  function coachOrderDayExercises(exercises: PlannedExercise[]): PlannedExercise[] {
+    const exerciseMap = new Map(db.exercises.map((exercise) => [exercise.id, exercise] as const));
+    const sortableItems = exercises.reduce<{ planned: PlannedExercise; exercise: Exercise; exerciseRole?: ExerciseRole }[]>((items, planned) => {
+      const exercise = exerciseMap.get(planned.exerciseId);
+      if (exercise) items.push({ planned, exercise, exerciseRole: planned.exerciseRole });
+      return items;
+    }, []);
+    const ordered = orderExercisesForDay(
+      sortableItems,
+      {
+        splitDay: {
+          name: day.name,
+          muscleGroups: day.targetMuscles || [],
+          movementPatterns: day.movementPatterns || [],
+        },
+        blockType: program.blocks[0]?.type || "hypertrophy",
+      }
+    );
+    const orderedIds = ordered.map((item) => item.planned.id);
+    return exercises
+      .slice()
+      .sort((a, b) => orderedIds.indexOf(a.id) - orderedIds.indexOf(b.id))
+      .map((planned, index) => ({ ...planned, order: index + 1 }));
+  }
+
+  function refreshAutoPrescriptions(target: WorkoutDay): void {
+    const requirementOrdinal = new Map<string, number>();
+    target.exercises = target.exercises.map((planned, index) => {
+      if (planned.userEditedPrescription) {
+        return { ...planned, order: index + 1 };
+      }
+      const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
+      if (!exercise) return { ...planned, order: index + 1 };
+      const req = planned.fulfillsRequirementId ? requirements.find((item) => item.id === planned.fulfillsRequirementId) : undefined;
+      const slotIndex = req
+        ? requirementOrdinal.get(req.id) ?? 0
+        : Math.max(0, index);
+      if (req) {
+        requirementOrdinal.set(req.id, slotIndex + 1);
+      }
+      const rebuilt = buildPlannedExerciseFromExercise({
+        db,
+        user,
+        program,
+        day: target,
+        exercise,
+        order: index + 1,
+        exerciseRole: planned.exerciseRole,
+        requirementSlotIndex: req ? slotIndex : undefined,
+        totalRequiredForMuscle: req?.requiredExerciseCount,
+      });
+      return {
+        ...planned,
+        order: index + 1,
+        exerciseRole: rebuilt.exerciseRole,
+        fatigueTag: rebuilt.fatigueTag,
+        required: rebuilt.required,
+        plannedSets: rebuilt.plannedSets.map((set, setIndex) => ({
+          ...set,
+          id: planned.plannedSets[setIndex]?.id || set.id,
+          plannedWeight: planned.plannedSets[setIndex]?.plannedWeight ?? set.plannedWeight,
+        })),
+        restSeconds: rebuilt.restSeconds,
+        notes: rebuilt.notes,
+      };
+    });
+  }
 
   function updateDay(mutator: (target: WorkoutDay) => void) {
     void updateDb((draft) => {
@@ -6095,18 +6667,24 @@ function WorkoutDayEditor({
       });
       planned.fulfillsRequirementId = isExtraFlag ? undefined : reqId;
       planned.isExtra = isExtraFlag || undefined;
+      planned.userEditedOrder = target.exercises.some((item) => item.userEditedOrder) || undefined;
       target.exercises.push(planned);
+      if (!isUserEditedOrder(target.exercises)) {
+        target.exercises = coachOrderDayExercises(target.exercises);
+        refreshAutoPrescriptions(target);
+      }
     });
     setPendingExtraExercise(null);
 
     // Advance to next unfulfilled requirement (only for non-extra exercises)
     if (!asExtra && !showAllExercises && requirements.length > 0) {
-      const updatedExercises = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId } as typeof day.exercises[number]];
-      const nextUnmet = requirements.findIndex((req, idx) => {
-        const currentFulfilled = Math.min(countFulfilled(updatedExercises, req), req.requiredExerciseCount);
-        return currentFulfilled < req.requiredExerciseCount && idx !== currentReqIndex;
-      });
-      if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
+      const updatedExercises = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
+      const nextUnmet = findNextUnmetRequirementIndex(updatedExercises);
+      if (nextUnmet >= 0) {
+        setCurrentReqIndex(nextUnmet);
+      } else {
+        setInlineReqPickerOpen(false);
+      }
     }
   }
 
@@ -6142,8 +6720,12 @@ function WorkoutDayEditor({
       replacementPlanned.id = targetExercise.id;
       replacementPlanned.order = targetExercise.order;
       replacementPlanned.required = targetExercise.required;
-      replacementPlanned.plannedSets = structuredClone(targetExercise.plannedSets);
-      replacementPlanned.restSeconds = targetExercise.restSeconds;
+      if (isUserEditedPrescription(targetExercise)) {
+        replacementPlanned.plannedSets = structuredClone(targetExercise.plannedSets);
+        replacementPlanned.restSeconds = targetExercise.restSeconds;
+      }
+      replacementPlanned.userEditedPrescription = targetExercise.userEditedPrescription;
+      replacementPlanned.userEditedOrder = targetExercise.userEditedOrder;
       replacementPlanned.fulfillsRequirementId = compatibleWithRequirement ? targetExercise.fulfillsRequirementId : undefined;
       replacementPlanned.isExtra = targetExercise.isExtra || !compatibleWithRequirement || undefined;
       replacementPlanned.originalExerciseId = targetExercise.originalExerciseId ?? targetExercise.exerciseId;
@@ -6162,8 +6744,52 @@ function WorkoutDayEditor({
     setEditingExerciseId(plannedExerciseId);
   }
 
+  function chooseForCurrentRequirement() {
+    if (!currentReq) return;
+    const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
+    const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
+    const currentFulfilled = Math.min(countFulfilled(day.exercises, currentReq), currentReq.requiredExerciseCount);
+    const slotPlan = getRequirementSlotPlan({
+      targetMuscle: currentReq.targetMuscle,
+      goalType: program.goal,
+      blockType: program.blocks[0]?.type || "hypertrophy",
+      dayFocus: day.focus,
+      slotIndex: currentFulfilled,
+      totalSlots: currentReq.requiredExerciseCount,
+      movementPattern: currentReq.movementPattern,
+    });
+    const candidates = db.exercises
+      .filter((exercise) => (!exercise.ownerUserId || exercise.ownerUserId === user.id))
+      .filter((exercise) => !alreadyAddedIds.includes(exercise.id))
+      .filter((exercise) => exerciseAllowedByCompoundSettings(exercise, settings))
+      .filter((exercise) => !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item)))
+      .filter((exercise) => exerciseFulfillsRequirement(exercise, currentReq))
+      .filter((exercise) => !currentReq.movementPattern || exercise.movementPattern === currentReq.movementPattern || exercise.movementPatterns?.includes(currentReq.movementPattern))
+      .map((exercise) => ({
+        exercise,
+        score: scoreExerciseForSlot({
+          exercise,
+          slotPlan,
+          targetMuscle: currentReq.targetMuscle,
+          goalType: program.goal,
+          blockType: program.blocks[0]?.type || "hypertrophy",
+          dayFocus: day.focus,
+          selectedExercises: day.exercises.map((planned) => db.exercises.find((item) => item.id === planned.exerciseId)).filter((item): item is Exercise => Boolean(item)),
+          slotIndex: currentFulfilled,
+          totalSlots: currentReq.requiredExerciseCount,
+        }),
+      }))
+      .sort((a, b) => b.score - a.score);
+    const pick = candidates[0]?.exercise;
+    if (!pick) {
+      setChooserWarning(`No matching option found for ${titleCaseLabel(currentReq.targetMuscle)}. Pick manually for this slot.`);
+      return;
+    }
+    setChooserWarning("");
+    addExercise(pick);
+  }
+
   function chooseForMe() {
-    if (day.exercises.length && !confirm("Replace the exercises currently selected for this workout?")) return;
     const targetMuscles = day.targetMuscles?.length ? day.targetMuscles : allSplitDays.find((sd) => sd.id === day.splitDayId)?.muscleGroups || [];
     const targetPatterns = day.movementPatterns || [];
     const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
@@ -6194,14 +6820,15 @@ function WorkoutDayEditor({
       totalRequiredForMuscle?: number;
       exerciseRole?: ExerciseRole;
     }[] = [];
-    const usedIds = new Set<string>();
+    const usedIds = new Set<string>(day.exercises.map((planned) => planned.exerciseId));
 
     if (dayReqs.length > 0) {
       const warnings: string[] = [];
       // Fill each requirement slot — exactly requiredExerciseCount exercises per slot, no more
       for (const req of [...dayReqs].sort((a, b) => a.priority - b.priority)) {
-        let filled = 0;
-        for (let slot = 0; slot < req.requiredExerciseCount; slot += 1) {
+        const currentFulfilled = Math.min(countFulfilled(day.exercises, req), req.requiredExerciseCount);
+        let filled = currentFulfilled;
+        for (let slot = currentFulfilled; slot < req.requiredExerciseCount; slot += 1) {
           const slotPlan = getRequirementSlotPlan({
             targetMuscle: req.targetMuscle,
             goalType: goalUsed,
@@ -6293,18 +6920,46 @@ function WorkoutDayEditor({
     }
 
     if (!selected.length) {
-      setChooserWarning("No valid exercises matched this day after SBD rules, Exercise Avoider, gym availability, muscles, and movement patterns. You can override manually below.");
+      setChooserWarning("No new matching exercises found. Fill the missing requirement slots manually.");
       return;
     }
     updateDay((target) => {
-      target.exercises = selected.map((item, index) => {
+      const orderedSelections = orderExercisesForDay(
+        selected
+          .map((item, index) => ({
+            ...item,
+            exerciseRole: classifyExerciseRole({
+              exercise: item.exercise,
+              dayType: inferWorkoutDayType({
+                name: target.name,
+                targetMuscles: target.targetMuscles,
+                movementPatterns: target.movementPatterns,
+              }),
+              blockType: program.blocks[0]?.type || "hypertrophy",
+              dayFocus: target.focus,
+              orderHint: target.exercises.length + index + 1,
+              explicitRole: item.exerciseRole,
+              isPriority: Boolean(program.blocks[0]?.priorityExerciseIds.includes(item.exercise.id) || isSbdExercise(item.exercise)),
+            }),
+          })),
+        {
+          splitDay: {
+            name: target.name,
+            muscleGroups: target.targetMuscles || [],
+            movementPatterns: target.movementPatterns || [],
+          },
+          blockType: program.blocks[0]?.type || "hypertrophy",
+        }
+      );
+      const nextOrderStart = target.exercises.length + 1;
+      const additions = orderedSelections.map((item, index) => {
         const planned = buildPlannedExerciseFromExercise({
           db,
           user,
           program,
           day: target,
           exercise: item.exercise,
-          order: index + 1,
+          order: nextOrderStart + index,
           exerciseRole: item.exerciseRole,
           requirementSlotIndex: item.slotIndex,
           totalRequiredForMuscle: item.totalRequiredForMuscle,
@@ -6312,6 +6967,13 @@ function WorkoutDayEditor({
         planned.fulfillsRequirementId = item.reqId;
         return planned;
       });
+      target.exercises.push(...additions);
+      if (!isUserEditedOrder(target.exercises)) {
+        target.exercises = coachOrderDayExercises(target.exercises);
+        refreshAutoPrescriptions(target);
+      } else {
+        target.exercises = target.exercises.map((item, index) => ({ ...item, order: index + 1 }));
+      }
     });
   }
 
@@ -6365,6 +7027,16 @@ function WorkoutDayEditor({
                 );
               })}
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <button className="btn-compact" onClick={chooseForCurrentRequirement} disabled={!currentReq}>
+                <Wand2 className="h-3.5 w-3.5" />
+                Choose for this slot
+              </button>
+              <button className="btn-compact" onClick={chooseForMe}>
+                <Wand2 className="h-3.5 w-3.5" />
+                Auto-fill remaining
+              </button>
+            </div>
             {chooserWarning && <p className="mt-3 text-sm text-orange-300">{chooserWarning}</p>}
             {allReqsMet && requirements.length > 0 && !inlineReqPickerOpen && (
               <p className="mt-2 text-xs font-semibold text-emerald-400">All requirements filled</p>
@@ -6373,22 +7045,18 @@ function WorkoutDayEditor({
               <ExercisePicker
                 db={db}
                 user={user}
+                updateDb={updateDb}
                 onPick={(exercise) => {
                   const reqId = currentReq.id;
                   addExercise(exercise);
-                  // Simulate post-add state to decide whether to auto-advance
+                  // Simulate post-add state to keep chip/title/filter/results in sync immediately.
                   const simulated = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
-                  const stillNeedsMore = countFulfilled(simulated, currentReq) < currentReq.requiredExerciseCount;
-                  if (stillNeedsMore) {
+                  const nextUnmet = findNextUnmetRequirementIndex(simulated);
+                  if (nextUnmet >= 0) {
+                    setCurrentReqIndex(nextUnmet);
                     setInlineReqPickerOpen(true);
                   } else {
-                    const nextUnmet = requirements.findIndex((req) => Math.min(countFulfilled(simulated, req), req.requiredExerciseCount) < req.requiredExerciseCount);
-                    if (nextUnmet >= 0) {
-                      setCurrentReqIndex(nextUnmet);
-                      setInlineReqPickerOpen(true);
-                    } else {
-                      setInlineReqPickerOpen(false);
-                    }
+                    setInlineReqPickerOpen(false);
                   }
                 }}
                 alreadyAddedIds={alreadyAddedIds}
@@ -6396,6 +7064,7 @@ function WorkoutDayEditor({
                 grouped
                 variant="week-inline"
                 title={`Add ${currentReq.targetMuscle} exercise`}
+                requirementStatusLabel={`${titleCaseLabel(currentReq.targetMuscle)} ${reqProgress.find((item) => item.req.id === currentReq.id)?.fulfilled ?? 0}/${currentReq.requiredExerciseCount}`}
                 onClose={() => setInlineReqPickerOpen(false)}
               />
             )}
@@ -6408,7 +7077,7 @@ function WorkoutDayEditor({
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn-compact" onClick={chooseForMe}>
                 <Wand2 className="h-3.5 w-3.5" />
-                Choose for me
+                Auto-fill remaining
               </button>
               <button className="btn-compact text-[#8fb9ff]" onClick={() => { setSwappingExerciseId(undefined); setShowPicker((value) => !value); }}>
                 <Plus className="h-3.5 w-3.5" />
@@ -6459,6 +7128,7 @@ function WorkoutDayEditor({
                         if (!targetExercise) return;
                         const base = targetExercise.plannedSets[0] || { id: createId("pset"), kind: "working" as SetKind, targetReps: 8, targetRpe: 7 };
                         targetExercise.plannedSets = Array.from({ length: Math.max(1, Math.round(count)) }, () => ({ ...base, id: createId("pset") }));
+                        targetExercise.userEditedPrescription = true;
                       })}
                     />
                     <WeekEditorStepper
@@ -6467,7 +7137,9 @@ function WorkoutDayEditor({
                       step={1}
                       min={1}
                       onChange={(reps) => updateDay((target) => {
-                        target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetReps = Math.max(1, Math.round(reps)); });
+                        const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                        targetExercise?.plannedSets.forEach((set) => { set.targetReps = Math.max(1, Math.round(reps)); });
+                        if (targetExercise) targetExercise.userEditedPrescription = true;
                       })}
                     />
                     <WeekEditorStepper
@@ -6477,7 +7149,9 @@ function WorkoutDayEditor({
                       min={1}
                       max={10}
                       onChange={(rpe) => updateDay((target) => {
-                        target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                        const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                        targetExercise?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                        if (targetExercise) targetExercise.userEditedPrescription = true;
                       })}
                     />
                   </div>
@@ -6507,14 +7181,15 @@ function WorkoutDayEditor({
           <ExercisePicker
             db={db}
             user={user}
+            updateDb={updateDb}
             onPick={(exercise) => {
               addExercise(exercise);
               setShowPicker(false);
             }}
             alreadyAddedIds={alreadyAddedIds}
-            targetMuscles={pickerTargetMuscles}
-            targetPatterns={showAllExercises ? [] : day.movementPatterns || []}
-            grouped={!showAllExercises}
+            targetMuscles={[]}
+            targetPatterns={[]}
+            grouped={false}
             variant="week-sheet"
             title={allReqsMet ? "Add exercise" : "Add exercise"}
             onClose={() => setShowPicker(false)}
@@ -6525,6 +7200,7 @@ function WorkoutDayEditor({
           <ExercisePicker
             db={db}
             user={user}
+            updateDb={updateDb}
             onPick={(replacement) => swapExercise(swappingExerciseId, replacement)}
             alreadyAddedIds={day.exercises.filter((item) => item.id !== swappingExerciseId).map((item) => item.exerciseId)}
             selectedIds={(() => {
@@ -6618,6 +7294,7 @@ function WorkoutDayEditor({
           <ExercisePicker
             db={db}
             user={user}
+            updateDb={updateDb}
             onPick={addExercise}
             alreadyAddedIds={alreadyAddedIds}
             targetMuscles={pickerTargetMuscles}
@@ -6674,12 +7351,17 @@ function WorkoutDayEditor({
                     if (!targetExercise) return;
                     const base = targetExercise.plannedSets[0] || { id: createId("pset"), kind: "working" as SetKind, targetReps: 8, targetRpe: 7 };
                     targetExercise.plannedSets = Array.from({ length: Math.max(1, count) }, () => ({ ...base, id: createId("pset") }));
+                    targetExercise.userEditedPrescription = true;
                   })} />
                   <NumberField label="Reps" value={planned.plannedSets[0]?.targetReps || 8} onChange={(reps) => updateDay((target) => {
-                    target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetReps = reps; });
+                    const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                    targetExercise?.plannedSets.forEach((set) => { set.targetReps = reps; });
+                    if (targetExercise) targetExercise.userEditedPrescription = true;
                   })} />
                   <NumberField label="RPE" step={0.5} value={planned.plannedSets[0]?.targetRpe || 7} onChange={(rpe) => updateDay((target) => {
-                    target.exercises.find((item) => item.id === planned.id)?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                    const targetExercise = target.exercises.find((item) => item.id === planned.id);
+                    targetExercise?.plannedSets.forEach((set) => { set.targetRpe = sanitizeRpe(rpe); });
+                    if (targetExercise) targetExercise.userEditedPrescription = true;
                   })} />
                 </div>
               )}
@@ -6689,6 +7371,7 @@ function WorkoutDayEditor({
                   <ExercisePicker
                     db={db}
                     user={user}
+                    updateDb={updateDb}
                     onPick={(replacement) => swapExercise(planned.id, replacement)}
                     alreadyAddedIds={day.exercises.filter((item) => item.id !== planned.id).map((item) => item.exerciseId)}
                     selectedIds={exercise ? [exercise.id] : []}
@@ -6738,7 +7421,9 @@ function ExercisePicker({
   grouped = false,
   variant = "default",
   title,
+  requirementStatusLabel,
   onClose,
+  updateDb,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -6751,7 +7436,9 @@ function ExercisePicker({
   grouped?: boolean;
   variant?: "default" | "week-sheet" | "week-inline";
   title?: string;
+  requirementStatusLabel?: string;
   onClose?: () => void;
+  updateDb?: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
 }) {
   const weekSheet = variant === "week-sheet";
   const weekInline = variant === "week-inline";
@@ -6761,37 +7448,120 @@ function ExercisePicker({
   const [pattern, setPattern] = useState("all");
   const [fatigue, setFatigue] = useState("all");
   const [showFilters, setShowFilters] = useState(false);
-  const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newExName, setNewExName] = useState("");
+  const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>("chest");
+  const [newExEquipment, setNewExEquipment] = useState<EquipmentCategory>("barbell");
+  const requirementMode = grouped && targetMuscles.length > 0;
+  const requirementMuscle = requirementMode ? targetMuscles[0] : undefined;
+  const [manualMuscleOverride, setManualMuscleOverride] = useState(false);
+  const effectiveMuscleFilter = requirementMode && !manualMuscleOverride
+    ? requirementMuscle ?? "all"
+    : muscle;
+
+  useEffect(() => {
+    if (requirementMode) {
+      setManualMuscleOverride(false);
+      setMuscle(requirementMuscle ?? "all");
+    } else {
+      setManualMuscleOverride(false);
+    }
+  }, [requirementMode, requirementMuscle]);
+
+  function handleMuscleFilterChange(nextValue: string) {
+    if (requirementMode) {
+      setManualMuscleOverride(true);
+    }
+    setMuscle(nextValue);
+  }
+
+  function handleQuickCreate() {
+    if (!newExName.trim() || !updateDb) return;
+    const exercise: Exercise = {
+      id: createId("ex"),
+      ownerUserId: user.id,
+      name: newExName.trim(),
+      description: "",
+      muscleGroup: newExMuscle,
+      primaryMuscles: [newExMuscle],
+      secondaryMuscles: [],
+      equipment: [newExEquipment],
+      exerciseCategory: "isolation",
+      movementPattern: "isolation" as MovementPattern,
+      movementPatterns: ["isolation" as MovementPattern],
+      tags: [user.goal],
+      tagLabels: [],
+      variants: [],
+      substitutionIds: [],
+      notes: "",
+      setupCues: [],
+      trackByBodyweight: newExEquipment === "bodyweight",
+      trackPerSide: newExEquipment === "dumbbell" || newExEquipment === "cable",
+      category: newExEquipment,
+      kind: ["accessory"],
+      directVolumeMuscles: [newExMuscle],
+      indirectVolumeMuscles: [],
+      bestTrackedBy: ["load", "reps"],
+      fatigueRating: 2,
+      isCompound: false,
+      defaultUnit: user.unit as ExerciseUnit,
+      allowedUnits: [user.unit as ExerciseUnit],
+      defaultIncrement: user.unit === "kg" ? 2.5 : 5,
+      customIncrement: user.unit === "kg" ? 2.5 : 5,
+      canBeGymSpecific: false,
+      isGymSpecificEnabled: false,
+      createdByUser: true,
+      source: "custom" as const,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+    void updateDb((data) => {
+      data.exercises.unshift(exercise);
+      return data;
+    });
+    setShowCreateForm(false);
+    setNewExName("");
+    onPick(exercise);
+  }
   const allMatches = db.exercises
-    .filter((exercise) => !exercise.ownerUserId || exercise.ownerUserId === user.id)
+    .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
     .filter((exercise) => {
       const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
-      const gymAvailable = !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item));
       const targetPatternMatch = !targetPatterns.length || targetPatterns.includes(exercise.movementPattern) || exercise.movementPatterns?.some((patternItem) => targetPatterns.includes(patternItem));
       return (
         text.includes(query.toLowerCase()) &&
-        (muscle === "all" || exercise.primaryMuscles.includes(muscle as MuscleGroup) || exercise.muscleGroup === muscle) &&
+        (effectiveMuscleFilter === "all" || exercise.primaryMuscles.includes(effectiveMuscleFilter as MuscleGroup) || exercise.muscleGroup === effectiveMuscleFilter) &&
         (equipment === "all" || exercise.equipment.includes(equipment as EquipmentCategory)) &&
         (pattern === "all" || exercise.movementPattern === pattern) &&
         (fatigue === "all" || String(fatigueRatingForExercise(exercise)) === fatigue) &&
         (compoundFilter === "all" || (compoundFilter === "compound" ? isCompound(exercise) : exercise.kind.includes("isolation"))) &&
-        (!grouped || query || muscle !== "all" || pattern !== "all" || targetPatternMatch) &&
-        gymAvailable
+        // In grouped mode, only gate by movement pattern when targetMuscles is non-empty
+        // (i.e. grouped sections will render). When targetMuscles=[]/flat-list mode, show all
+        // exercises so the picker functions as a full library browse, not a pattern-restricted subset.
+        (!grouped || !targetMuscles.length || query || effectiveMuscleFilter !== "all" || pattern !== "all" || targetPatternMatch)
       );
     });
-  const matches = allMatches.slice(0, grouped && !query && muscle === "all" ? 36 : 12);
+  // Grouped + target muscles → 36-item fallback (mostly hidden by grouped sections above).
+  // Grouped, no target muscles → show all matching exercises (full-library flat browse,
+  //   rendered in a scrollable sheet — no artificial cap).
+  // Non-grouped default (inline embed) → 50, enough to browse without searching.
+  const matches = allMatches.slice(0,
+    grouped && targetMuscles.length ? 36
+    : grouped ? allMatches.length
+    : 50
+  );
   const groupedMuscles = targetMuscles.filter((item, index) => targetMuscles.indexOf(item) === index);
   // For grouped muscle sections, query by primaryMuscles directly (not filtered by movement pattern)
   // so that exercises like Leg Extension always appear for quads regardless of day movement patterns.
   const muscleOnlyPool = grouped && groupedMuscles.length
     ? db.exercises.filter((exercise) => {
+        if (exercise.isArchived) return false;
         if (exercise.ownerUserId && exercise.ownerUserId !== user.id) return false;
-        if (activeGym && exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item))) return false;
         const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.muscleGroup}`.toLowerCase();
         return !query || text.includes(query.toLowerCase());
       })
-    : db.exercises;
-  const groupedSections = grouped && !query && muscle === "all" && groupedMuscles.length
+    : db.exercises.filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id));
+  const groupedSections = grouped && !query && effectiveMuscleFilter === "all" && groupedMuscles.length
     ? groupedMuscles.map((targetMuscle) => ({
         muscle: targetMuscle,
         exercises: muscleOnlyPool
@@ -6852,11 +7622,24 @@ function ExercisePicker({
             <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Search</p>
             <input className="field mt-2" placeholder="Search exercises..." value={query} onChange={(event) => setQuery(event.target.value)} />
           </div>
+          {requirementMode && (
+            <div className="mt-4 space-y-2">
+              <div className="rounded-sm border border-[#0a84ff]/20 bg-[#0a84ff]/6 px-3 py-2 text-sm text-iron-200">
+                <span className="text-iron-400">Target slot:</span>{" "}
+                <span className="font-medium text-white">{requirementStatusLabel || titleCaseLabel(requirementMuscle || "all")}</span>
+              </div>
+              <p className="text-xs text-iron-400">
+                {manualMuscleOverride
+                  ? `Manual filter override. Results are showing ${titleCaseLabel(effectiveMuscleFilter)} exercises, but selected picks will still fill the ${titleCaseLabel(requirementMuscle || "all")} slot.`
+                  : "Filtered for this requirement. Change muscle to search outside this slot."}
+              </p>
+            </div>
+          )}
           <div className="mt-4">
             <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Filters</p>
             <div className="-mx-4 mt-2 overflow-x-auto px-4 scrollbar-none">
               <div className="flex min-w-max gap-2">
-                <select className="field min-w-[8.5rem]" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+                <select className="field min-w-[8.5rem]" value={effectiveMuscleFilter} onChange={(event) => handleMuscleFilterChange(event.target.value)}>
                   <option value="all">Muscle</option>
                   {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
                 </select>
@@ -6895,7 +7678,7 @@ function ExercisePicker({
       )}
       {!weekSheet && !weekInline && showFilters && (
         <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <select className="field" value={muscle} onChange={(event) => setMuscle(event.target.value)}>
+          <select className="field" value={effectiveMuscleFilter} onChange={(event) => handleMuscleFilterChange(event.target.value)}>
             <option value="all">Muscle</option>
             {muscleOptions.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
@@ -6928,6 +7711,54 @@ function ExercisePicker({
         </div>
       )}
       {!matches.length && !groupedSections.length && <EmptyState title="No exercises found" detail="Try a broader muscle, equipment, or movement filter." />}
+      {updateDb && (
+        <div className={weekSheet || weekInline ? "border-t border-white/[0.06] px-4 py-3" : "mt-3 border-t border-white/[0.06] pt-3"}>
+          {!showCreateForm ? (
+            <button
+              className="btn-compact w-full text-[#8fb9ff]"
+              onClick={() => setShowCreateForm(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Create new exercise
+            </button>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">New exercise</p>
+              <input
+                className="field"
+                style={{ fontSize: "16px" }}
+                placeholder="Exercise name"
+                value={newExName}
+                onChange={(e) => setNewExName(e.target.value)}
+                autoFocus
+              />
+              <div className="grid grid-cols-2 gap-2">
+                <select className="field" style={{ fontSize: "16px" }} value={newExMuscle} onChange={(e) => setNewExMuscle(e.target.value as MuscleGroup)}>
+                  {muscleOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+                </select>
+                <select className="field" style={{ fontSize: "16px" }} value={newExEquipment} onChange={(e) => setNewExEquipment(e.target.value as EquipmentCategory)}>
+                  {equipmentOptions.map((eq) => <option key={eq} value={eq}>{eq}</option>)}
+                </select>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  className="apollo-primary-btn flex-1 text-xs"
+                  disabled={!newExName.trim()}
+                  onClick={handleQuickCreate}
+                >
+                  Save &amp; add
+                </button>
+                <button
+                  className="apollo-secondary-btn text-xs"
+                  onClick={() => { setShowCreateForm(false); setNewExName(""); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 
@@ -7141,6 +7972,7 @@ function TemplateEditor({
       targetDay.exercises.splice(to, 0, moved);
       targetDay.exercises.forEach((item, index) => {
         item.order = index + 1;
+        item.userEditedOrder = true;
       });
       targetTemplate.updatedAt = nowIso();
       return draft;
@@ -7168,7 +8000,7 @@ function TemplateEditor({
       <select className="field" value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
         {templates.map((item) => <option key={item.id} value={item.id}>{item.name.includes("Base") || item.name.includes("Starter") ? `Default: ${item.name}` : item.name}</option>)}
       </select>
-      <ExercisePicker db={db} user={user} onPick={(exercise) => addExercise(exercise.id)} />
+      <ExercisePicker db={db} user={user} updateDb={updateDb} onPick={(exercise) => addExercise(exercise.id)} />
       <div className="space-y-2">
         {day.exercises.map((planned) => {
           const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
@@ -7812,7 +8644,7 @@ function LibraryScreen({
         </div>
       </div>
 
-      <div className="sticky bottom-0 border-t border-white/[0.08] bg-iron-950/95 px-4 py-3 backdrop-blur">
+      <div className="sticky bottom-0 border-t border-white/[0.08] bg-iron-950/95 px-4 pt-3 safe-bottom backdrop-blur">
         {editingExerciseId ? (
           <div className="grid gap-2 sm:grid-cols-2">
             <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={saveEditExercise}>
@@ -7853,12 +8685,12 @@ function LibraryScreen({
           <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_23rem]">
             <div className="border border-white/[0.08] bg-white/[0.02]">
               <div className="border-b border-white/[0.08] px-4 py-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
                     <p className="text-[0.68rem] font-semibold uppercase tracking-[0.16em] text-iron-500">Exercise Library</p>
                     <h2 className="text-lg font-semibold text-white">Exercises</h2>
                   </div>
-                  <button className="tap-highlight inline-flex min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={startAddExercise}>
+                  <button className="tap-highlight inline-flex shrink-0 min-h-10 items-center justify-center gap-2 rounded-sm bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97]" onClick={startAddExercise}>
                     <Plus className="h-4 w-4" />
                     Add Exercise
                   </button>
@@ -7917,7 +8749,8 @@ function LibraryScreen({
 
               <div className="px-4 py-3 text-xs text-iron-500">{exercises.length} exercise{exercises.length === 1 ? "" : "s"}</div>
 
-              <div className="max-h-[42rem] overflow-y-auto border-t border-white/[0.08]">
+              <div className="max-h-[42rem] overflow-y-auto border-t border-white/[0.08] pb-safe"
+                style={{ paddingBottom: "max(0px, env(safe-area-inset-bottom))" }}>
                 {exercises.length ? exercises.map((exercise) => {
                   const childVariations = !query && !showVariations
                     ? db.exercises.filter((item) => item.parentExerciseId === exercise.id && !item.isArchived && (!item.ownerUserId || item.ownerUserId === user.id))
@@ -8000,7 +8833,7 @@ function LibraryScreen({
           </section>
 
           {isMobileInspectorOpen ? (
-            <div className="fixed inset-0 z-[60] xl:hidden bg-iron-950">
+            <div className="fixed inset-0 z-[60] xl:hidden bg-iron-950" style={{ height: "100dvh" }}>
               {inspectorBody}
             </div>
           ) : null}
@@ -8391,7 +9224,7 @@ function LibraryMusclePicker({
       .map((muscle) => getLibraryMuscleGroupForMuscle(muscle)?.id)
       .find(Boolean);
     if (firstSelectedGroup) setExpandedGroupId(firstSelectedGroup);
-  }, [open, selected]);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!open) return null;
 
@@ -11149,6 +11982,28 @@ function buildOffProgramPlannedSets(targetSets: number, targetReps: number, targ
   }));
 }
 
+function normalizeLoggerRuntimePlannedSets(
+  plannedSets: PlannedSet[] | undefined,
+  fallbackCount = 1,
+  fallbackReps = 8,
+  fallbackRpe = 7,
+  fallbackWeight?: number,
+): PlannedSet[] {
+  const safeCount = Math.max(1, fallbackCount);
+  const source = plannedSets?.length
+    ? plannedSets
+    : buildOffProgramPlannedSets(safeCount, fallbackReps, fallbackRpe, fallbackWeight);
+  return source.map((set, index) => ({
+    ...set,
+    id: set.id || createId("pset"),
+    kind: set.kind || "working",
+    setNumber: index + 1,
+    targetReps: Math.max(1, Math.round(set.targetReps || fallbackReps)),
+    targetRpe: sanitizeRpe(set.targetRpe || fallbackRpe),
+    plannedWeight: typeof set.plannedWeight === "number" ? set.plannedWeight : (index === 0 ? fallbackWeight : undefined),
+  }));
+}
+
 function getLatestExercisePerformanceLog(db: TrainingDatabase, userId: string, exerciseId: string) {
   return (db.exercisePerformanceLogs ?? [])
     .filter((log) => log.exerciseId === exerciseId && log.userId === userId)
@@ -11901,7 +12756,19 @@ function buildPlannedExerciseFromExercise({
   totalRequiredForMuscle?: number;
 }): PlannedExercise {
   const block = program?.blocks[0];
-  const resolvedRole = exerciseRole ?? inferBaseExerciseRole(exercise);
+  const resolvedRole = classifyExerciseRole({
+    exercise,
+    dayType: inferWorkoutDayType({
+      name: day?.name,
+      targetMuscles: day?.targetMuscles,
+      movementPatterns: day?.movementPatterns,
+    }),
+    blockType: block?.type || "hypertrophy",
+    dayFocus: day?.focus,
+    orderHint: order,
+    explicitRole: exerciseRole ?? inferBaseExerciseRole(exercise),
+    isPriority: Boolean(block?.priorityExerciseIds.includes(exercise.id) || isSbdExercise(exercise)),
+  });
   const goalUsed = getGoalUsed(program?.goal || user.goal, block?.goalOverride ?? block?.goal);
   const prescription = getBlockExercisePrescription({
     exercise,
@@ -11912,6 +12779,13 @@ function buildPlannedExerciseFromExercise({
     order,
     isPriority: Boolean(block?.priorityExerciseIds.includes(exercise.id) || isSbdExercise(exercise)),
     dayFocus: day?.focus,
+    splitDay: day
+      ? {
+          name: day.name,
+          muscleGroups: day.targetMuscles || [],
+          movementPatterns: day.movementPatterns || [],
+        }
+      : undefined,
     exerciseRole: resolvedRole,
     requirementSlotIndex,
     totalRequiredForMuscle,
