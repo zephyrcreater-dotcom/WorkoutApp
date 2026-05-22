@@ -2,6 +2,42 @@
 
 ## Known Bugs
 
+## Manual Requirement Slot Assignment Wins (Session 62)
+
+- The manual requirement-slot assignment bug is fixed in code and `npm run build` should be run for validation.
+- Manual UI verification is still recommended for:
+  - target Chest -> manual incline/upper-chest pick increments Chest instead of Upper Chest
+  - target Upper Chest -> same incline pick increments Upper Chest
+  - broad `Add Exercise` staying unassigned when it was not opened for a specific slot
+  - warning/chip/completion consistency after mixing manual assignment with auto-fill
+
+## Upper Chest Autofill Candidate Source Sync (Session 61)
+
+- The upper-chest picker/autofill mismatch is fixed in code and `npm run build` should be run for validation.
+- Manual UI verification is still recommended for:
+  - Chest `2/2` plus Upper Chest `0/1` with visible upper-chest picker matches
+  - duplicate-only exhaustion messaging when every visible upper-chest match is already selected
+  - parent-muscle requirements (`chest`, `back`, `shoulders`) after the shared candidate-source change
+  - default-library metadata refresh for `Incline Dumbbell Press` on existing local data
+
+## Block Builder Setup UI Cleanup (Session 59)
+
+- The setup cleanup is implemented in code and `npm run build` should be run for validation.
+- Manual UI verification is still recommended for:
+  - single-chevron rendering on Block Builder `Goal` and `Template` selects
+  - removed `Start week` row in the primary Basics section
+  - disabled-state readability for secondary builder actions such as `Deploy Block` before a draft exists
+  - expand/collapse affordance for `Planning rules` and `Progression & fatigue rules`
+
+## Requirement Autofill Specificity + Unified Status (Session 58)
+
+- The contradictory requirement status bug is fixed in code and `npm run build` passes.
+- Manual UI verification is still recommended for:
+  - Chest + Upper Chest mixed requirements
+  - parent vs child back requirements (`back`, `lats`, `upper-back`, `mid-back`)
+  - preserving manual slot assignments after auto-fill remaining
+  - warning disappearance once the last missing slot is filled
+
 ## Universal Workout Prescription + Ordering Pass (Session 57)
 
 - The updated prescription and ordering logic builds successfully, but manual in-app verification is still recommended for:

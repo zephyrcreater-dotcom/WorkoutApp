@@ -547,6 +547,14 @@ export interface WorkoutTemplate {
 export interface PlannedExercise {
   id: ID;
   exerciseId: ID;
+  sourceExerciseId?: ID;
+  parentExerciseId?: ID;
+  muscleGroup?: MuscleGroup;
+  primaryMuscles?: MuscleGroup[];
+  secondaryMuscles?: MuscleGroup[];
+  directVolumeMuscles?: MuscleGroup[];
+  indirectVolumeMuscles?: MuscleGroup[];
+  canonicalMuscleKeys?: string[];
   supersetGroupId?: ID;
   required: boolean;
   order: number;

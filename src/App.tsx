@@ -61,7 +61,6 @@ import { generateProgram, generateSplitFromText, type ProgramRequest } from "./l
 import {
   buildSplitSchedule,
   defaultCompoundSettings,
-  exerciseAllowedByCompoundSettings,
   fatigueRatingForExercise,
   getBlockExercisePrescription,
   isCompound,
@@ -157,6 +156,7 @@ import type {
   ExerciseCategoryLabel,
   ExerciseRole,
   ExerciseUnit,
+  ID,
   LoggedExercise,
   LoggedSet,
   MovementPattern,
@@ -318,35 +318,459 @@ function getLibraryMuscleGroupForMuscle(muscle: MuscleGroup) {
   return LIBRARY_MUSCLE_GROUPS.find((group) => group.muscles.includes(muscle));
 }
 
+const REQUIREMENT_AUTOFILL_DEBUG = false;
+
+function normalizeMuscleKey(value: string): string {
+  const withCamelSpacing = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  const normalized = withCamelSpacing
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const aliases: Record<string, string> = {
+    upperchest: "upper-chest",
+    lowerchest: "lower-chest",
+    sidedelts: "side-delts",
+    reardelts: "rear-delts",
+    frontdelts: "front-delts",
+    upperback: "upper-back",
+    midback: "mid-back",
+    spinalerectors: "spinal-erectors",
+    fullbody: "full-body",
+  };
+  const compact = normalized.replace(/\s+/g, "");
+  if (aliases[compact]) return aliases[compact];
+  return normalized.replace(/\s+/g, "-");
+}
+
+function collectNormalizedMuscleKeys(values: unknown[]): string[] {
+  const keys = new Set<string>();
+  values.forEach((value) => {
+    if (typeof value !== "string") return;
+    const normalized = normalizeMuscleKey(value);
+    if (normalized) keys.add(normalized);
+  });
+  return [...keys];
+}
+
+function getExerciseMuscleKeys(
+  exercise: unknown,
+  context?: {
+    exerciseById?: Map<ID, Exercise>;
+    sourceExerciseId?: ID;
+    parentExerciseId?: ID;
+  }
+): string[] {
+  const candidate = (exercise || {}) as Record<string, unknown>;
+  const localKeys = collectNormalizedMuscleKeys([
+    candidate.primaryMuscle,
+    candidate.primary,
+    candidate.muscleGroup,
+    ...(Array.isArray(candidate.primaryMuscles) ? candidate.primaryMuscles : []),
+    ...(Array.isArray(candidate.secondaryMuscles) ? candidate.secondaryMuscles : []),
+    ...(Array.isArray(candidate.muscles) ? candidate.muscles : []),
+    ...(Array.isArray(candidate.targetMuscles) ? candidate.targetMuscles : []),
+    ...(Array.isArray(candidate.muscleGroups) ? candidate.muscleGroups : []),
+    ...(Array.isArray(candidate.directVolumeMuscles) ? candidate.directVolumeMuscles : []),
+    ...(Array.isArray(candidate.indirectVolumeMuscles) ? candidate.indirectVolumeMuscles : []),
+    ...(Array.isArray(candidate.secondary) ? candidate.secondary : []),
+    ...(Array.isArray(candidate.canonicalMuscleKeys) ? candidate.canonicalMuscleKeys : []),
+    ...(Array.isArray(candidate.exerciseMuscleKeys) ? candidate.exerciseMuscleKeys : []),
+  ]);
+  const keys = new Set(localKeys);
+  const exerciseById = context?.exerciseById;
+  const sourceExerciseId =
+    context?.sourceExerciseId
+    || (typeof candidate.exerciseId === "string" ? candidate.exerciseId as ID : undefined)
+    || (typeof candidate.sourceExerciseId === "string" ? candidate.sourceExerciseId as ID : undefined)
+    || (typeof candidate.originalExerciseId === "string" ? candidate.originalExerciseId as ID : undefined);
+  if (exerciseById && sourceExerciseId) {
+    const source = exerciseById.get(sourceExerciseId);
+    if (source) {
+      collectNormalizedMuscleKeys([
+        source.muscleGroup,
+        ...source.primaryMuscles,
+        ...source.secondaryMuscles,
+        ...source.directVolumeMuscles,
+        ...source.indirectVolumeMuscles,
+      ]).forEach((key) => keys.add(key));
+    }
+  }
+  const parentExerciseId =
+    context?.parentExerciseId
+    || (typeof candidate.parentExerciseId === "string" ? candidate.parentExerciseId as ID : undefined);
+  if (exerciseById && parentExerciseId && keys.size === 0) {
+    const parent = exerciseById.get(parentExerciseId);
+    if (parent) {
+      collectNormalizedMuscleKeys([
+        parent.muscleGroup,
+        ...parent.primaryMuscles,
+        ...parent.secondaryMuscles,
+        ...parent.directVolumeMuscles,
+        ...parent.indirectVolumeMuscles,
+      ]).forEach((key) => keys.add(key));
+    }
+  }
+  return [...keys];
+}
+
+function getExercisePrimaryMuscleKeys(
+  exercise: unknown,
+  context?: {
+    exerciseById?: Map<ID, Exercise>;
+    sourceExerciseId?: ID;
+    parentExerciseId?: ID;
+  }
+): string[] {
+  const candidate = (exercise || {}) as Record<string, unknown>;
+  const primary = collectNormalizedMuscleKeys([
+    candidate.primaryMuscle,
+    candidate.primary,
+    candidate.muscleGroup,
+    ...(Array.isArray(candidate.primaryMuscles) ? candidate.primaryMuscles : []),
+    ...(Array.isArray(candidate.directVolumeMuscles) ? candidate.directVolumeMuscles : []),
+  ]);
+  const keys = new Set(primary);
+  if (!keys.size) {
+    getExerciseMuscleKeys(exercise, context).forEach((key) => keys.add(key));
+  }
+  return [...keys];
+}
+
+function getExerciseSecondaryMuscleKeys(
+  exercise: unknown,
+  context?: {
+    exerciseById?: Map<ID, Exercise>;
+    sourceExerciseId?: ID;
+    parentExerciseId?: ID;
+  }
+): string[] {
+  const allKeys = new Set(getExerciseMuscleKeys(exercise, context));
+  getExercisePrimaryMuscleKeys(exercise, context).forEach((key) => allKeys.delete(key));
+  return [...allKeys];
+}
+
+function exerciseMatchesMuscleFilter(exercise: Exercise, muscleFilter: string): boolean {
+  if (muscleFilter === "all") return true;
+  const normalizedFilter = normalizeMuscleKey(muscleFilter);
+  if (!normalizedFilter) return true;
+  const primaryMuscles = new Set(getExercisePrimaryMuscleKeys(exercise));
+  primaryMuscles.add(normalizeMuscleKey(exercise.muscleGroup));
+  return primaryMuscles.has(normalizedFilter);
+}
+
+function exerciseMatchesRequirementTarget(exercise: Exercise, targetMuscle: MuscleGroup): boolean {
+  return exerciseFulfillsRequirement(exercise, {
+    id: `debug_req_${targetMuscle}`,
+    targetMuscle,
+    requiredExerciseCount: 1,
+    priority: 1,
+  });
+}
+
+function getRequirementPickerVisibleExercises(
+  exercises: Exercise[],
+  userId: ID,
+  targetMuscle: MuscleGroup,
+  query = ""
+): Exercise[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  return exercises.filter((exercise) => {
+    if (exercise.isArchived) return false;
+    if (exercise.ownerUserId && exercise.ownerUserId !== userId) return false;
+    if (!exerciseMatchesRequirementTarget(exercise, targetMuscle)) return false;
+    if (!normalizedQuery) return true;
+    const text = `${exercise.name} ${getExercisePrimaryMuscleKeys(exercise).join(" ")} ${exercise.muscleGroup}`.toLowerCase();
+    return text.includes(normalizedQuery);
+  });
+}
+
+function shouldDebugRequirementAutofill(requirement: SplitDayRequirement | undefined): boolean {
+  return REQUIREMENT_AUTOFILL_DEBUG && normalizeMuscleKey(requirement?.targetMuscle ?? "") === "upper-chest";
+}
+
+function debugRequirementAutofill(context: {
+  mode: "slot" | "remaining";
+  selectedRequirement: SplitDayRequirement | undefined;
+  pickerVisibleResults: Exercise[];
+  autofillCandidates: Exercise[];
+  rejectedCandidates: { exercise: Exercise; reason: string }[];
+  existingSelectedExercises: Exercise[];
+  usedIds: Iterable<string>;
+  requirementStatusBefore: { fulfilled: number; needed: number };
+  requirementStatusAfter?: { fulfilled: number; needed: number };
+}) {
+  if (!shouldDebugRequirementAutofill(context.selectedRequirement)) return;
+  const describeExercise = (exercise: Exercise) => ({
+    id: exercise.id,
+    name: exercise.name,
+    muscleKeys: getExerciseMuscleKeys(exercise),
+  });
+  console.groupCollapsed(`[RequirementAutofillDebug:${context.mode}] ${context.selectedRequirement?.targetMuscle}`);
+  console.log("selectedRequirement", context.selectedRequirement);
+  console.log("normalized requirement key", normalizeMuscleKey(context.selectedRequirement?.targetMuscle ?? ""));
+  console.log("picker visible results", context.pickerVisibleResults.map(describeExercise));
+  console.log("autofill candidates", context.autofillCandidates.map(describeExercise));
+  console.log(
+    "rejected candidates",
+    context.rejectedCandidates.map(({ exercise, reason }) => ({
+      ...describeExercise(exercise),
+      reason,
+    }))
+  );
+  console.log("existing selected exercises", context.existingSelectedExercises.map(describeExercise));
+  console.log("used/excluded ids", [...context.usedIds]);
+  console.log("requirement status before autofill", context.requirementStatusBefore);
+  console.log("requirement status after simulation", context.requirementStatusAfter ?? context.requirementStatusBefore);
+  console.groupEnd();
+}
+
 // Parent muscle groups: broad categories whose requirements can be satisfied by specific child muscles.
 // Specific child muscles (lats, upper-back, etc.) must match EXACTLY — no fallback alias expansion.
-const PARENT_MUSCLE_CHILDREN: Partial<Record<MuscleGroup, MuscleGroup[]>> = {
+const PARENT_MUSCLE_CHILDREN: Record<string, string[]> = {
   "back": ["lats", "upper-back", "mid-back", "traps", "spinal-erectors"],
   "chest": ["upper-chest", "lower-chest"],
-  "quads": ["quads"],
-  "hamstrings": ["hamstrings"],
-  "glutes": ["glutes"],
-  "biceps": ["biceps"],
-  "triceps": ["triceps"],
+  "shoulders": ["front-delts", "side-delts", "rear-delts"],
 };
 
 // Whether a requirement muscle is a broad parent category.
 function isParentMuscle(muscle: MuscleGroup): boolean {
-  return muscle in PARENT_MUSCLE_CHILDREN;
+  return normalizeMuscleKey(muscle) in PARENT_MUSCLE_CHILDREN;
 }
 
-// An exercise satisfies a requirement if:
-// 1. The exact targetMuscle is in the exercise's primaryMuscles (always works).
-// 2. OR the requirement is a broad parent and one of its children is in primaryMuscles (parent-only fallback).
-// Secondary muscles and directVolumeMuscles are NOT used for requirement completion.
-function exerciseFulfillsRequirement(exercise: Exercise, req: SplitDayRequirement): boolean {
-  const primary = exercise.primaryMuscles;
-  if (primary.includes(req.targetMuscle)) return true;
-  if (isParentMuscle(req.targetMuscle)) {
-    const children = PARENT_MUSCLE_CHILDREN[req.targetMuscle] ?? [];
-    return primary.some((m) => children.includes(m));
+function getParentMuscle(muscle: MuscleGroup): MuscleGroup | undefined {
+  const normalized = normalizeMuscleKey(muscle);
+  const parent = Object.entries(PARENT_MUSCLE_CHILDREN).find(([key, children]) => key !== normalized && children.includes(normalized))?.[0];
+  return parent as MuscleGroup | undefined;
+}
+
+function getMuscleSpecificityDepth(muscle: MuscleGroup): number {
+  let depth = 0;
+  let current = muscle;
+  const visited = new Set<MuscleGroup>();
+  while (true) {
+    if (visited.has(current)) return depth;
+    visited.add(current);
+    const parent = getParentMuscle(current);
+    if (!parent) return depth;
+    depth += 1;
+    current = parent;
   }
-  return false;
+}
+
+function compareRequirementsBySpecificity(a: SplitDayRequirement, b: SplitDayRequirement): number {
+  const depthDelta = getMuscleSpecificityDepth(b.targetMuscle) - getMuscleSpecificityDepth(a.targetMuscle);
+  if (depthDelta !== 0) return depthDelta;
+  if (a.priority !== b.priority) return a.priority - b.priority;
+  return a.id.localeCompare(b.id);
+}
+
+type RequirementMatchKind =
+  | "exact-primary"
+  | "exact-secondary"
+  | "child-primary"
+  | "child-secondary";
+
+interface RequirementMatchDetails {
+  kind: RequirementMatchKind;
+  rank: number;
+  childBiasPenalty: number;
+}
+
+function getRequirementMatchDetails(
+  exercise: unknown,
+  req: SplitDayRequirement,
+  context?: {
+    exerciseById?: Map<ID, Exercise>;
+    sourceExerciseId?: ID;
+    parentExerciseId?: ID;
+  }
+): RequirementMatchDetails | null {
+  const reqTarget = normalizeMuscleKey(req.targetMuscle);
+  const primary = new Set(getExercisePrimaryMuscleKeys(exercise, context));
+  const secondary = new Set(getExerciseSecondaryMuscleKeys(exercise, context));
+  const childMuscles = PARENT_MUSCLE_CHILDREN[reqTarget] ?? [];
+  const childBiasPenalty = childMuscles.filter((muscle) => primary.has(muscle) || secondary.has(muscle)).length;
+
+  if (primary.has(reqTarget)) {
+    return { kind: "exact-primary", rank: 0, childBiasPenalty };
+  }
+  if (secondary.has(reqTarget)) {
+    return { kind: "exact-secondary", rank: 1, childBiasPenalty };
+  }
+  if (childMuscles.some((muscle) => primary.has(muscle))) {
+    return { kind: "child-primary", rank: 2, childBiasPenalty };
+  }
+  if (childMuscles.some((muscle) => secondary.has(muscle))) {
+    return { kind: "child-secondary", rank: 3, childBiasPenalty };
+  }
+  return null;
+}
+
+function exerciseFulfillsRequirement(exercise: Exercise, req: SplitDayRequirement): boolean {
+  return getRequirementMatchDetails(exercise, req) !== null;
+}
+
+interface RequirementAllocationSlot {
+  req: SplitDayRequirement;
+  slotIndex: number;
+  plannedExerciseId?: ID;
+  exerciseId?: ID;
+  explicit: boolean;
+  matchReason?: RequirementMatchKind | "fallback";
+}
+
+interface RequirementExerciseAssignment {
+  plannedExerciseId: ID;
+  exerciseId: ID;
+  assignedRequirementId: ID;
+  assignedRequirementMuscle: MuscleGroup;
+  matchReason: RequirementMatchKind | "fallback";
+}
+
+interface RequirementAllocationResult {
+  slots: RequirementAllocationSlot[];
+  exerciseAssignments: RequirementExerciseAssignment[];
+  assignmentByPlannedExerciseId: Map<ID, RequirementExerciseAssignment>;
+  fulfilledByRequirementId: Map<ID, number>;
+  missingByRequirementId: Map<ID, number>;
+  allRequirementsMet: boolean;
+}
+
+function allocateExercisesToRequirements(
+  plannedExercises: PlannedExercise[],
+  requirements: SplitDayRequirement[],
+  exerciseById: Map<ID, Exercise>
+): RequirementAllocationResult {
+  const sortedRequirements = requirements.slice().sort(compareRequirementsBySpecificity);
+  const slots: RequirementAllocationSlot[] = sortedRequirements.flatMap((req) =>
+    Array.from({ length: req.requiredExerciseCount }, (_, slotIndex): RequirementAllocationSlot => ({
+      req,
+      slotIndex,
+      explicit: false,
+    }))
+  );
+  const slotsByRequirementId = new Map<ID, RequirementAllocationSlot[]>();
+  slots.forEach((slot) => {
+    const list = slotsByRequirementId.get(slot.req.id) ?? [];
+    list.push(slot);
+    slotsByRequirementId.set(slot.req.id, list);
+  });
+
+  const remainingByRequirementId = new Map<ID, number>();
+  requirements.forEach((req) => {
+    remainingByRequirementId.set(req.id, req.requiredExerciseCount);
+  });
+  const exerciseAssignments: RequirementExerciseAssignment[] = [];
+  const assignedPlannedExerciseIds = new Set<ID>();
+
+  const assignToRequirement = (
+    planned: PlannedExercise,
+    req: SplitDayRequirement,
+    options?: {
+      explicit?: boolean;
+      matchReason?: RequirementMatchKind | "fallback";
+    }
+  ) => {
+    const reqSlots = slotsByRequirementId.get(req.id) ?? [];
+    const openSlot = reqSlots.find((slot) => !slot.plannedExerciseId);
+    if (!openSlot) return false;
+    const matchReason = options?.matchReason ?? "fallback";
+    openSlot.plannedExerciseId = planned.id;
+    openSlot.exerciseId = planned.exerciseId;
+    openSlot.explicit = options?.explicit ?? false;
+    openSlot.matchReason = matchReason;
+    remainingByRequirementId.set(req.id, Math.max(0, (remainingByRequirementId.get(req.id) ?? 0) - 1));
+    exerciseAssignments.push({
+      plannedExerciseId: planned.id,
+      exerciseId: planned.exerciseId,
+      assignedRequirementId: req.id,
+      assignedRequirementMuscle: req.targetMuscle,
+      matchReason,
+    });
+    assignedPlannedExerciseIds.add(planned.id);
+    return true;
+  };
+
+  plannedExercises.forEach((planned) => {
+    if (planned.isExtra || !planned.fulfillsRequirementId) return;
+    const explicitReq = requirements.find((req) => req.id === planned.fulfillsRequirementId);
+    if (!explicitReq) return;
+    const explicitMatch = getRequirementMatchDetails(planned, explicitReq, {
+      exerciseById,
+      sourceExerciseId: planned.exerciseId,
+    });
+    assignToRequirement(planned, explicitReq, {
+      explicit: true,
+      matchReason: explicitMatch?.kind ?? "fallback",
+    });
+  });
+
+  plannedExercises.forEach((planned, order) => {
+    if (planned.isExtra || assignedPlannedExerciseIds.has(planned.id)) return;
+    const plannedMuscles = getExerciseMuscleKeys(planned, { exerciseById, sourceExerciseId: planned.exerciseId });
+    if (!plannedMuscles.length) return;
+
+    const matches = sortedRequirements
+      .filter((req) => (remainingByRequirementId.get(req.id) ?? 0) > 0)
+      .map((req) => {
+        const match = getRequirementMatchDetails(planned, req, {
+          exerciseById,
+          sourceExerciseId: planned.exerciseId,
+        });
+        if (!match) return null;
+        return { req, match };
+      })
+      .filter((item): item is { req: SplitDayRequirement; match: RequirementMatchDetails } => Boolean(item))
+      .sort((a, b) => {
+        const specificityDelta = compareRequirementsBySpecificity(a.req, b.req);
+        if (specificityDelta !== 0) return specificityDelta;
+        const explicitDelta = Number(b.req.id === planned.fulfillsRequirementId) - Number(a.req.id === planned.fulfillsRequirementId);
+        if (explicitDelta !== 0) return explicitDelta;
+        const rankDelta = a.match.rank - b.match.rank;
+        if (rankDelta !== 0) return rankDelta;
+        const childBiasDelta = a.match.childBiasPenalty - b.match.childBiasPenalty;
+        if (childBiasDelta !== 0) return childBiasDelta;
+        if (a.req.priority !== b.req.priority) return a.req.priority - b.req.priority;
+        return order;
+      });
+    const chosen = matches[0];
+    if (!chosen) return;
+    assignToRequirement(planned, chosen.req, {
+      explicit: planned.fulfillsRequirementId === chosen.req.id,
+      matchReason: chosen.match.kind,
+    });
+  });
+
+  const fulfilledByRequirementId = new Map<ID, number>();
+  const missingByRequirementId = new Map<ID, number>();
+  requirements.forEach((req) => {
+    const fulfilled = slots.filter((slot) => slot.req.id === req.id && slot.plannedExerciseId).length;
+    fulfilledByRequirementId.set(req.id, fulfilled);
+    missingByRequirementId.set(req.id, Math.max(0, req.requiredExerciseCount - fulfilled));
+  });
+  const assignmentByPlannedExerciseId = new Map(exerciseAssignments.map((assignment) => [assignment.plannedExerciseId, assignment] as const));
+
+  return {
+    slots,
+    exerciseAssignments,
+    assignmentByPlannedExerciseId,
+    fulfilledByRequirementId,
+    missingByRequirementId,
+    allRequirementsMet: requirements.every((req) => (fulfilledByRequirementId.get(req.id) ?? 0) >= req.requiredExerciseCount),
+  };
+}
+
+function findNextUnmetRequirementIndex(
+  requirements: SplitDayRequirement[],
+  allocation: RequirementAllocationResult
+): number {
+  const sortedBySpecificity = requirements
+    .map((req, index) => ({ req, index }))
+    .sort((a, b) => compareRequirementsBySpecificity(a.req, b.req));
+  const next = sortedBySpecificity.find(({ req }) => (allocation.fulfilledByRequirementId.get(req.id) ?? 0) < req.requiredExerciseCount);
+  return next ? next.index : -1;
 }
 
 function deriveRequirements(day: WorkoutDay, splitDays: SplitDay[]): SplitDayRequirement[] {
@@ -5214,8 +5638,6 @@ function BuilderScreen({
   const [showSbdAdvanced, setShowSbdAdvanced] = useState(false);
   const [showAdvancedRules, setShowAdvancedRules] = useState(false);
   const [showBlockTypeMenu, setShowBlockTypeMenu] = useState(false);
-  const [showScheduleDetails, setShowScheduleDetails] = useState(false);
-  const [showAdvancedDefaults, setShowAdvancedDefaults] = useState(false);
   const [request, setRequest] = useState<ProgramRequest>(savedDraft ? {
     ...defaultRequest,
     name: savedDraft.requestName,
@@ -5803,32 +6225,27 @@ function BuilderScreen({
                 <span className="text-sm text-iron-300">Goal</span>
                 <div className="flex items-center gap-1.5">
                   <span className="h-2 w-2 rounded-full bg-[#f4842a]" />
-                  <select
-                    className="bg-transparent text-right text-sm font-medium text-white outline-none"
-                    value={request.goal}
-                    onChange={(e) => setRequest((d) => ({ ...d, goal: e.target.value as TrainingGoal }))}
-                  >
-                    {["powerlifting","bodybuilding","powerbuilding","general-health","conditioning","maintenance"].map(g => (
-                      <option key={g} value={g} className="bg-iron-900">{g.charAt(0).toUpperCase() + g.slice(1)}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="h-3.5 w-3.5 text-iron-500" />
-                </div>
-              </div>
-              {/* Start week */}
-              <div className="flex items-center justify-between gap-4 py-2.5">
-                <span className="text-sm text-iron-300">Start week</span>
-                <div className="flex items-center gap-1.5 text-sm font-medium text-white">
-                  Week 1
-                  <ChevronDown className="h-3.5 w-3.5 text-iron-500" />
+                  <div className="apollo-inline-select-wrap">
+                    <select
+                      className="apollo-inline-select"
+                      value={request.goal}
+                      onChange={(e) => setRequest((d) => ({ ...d, goal: e.target.value as TrainingGoal }))}
+                      aria-label="Block goal"
+                    >
+                      {["powerlifting","bodybuilding","powerbuilding","general-health","conditioning","maintenance"].map(g => (
+                        <option key={g} value={g} className="bg-iron-900">{g.charAt(0).toUpperCase() + g.slice(1)}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="apollo-inline-select-chevron" />
+                  </div>
                 </div>
               </div>
               {/* Template */}
               <div className="flex items-center justify-between gap-4 py-2.5">
                 <span className="text-sm text-iron-300">Template</span>
-                <div className="flex items-center gap-1.5">
+                <div className="apollo-inline-select-wrap">
                   <select
-                    className="bg-transparent text-right text-sm font-medium text-white outline-none"
+                    className="apollo-inline-select"
                     value={selectedSplitId}
                     onChange={(e) => {
                       const newId = e.target.value;
@@ -5837,12 +6254,13 @@ function BuilderScreen({
                       setRequest((d) => ({ ...d, splitTemplateId: newId, daysPerWeek: newSplit?.daysPerWeek ?? d.daysPerWeek }));
                       void startNewBlock(newId);
                     }}
+                    aria-label="Block template"
                   >
                     {db.splitTemplates.map((split) => (
                       <option key={split.id} value={split.id} className="bg-iron-900">{split.name}</option>
                     ))}
                   </select>
-                  <ChevronDown className="h-3.5 w-3.5 text-iron-500" />
+                  <ChevronDown className="apollo-inline-select-chevron" />
                 </div>
               </div>
             </div>
@@ -5888,8 +6306,11 @@ function BuilderScreen({
           {/* Planning Rules */}
           <section className="border-b border-white/[0.06] py-5">
             <button
-              className="flex w-full items-center justify-between"
+              type="button"
+              className="flex w-full items-center justify-between rounded-sm px-1 py-1 text-left transition hover:bg-white/[0.03]"
               onClick={() => setShowAdvancedRules((v) => !v)}
+              aria-expanded={showAdvancedRules}
+              aria-controls="builder-planning-rules"
             >
               <div>
                 <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Planning rules</p>
@@ -5905,13 +6326,14 @@ function BuilderScreen({
               <ChevronRight className={`h-4 w-4 text-iron-500 transition ${showAdvancedRules ? "rotate-90" : ""}`} />
             </button>
             {showAdvancedRules && (
-              <div className="mt-3 space-y-4">
+              <div id="builder-planning-rules" className="mt-3 space-y-4">
                 {/* Block type */}
                 <div>
                   <p className="mb-2 text-xs text-iron-400">Block type</p>
                   <div className="relative flex gap-1 border border-white/[0.08] bg-white/[0.02] p-0.5">
                     {(["hypertrophy","strength","peaking"] as BlockType[]).map((bt) => (
                       <button
+                        type="button"
                         key={bt}
                         className={`flex-1 px-3 py-1.5 text-xs font-medium transition ${request.blockType === bt ? "bg-white/[0.12] text-white" : "text-iron-400 hover:text-iron-200"}`}
                         onClick={() => { setRequest((d) => ({ ...d, blockType: bt })); setShowBlockTypeMenu(false); }}
@@ -5920,15 +6342,20 @@ function BuilderScreen({
                       </button>
                     ))}
                     {!["hypertrophy","strength","peaking"].includes(request.blockType) && (
-                      <button
-                        className="bg-white/[0.12] px-3 py-1.5 text-xs font-medium text-white"
+                      <span
+                        aria-disabled="true"
+                        title="Current block type"
+                        className="inline-flex items-center bg-white/[0.12] px-3 py-1.5 text-xs font-medium text-white"
                       >
                         {request.blockType.charAt(0).toUpperCase() + request.blockType.slice(1)}
-                      </button>
+                      </span>
                     )}
                     <button
+                      type="button"
                       className="px-2 py-1.5 text-xs text-iron-400 hover:text-iron-200"
                       onClick={() => setShowBlockTypeMenu((v) => !v)}
+                      aria-expanded={showBlockTypeMenu}
+                      aria-label="More block types"
                     >
                       •••
                     </button>
@@ -5936,6 +6363,7 @@ function BuilderScreen({
                       <div className="absolute right-0 top-full z-20 mt-1 w-44 border border-white/[0.12] bg-[#151515] py-1 shadow-xl">
                         {(["accumulation","intensification","deload","pivot","maintenance","conditioning","custom"] as BlockType[]).map((bt) => (
                           <button
+                            type="button"
                             key={bt}
                             className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition ${request.blockType === bt ? "text-white" : "text-iron-400 hover:text-iron-200"}`}
                             onClick={() => { setRequest((d) => ({ ...d, blockType: bt })); setShowBlockTypeMenu(false); }}
@@ -5954,6 +6382,7 @@ function BuilderScreen({
                   <div className="flex gap-1 border border-white/[0.08] bg-white/[0.02] p-0.5">
                     {([{v:"continuous",l:"Continuous"},{v:"weekly-reset",l:"Restart"}] as {v: SplitLoopMode, l: string}[]).map(({v,l}) => (
                       <button
+                        type="button"
                         key={v}
                         className={`flex-1 px-3 py-1.5 text-xs font-medium transition ${request.splitLoopMode === v ? "bg-white/[0.12] text-white" : "text-iron-400 hover:text-iron-200"}`}
                         onClick={() => setRequest((d) => ({ ...d, splitLoopMode: v }))}
@@ -5965,8 +6394,11 @@ function BuilderScreen({
                 </div>
                 {/* Progression rules */}
                 <button
-                  className="flex w-full items-center justify-between border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-left"
+                  type="button"
+                  className="flex w-full items-center justify-between border border-white/[0.08] bg-white/[0.03] px-3 py-2 text-left transition hover:bg-white/[0.05]"
                   onClick={() => setShowSbdAdvanced((v) => !v)}
+                  aria-expanded={showSbdAdvanced}
+                  aria-controls="builder-progression-rules"
                 >
                   <div>
                     <p className="text-sm text-iron-200">Progression &amp; fatigue rules</p>
@@ -5975,7 +6407,7 @@ function BuilderScreen({
                   <ChevronRight className={`h-4 w-4 shrink-0 text-iron-500 transition ${showSbdAdvanced ? "rotate-90" : ""}`} />
                 </button>
                 {showSbdAdvanced && (
-                  <>
+                  <div id="builder-progression-rules" className="space-y-4">
                     <SbdSettingsEditor
                       db={db}
                       user={user}
@@ -5990,7 +6422,7 @@ function BuilderScreen({
                       settings={request.compoundSettings}
                       onChange={(compoundSettings) => setRequest((d) => ({ ...d, compoundSettings }))}
                     />
-                  </>
+                  </div>
                 )}
               </div>
             )}
@@ -6476,36 +6908,24 @@ function WorkoutDayEditor({
   const weekVariant = variant === "week";
   const allSplitDays = db.splitTemplates.flatMap((split) => split.days);
   const requirements = deriveRequirements(day, allSplitDays);
-
-  // Count how many exercises already satisfy each requirement.
-  // Exercises with an explicit fulfillsRequirementId are counted only for the req they were tagged for.
-  // Untagged exercises (legacy) fall back to muscle matching.
-  function countFulfilled(exercises: typeof day.exercises, req: SplitDayRequirement): number {
-    // Primary: exercises explicitly tagged for this requirement (not extras)
-    const explicit = exercises.filter((p) => p.fulfillsRequirementId === req.id && !p.isExtra).length;
-    if (explicit > 0) return explicit;
-    // Legacy fallback: only if NO exercise in the day has any fulfillsRequirementId set.
-    // Each untagged exercise can only count for one requirement; we approximate by not double-counting.
-    const anyTagged = exercises.some((p) => !!p.fulfillsRequirementId && !p.isExtra);
-    if (anyTagged) return 0;
-    const untagged = exercises.filter((p) => !p.fulfillsRequirementId && !p.isExtra);
-    return untagged.filter((p) => {
-      const ex = db.exercises.find((e) => e.id === p.exerciseId);
-      return ex && exerciseFulfillsRequirement(ex, req);
-    }).length;
-  }
+  const exerciseById = useMemo(() => new Map(db.exercises.map((exercise) => [exercise.id, exercise] as const)), [db.exercises]);
+  const requirementAllocation = useMemo(
+    () => allocateExercisesToRequirements(day.exercises, requirements, exerciseById),
+    [day.exercises, requirements, exerciseById]
+  );
 
   const reqProgress = requirements.map((req) => ({
     req,
-    fulfilled: Math.min(countFulfilled(day.exercises, req), req.requiredExerciseCount),
+    fulfilled: Math.min(requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0, req.requiredExerciseCount),
     needed: req.requiredExerciseCount,
   }));
-  const allReqsMet = reqProgress.every((item) => item.fulfilled >= item.needed);
-  const firstUnmetIndex = reqProgress.findIndex((item) => item.fulfilled < item.needed);
+  const allReqsMet = requirementAllocation.allRequirementsMet;
+  const firstUnmetIndex = findNextUnmetRequirementIndex(requirements, requirementAllocation);
 
   const [currentReqIndex, setCurrentReqIndex] = useState<number>(firstUnmetIndex >= 0 ? firstUnmetIndex : 0);
   const [showAllExercises, setShowAllExercises] = useState(false);
   const [chooserWarning, setChooserWarning] = useState("");
+  const [showRequirementWarning, setShowRequirementWarning] = useState(false);
   const [showPrescription, setShowPrescription] = useState(allReqsMet);
   const [showPicker, setShowPicker] = useState(!weekVariant && day.exercises.length === 0);
   const [pendingExtraExercise, setPendingExtraExercise] = useState<Exercise | null>(null);
@@ -6517,9 +6937,9 @@ function WorkoutDayEditor({
   // Advance to the first unfulfilled requirement whenever exercises change
   useEffect(() => {
     if (showAllExercises) return;
-    const nextUnmet = reqProgress.findIndex((item) => item.fulfilled < item.needed);
+    const nextUnmet = findNextUnmetRequirementIndex(requirements, requirementAllocation);
     if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
-  }, [day.exercises.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showAllExercises, requirementAllocation, requirements]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!day.exercises.length) {
@@ -6538,10 +6958,22 @@ function WorkoutDayEditor({
 
   const currentReq = requirements[currentReqIndex] as SplitDayRequirement | undefined;
   const alreadyAddedIds = day.exercises.map((planned) => planned.exerciseId);
-  const findNextUnmetRequirementIndex = (exercises: { exerciseId: string; fulfillsRequirementId?: string; isExtra?: boolean }[]) =>
-    requirements.findIndex((req) => Math.min(countFulfilled(exercises as typeof day.exercises, req), req.requiredExerciseCount) < req.requiredExerciseCount);
+  const existingSelectedExercises = day.exercises
+    .map((planned) => db.exercises.find((item) => item.id === planned.exerciseId))
+    .filter((item): item is Exercise => Boolean(item));
+  const findNextUnmetForExercises = (exercises: { exerciseId: string; fulfillsRequirementId?: string; isExtra?: boolean }[]) => {
+    const allocation = allocateExercisesToRequirements(exercises as typeof day.exercises, requirements, exerciseById);
+    return findNextUnmetRequirementIndex(requirements, allocation);
+  };
   const isUserEditedPrescription = (planned: PlannedExercise) => planned.userEditedPrescription === true;
   const isUserEditedOrder = (exercises: PlannedExercise[]) => exercises.some((planned) => planned.userEditedOrder);
+  const missingRequirementSummary = reqProgress
+    .filter((item) => item.fulfilled < item.needed)
+    .map((item) => `${item.req.targetMuscle} ${item.fulfilled}/${item.needed}`)
+    .join(", ");
+  const requirementWarningText = showRequirementWarning && missingRequirementSummary
+    ? `Could not fill every requirement: ${missingRequirementSummary}. Fill the missing slots manually.`
+    : "";
 
   function coachOrderDayExercises(exercises: PlannedExercise[]): PlannedExercise[] {
     const exerciseMap = new Map(db.exercises.map((exercise) => [exercise.id, exercise] as const));
@@ -6626,12 +7058,15 @@ function WorkoutDayEditor({
     });
   }
 
-  function addExercise(exercise: Exercise, asExtra = false) {
+  function addExercise(exercise: Exercise, asExtra = false, explicitRequirementId?: string | null) {
     // Anti-spam: block duplicate exercise on this day
     if (alreadyAddedIds.includes(exercise.id)) return;
-    const reqId = showAllExercises ? undefined : currentReq?.id;
+    const reqId = explicitRequirementId === null
+      ? undefined
+      : explicitRequirementId ?? (showAllExercises ? undefined : currentReq?.id);
+    const targetRequirement = reqId ? requirements.find((item) => item.id === reqId) : undefined;
     const currentProgress = reqId ? reqProgress.find((r) => r.req.id === reqId) : undefined;
-    const reqFull = !showAllExercises && currentProgress && currentProgress.fulfilled >= currentProgress.needed;
+    const reqFull = Boolean(reqId && currentProgress && currentProgress.fulfilled >= currentProgress.needed);
 
     if (reqFull && !asExtra) {
       // Requirement is full — ask user to confirm adding as extra
@@ -6642,15 +7077,15 @@ function WorkoutDayEditor({
     const isExtraFlag = asExtra || !reqId;
     const slotIndex = reqId ? Math.max(0, currentProgress?.fulfilled ?? 0) : undefined;
     const totalRequiredForMuscle = reqId ? currentProgress?.needed : undefined;
-    const slotPlan = currentReq && !isExtraFlag
+    const slotPlan = targetRequirement && !isExtraFlag
       ? getRequirementSlotPlan({
-          targetMuscle: currentReq.targetMuscle,
+          targetMuscle: targetRequirement.targetMuscle,
           goalType: program.goal,
           blockType: program.blocks[0]?.type || "hypertrophy",
           dayFocus: day.focus,
           slotIndex: slotIndex ?? 0,
           totalSlots: totalRequiredForMuscle ?? 1,
-          movementPattern: currentReq.movementPattern,
+          movementPattern: targetRequirement.movementPattern,
         })
       : undefined;
     updateDay((target) => {
@@ -6675,11 +7110,12 @@ function WorkoutDayEditor({
       }
     });
     setPendingExtraExercise(null);
+    setChooserWarning("");
 
     // Advance to next unfulfilled requirement (only for non-extra exercises)
-    if (!asExtra && !showAllExercises && requirements.length > 0) {
+    if (!asExtra && reqId && !showAllExercises && requirements.length > 0) {
       const updatedExercises = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
-      const nextUnmet = findNextUnmetRequirementIndex(updatedExercises);
+      const nextUnmet = findNextUnmetForExercises(updatedExercises);
       if (nextUnmet >= 0) {
         setCurrentReqIndex(nextUnmet);
       } else {
@@ -6746,9 +7182,7 @@ function WorkoutDayEditor({
 
   function chooseForCurrentRequirement() {
     if (!currentReq) return;
-    const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
-    const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
-    const currentFulfilled = Math.min(countFulfilled(day.exercises, currentReq), currentReq.requiredExerciseCount);
+    const currentFulfilled = Math.min(requirementAllocation.fulfilledByRequirementId.get(currentReq.id) ?? 0, currentReq.requiredExerciseCount);
     const slotPlan = getRequirementSlotPlan({
       targetMuscle: currentReq.targetMuscle,
       goalType: program.goal,
@@ -6758,13 +7192,16 @@ function WorkoutDayEditor({
       totalSlots: currentReq.requiredExerciseCount,
       movementPattern: currentReq.movementPattern,
     });
-    const candidates = db.exercises
-      .filter((exercise) => (!exercise.ownerUserId || exercise.ownerUserId === user.id))
-      .filter((exercise) => !alreadyAddedIds.includes(exercise.id))
-      .filter((exercise) => exerciseAllowedByCompoundSettings(exercise, settings))
-      .filter((exercise) => !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item)))
-      .filter((exercise) => exerciseFulfillsRequirement(exercise, currentReq))
-      .filter((exercise) => !currentReq.movementPattern || exercise.movementPattern === currentReq.movementPattern || exercise.movementPatterns?.includes(currentReq.movementPattern))
+    const pickerVisibleResults = getRequirementPickerVisibleExercises(db.exercises, user.id, currentReq.targetMuscle);
+    const rejectedCandidates: { exercise: Exercise; reason: string }[] = [];
+    const candidates = pickerVisibleResults
+      .filter((exercise) => {
+        if (alreadyAddedIds.includes(exercise.id)) {
+          rejectedCandidates.push({ exercise, reason: "duplicate-already-selected" });
+          return false;
+        }
+        return true;
+      })
       .map((exercise) => ({
         exercise,
         score: scoreExerciseForSlot({
@@ -6774,26 +7211,48 @@ function WorkoutDayEditor({
           goalType: program.goal,
           blockType: program.blocks[0]?.type || "hypertrophy",
           dayFocus: day.focus,
-          selectedExercises: day.exercises.map((planned) => db.exercises.find((item) => item.id === planned.exerciseId)).filter((item): item is Exercise => Boolean(item)),
+          selectedExercises: existingSelectedExercises,
           slotIndex: currentFulfilled,
           totalSlots: currentReq.requiredExerciseCount,
         }),
       }))
       .sort((a, b) => b.score - a.score);
     const pick = candidates[0]?.exercise;
+    const allVisibleMatchesAlreadySelected =
+      pickerVisibleResults.length > 0 &&
+      !candidates.length &&
+      rejectedCandidates.length === pickerVisibleResults.length &&
+      rejectedCandidates.every((item) => item.reason === "duplicate-already-selected");
+    debugRequirementAutofill({
+      mode: "slot",
+      selectedRequirement: currentReq,
+      pickerVisibleResults,
+      autofillCandidates: candidates.map((item) => item.exercise),
+      rejectedCandidates,
+      existingSelectedExercises,
+      usedIds: alreadyAddedIds,
+      requirementStatusBefore: { fulfilled: currentFulfilled, needed: currentReq.requiredExerciseCount },
+      requirementStatusAfter: {
+        fulfilled: Math.min(currentReq.requiredExerciseCount, currentFulfilled + (pick ? 1 : 0)),
+        needed: currentReq.requiredExerciseCount,
+      },
+    });
     if (!pick) {
-      setChooserWarning(`No matching option found for ${titleCaseLabel(currentReq.targetMuscle)}. Pick manually for this slot.`);
+      setChooserWarning(
+        allVisibleMatchesAlreadySelected
+          ? `All visible ${titleCaseLabel(currentReq.targetMuscle)} matches are already selected. Add one manually only if you want a duplicate.`
+          : `No matching option found for ${titleCaseLabel(currentReq.targetMuscle)}. Pick manually for this slot.`
+      );
       return;
     }
     setChooserWarning("");
+    setShowRequirementWarning(false);
     addExercise(pick);
   }
 
   function chooseForMe() {
     const targetMuscles = day.targetMuscles?.length ? day.targetMuscles : allSplitDays.find((sd) => sd.id === day.splitDayId)?.muscleGroups || [];
     const targetPatterns = day.movementPatterns || [];
-    const settings = program.blocks[0]?.compoundSettings || defaultCompoundSettings;
-    const activeGym = db.gyms.find((gym) => gym.id === user.activeGymId);
     const dayReqs = requirements;
     const block = program.blocks[0];
     const goalUsed = getGoalUsed(program.goal, block?.goalOverride ?? block?.goal);
@@ -6807,11 +7266,6 @@ function WorkoutDayEditor({
         });
       });
 
-    const pool = db.exercises
-      .filter((exercise) => (!exercise.ownerUserId || exercise.ownerUserId === user.id))
-      .filter((exercise) => exerciseAllowedByCompoundSettings(exercise, settings))
-      .filter((exercise) => !activeGym || !exercise.equipment.some((item) => activeGym.unavailableEquipment.includes(item)));
-
     // Track { exercise, reqId } pairs so we can tag fulfillsRequirementId correctly
     const selected: {
       exercise: Exercise;
@@ -6821,12 +7275,13 @@ function WorkoutDayEditor({
       exerciseRole?: ExerciseRole;
     }[] = [];
     const usedIds = new Set<string>(day.exercises.map((planned) => planned.exerciseId));
+    const unfilledReasonMessages: string[] = [];
 
     if (dayReqs.length > 0) {
-      const warnings: string[] = [];
+      const orderedRequirements = dayReqs.slice().sort(compareRequirementsBySpecificity);
       // Fill each requirement slot — exactly requiredExerciseCount exercises per slot, no more
-      for (const req of [...dayReqs].sort((a, b) => a.priority - b.priority)) {
-        const currentFulfilled = Math.min(countFulfilled(day.exercises, req), req.requiredExerciseCount);
+      for (const req of orderedRequirements) {
+        const currentFulfilled = Math.min(requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0, req.requiredExerciseCount);
         let filled = currentFulfilled;
         for (let slot = currentFulfilled; slot < req.requiredExerciseCount; slot += 1) {
           const slotPlan = getRequirementSlotPlan({
@@ -6838,15 +7293,20 @@ function WorkoutDayEditor({
             totalSlots: req.requiredExerciseCount,
             movementPattern: req.movementPattern,
           });
-          const strictCandidates = pool
-            .filter((ex) =>
-              !usedIds.has(ex.id) &&
-              exerciseFulfillsRequirement(ex, req) &&
-              (!req.movementPattern || ex.movementPattern === req.movementPattern || ex.movementPatterns?.includes(req.movementPattern)) &&
-              (targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p)))
-            )
+          const pickerVisibleResults = getRequirementPickerVisibleExercises(db.exercises, user.id, req.targetMuscle);
+          const rejectedCandidates: { exercise: Exercise; reason: string }[] = [];
+          const selectedExercisesForScoring = [...existingSelectedExercises, ...selected.map((item) => item.exercise)];
+          const rankedCandidates = pickerVisibleResults
+            .filter((exercise) => {
+              if (usedIds.has(exercise.id)) {
+                rejectedCandidates.push({ exercise, reason: "duplicate-already-selected" });
+                return false;
+              }
+              return true;
+            })
             .map((exercise) => ({
               exercise,
+              match: getRequirementMatchDetails(exercise, req),
               score: scoreExerciseForSlot({
                 exercise,
                 slotPlan,
@@ -6854,59 +7314,76 @@ function WorkoutDayEditor({
                 goalType: goalUsed,
                 blockType: block?.type || "hypertrophy",
                 dayFocus: day.focus,
-                selectedExercises: selected.map((item) => item.exercise),
+                selectedExercises: selectedExercisesForScoring,
                 slotIndex: slot,
                 totalSlots: req.requiredExerciseCount,
                 weeklyExerciseCounts,
-                dayBudget: buildFatigueBudget(selected.map((item) => item.exercise)),
+                dayBudget: buildFatigueBudget(selectedExercisesForScoring),
               }),
             }))
-            .sort((a, b) => b.score - a.score);
-          const relaxedCandidate = strictCandidates[0] ? undefined : pool
-            .filter((ex) =>
-              !usedIds.has(ex.id) &&
-              exerciseFulfillsRequirement(ex, req) &&
-              (!req.movementPattern || ex.movementPattern === req.movementPattern || ex.movementPatterns?.includes(req.movementPattern))
-            )
-            .map((exercise) => ({
-              exercise,
-              score: scoreExerciseForSlot({
-                exercise,
-                slotPlan,
-                targetMuscle: req.targetMuscle,
-                goalType: goalUsed,
-                blockType: block?.type || "hypertrophy",
-                dayFocus: day.focus,
-                selectedExercises: selected.map((item) => item.exercise),
-                slotIndex: slot,
-                totalSlots: req.requiredExerciseCount,
-                weeklyExerciseCounts,
-                dayBudget: buildFatigueBudget(selected.map((item) => item.exercise)),
-              }),
-            }))
-            .sort((a, b) => b.score - a.score)[0];
-          const pick = strictCandidates[0] ?? relaxedCandidate;
-          if (!pick) continue;
+            .sort((a, b) => {
+              const rankDelta = (a.match?.rank ?? Number.MAX_SAFE_INTEGER) - (b.match?.rank ?? Number.MAX_SAFE_INTEGER);
+              if (rankDelta !== 0) return rankDelta;
+              const childBiasDelta = (a.match?.childBiasPenalty ?? Number.MAX_SAFE_INTEGER) - (b.match?.childBiasPenalty ?? Number.MAX_SAFE_INTEGER);
+              if (childBiasDelta !== 0) return childBiasDelta;
+              return b.score - a.score;
+            });
+          const pick = rankedCandidates[0];
+          const allVisibleMatchesAlreadySelected =
+            pickerVisibleResults.length > 0 &&
+            !rankedCandidates.length &&
+            rejectedCandidates.length === pickerVisibleResults.length &&
+            rejectedCandidates.every((item) => item.reason === "duplicate-already-selected");
+          debugRequirementAutofill({
+            mode: "remaining",
+            selectedRequirement: req,
+            pickerVisibleResults,
+            autofillCandidates: rankedCandidates.map((item) => item.exercise),
+            rejectedCandidates,
+            existingSelectedExercises,
+            usedIds,
+            requirementStatusBefore: { fulfilled: filled, needed: req.requiredExerciseCount },
+            requirementStatusAfter: {
+              fulfilled: Math.min(req.requiredExerciseCount, filled + (pick ? 1 : 0)),
+              needed: req.requiredExerciseCount,
+            },
+          });
+          if (!pick) {
+            if (allVisibleMatchesAlreadySelected) {
+              unfilledReasonMessages.push(`All visible ${titleCaseLabel(req.targetMuscle)} matches are already selected.`);
+            }
+            continue;
+          }
           selected.push({ exercise: pick.exercise, reqId: req.id, slotIndex: slot, totalRequiredForMuscle: req.requiredExerciseCount, exerciseRole: slotPlan.role });
           usedIds.add(pick.exercise.id);
           weeklyExerciseCounts[pick.exercise.id] = (weeklyExerciseCounts[pick.exercise.id] ?? 0) + 1;
           filled += 1;
         }
-        if (filled < req.requiredExerciseCount) {
-          warnings.push(`${req.targetMuscle} ${filled}/${req.requiredExerciseCount}`);
-        }
       }
-      setChooserWarning(warnings.length ? `Could not fill every requirement: ${warnings.join(", ")}. Fill the missing slots manually.` : "");
+      const simulatedExercises = [
+        ...day.exercises,
+        ...selected.map((item, index) => ({
+          id: `autofill-${index}`,
+          exerciseId: item.exercise.id,
+          fulfillsRequirementId: item.reqId,
+          isExtra: false,
+        })),
+      ] as typeof day.exercises;
+      const postAllocation = allocateExercisesToRequirements(simulatedExercises, requirements, exerciseById);
+      setShowRequirementWarning(!postAllocation.allRequirementsMet);
+      setChooserWarning(!postAllocation.allRequirementsMet ? unfilledReasonMessages.join(" ") : "");
     } else {
       // No requirements: spread across muscles, max 2 per primary muscle
       const muscleCount: Record<string, number> = {};
       const maxPerMuscle = 2;
       const limit = Math.max(3, Math.min(6, targetMuscles.length + 2));
-      const candidates = pool.filter((ex) => {
-        const muscleMatch = targetMuscles.length === 0 || ex.primaryMuscles.some((m) => targetMuscles.includes(m));
-        const patternMatch = targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p));
-        return muscleMatch && patternMatch;
-      });
+      const candidates = db.exercises
+        .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
+        .filter((ex) => {
+          const muscleMatch = targetMuscles.length === 0 || ex.primaryMuscles.some((m) => targetMuscles.includes(m));
+          const patternMatch = targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p));
+          return muscleMatch && patternMatch;
+        });
       for (const ex of candidates) {
         if (selected.length >= limit) break;
         const primary = ex.primaryMuscles[0] ?? "other";
@@ -6920,7 +7397,8 @@ function WorkoutDayEditor({
     }
 
     if (!selected.length) {
-      setChooserWarning("No new matching exercises found. Fill the missing requirement slots manually.");
+      setShowRequirementWarning(false);
+      setChooserWarning(unfilledReasonMessages[0] || "No new matching exercises found. Fill the missing requirement slots manually.");
       return;
     }
     updateDay((target) => {
@@ -7037,8 +7515,9 @@ function WorkoutDayEditor({
                 Auto-fill remaining
               </button>
             </div>
+            {requirementWarningText && <p className="mt-3 text-sm text-orange-300">{requirementWarningText}</p>}
             {chooserWarning && <p className="mt-3 text-sm text-orange-300">{chooserWarning}</p>}
-            {allReqsMet && requirements.length > 0 && !inlineReqPickerOpen && (
+            {allReqsMet && requirements.length > 0 && !inlineReqPickerOpen && !requirementWarningText && !chooserWarning && (
               <p className="mt-2 text-xs font-semibold text-emerald-400">All requirements filled</p>
             )}
             {inlineReqPickerOpen && currentReq && (
@@ -7048,10 +7527,10 @@ function WorkoutDayEditor({
                 updateDb={updateDb}
                 onPick={(exercise) => {
                   const reqId = currentReq.id;
-                  addExercise(exercise);
+                  addExercise(exercise, false, reqId);
                   // Simulate post-add state to keep chip/title/filter/results in sync immediately.
                   const simulated = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
-                  const nextUnmet = findNextUnmetRequirementIndex(simulated);
+                  const nextUnmet = findNextUnmetForExercises(simulated);
                   if (nextUnmet >= 0) {
                     setCurrentReqIndex(nextUnmet);
                     setInlineReqPickerOpen(true);
@@ -7095,8 +7574,9 @@ function WorkoutDayEditor({
                 displayUnit,
                 plannedWeight: planned.plannedSets[0]?.plannedWeight,
               }) || "—";
-              const reqBadge = planned.fulfillsRequirementId
-                ? requirements.find((req) => req.id === planned.fulfillsRequirementId)
+              const assignment = requirementAllocation.assignmentByPlannedExerciseId.get(planned.id);
+              const reqBadge = assignment
+                ? requirements.find((req) => req.id === assignment.assignedRequirementId)
                 : undefined;
               const isSwappingExercise = swappingExerciseId === planned.id;
 
@@ -7183,7 +7663,7 @@ function WorkoutDayEditor({
             user={user}
             updateDb={updateDb}
             onPick={(exercise) => {
-              addExercise(exercise);
+              addExercise(exercise, false, null);
               setShowPicker(false);
             }}
             alreadyAddedIds={alreadyAddedIds}
@@ -7209,7 +7689,8 @@ function WorkoutDayEditor({
             })()}
             targetMuscles={(() => {
               const selectedPlanned = day.exercises.find((item) => item.id === swappingExerciseId);
-              const req = selectedPlanned?.fulfillsRequirementId ? requirements.find((item) => item.id === selectedPlanned.fulfillsRequirementId) : undefined;
+              const assignment = selectedPlanned ? requirementAllocation.assignmentByPlannedExerciseId.get(selectedPlanned.id) : undefined;
+              const req = assignment ? requirements.find((item) => item.id === assignment.assignedRequirementId) : undefined;
               const exercise = selectedPlanned ? db.exercises.find((item) => item.id === selectedPlanned.exerciseId) : undefined;
               return req ? [req.targetMuscle] : exercise?.primaryMuscles || [];
             })()}
@@ -7251,6 +7732,7 @@ function WorkoutDayEditor({
         </div>
       )}
       <button className="btn-secondary w-full" onClick={chooseForMe}><Wand2 className="h-4 w-4" /> Choose For Me</button>
+      {requirementWarningText && <div className="rounded-lg border border-ember/40 bg-ember/10 p-3 text-sm text-orange-100">{requirementWarningText}</div>}
       {chooserWarning && <div className="rounded-lg border border-ember/40 bg-ember/10 p-3 text-sm text-orange-100">{chooserWarning}</div>}
 
       {/* Requirement progress badges */}
@@ -7311,8 +7793,9 @@ function WorkoutDayEditor({
           const isEditingExercise = editingExerciseId === planned.id;
           const isSwappingExercise = swappingExerciseId === planned.id;
           // Badge: use fulfillsRequirementId as primary signal, fall back to muscle match for legacy
-          const reqBadge = planned.fulfillsRequirementId
-            ? requirements.find((req) => req.id === planned.fulfillsRequirementId)
+          const assignment = requirementAllocation.assignmentByPlannedExerciseId.get(planned.id);
+          const reqBadge = assignment
+            ? requirements.find((req) => req.id === assignment.assignedRequirementId)
             : undefined;
           return (
             <div key={planned.id} className={`rounded-lg border p-3 ${planned.isExtra ? "border-white/10 bg-white/[0.03]" : "border-white/10 bg-white/[0.06]"}`}>
@@ -7528,9 +8011,12 @@ function ExercisePicker({
     .filter((exercise) => {
       const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
       const targetPatternMatch = !targetPatterns.length || targetPatterns.includes(exercise.movementPattern) || exercise.movementPatterns?.some((patternItem) => targetPatterns.includes(patternItem));
+      const muscleFilterMatch = requirementMode && !manualMuscleOverride && requirementMuscle
+        ? exerciseMatchesRequirementTarget(exercise, requirementMuscle)
+        : exerciseMatchesMuscleFilter(exercise, effectiveMuscleFilter);
       return (
         text.includes(query.toLowerCase()) &&
-        (effectiveMuscleFilter === "all" || exercise.primaryMuscles.includes(effectiveMuscleFilter as MuscleGroup) || exercise.muscleGroup === effectiveMuscleFilter) &&
+        muscleFilterMatch &&
         (equipment === "all" || exercise.equipment.includes(equipment as EquipmentCategory)) &&
         (pattern === "all" || exercise.movementPattern === pattern) &&
         (fatigue === "all" || String(fatigueRatingForExercise(exercise)) === fatigue) &&
@@ -7565,7 +8051,7 @@ function ExercisePicker({
     ? groupedMuscles.map((targetMuscle) => ({
         muscle: targetMuscle,
         exercises: muscleOnlyPool
-          .filter((exercise) => exercise.primaryMuscles.includes(targetMuscle) || exercise.muscleGroup === targetMuscle)
+          .filter((exercise) => exerciseMatchesRequirementTarget(exercise, targetMuscle))
           .slice(0, 5)
       })).filter((section) => section.exercises.length)
     : [];
@@ -12803,6 +13289,14 @@ function buildPlannedExerciseFromExercise({
   return {
     id: createId("planned"),
     exerciseId: exercise.id,
+    sourceExerciseId: exercise.id,
+    parentExerciseId: exercise.parentExerciseId,
+    muscleGroup: exercise.muscleGroup,
+    primaryMuscles: structuredClone(exercise.primaryMuscles),
+    secondaryMuscles: structuredClone(exercise.secondaryMuscles),
+    directVolumeMuscles: structuredClone(exercise.directVolumeMuscles),
+    indirectVolumeMuscles: structuredClone(exercise.indirectVolumeMuscles),
+    canonicalMuscleKeys: getExerciseMuscleKeys(exercise),
     required: prescription.required,
     order,
     exerciseRole: resolvedRole,
