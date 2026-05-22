@@ -5271,6 +5271,23 @@ function BuilderScreen({
   const archivedPrograms = db.programs.filter((p) => p.userId === user.id && p.status !== "active" && p.status !== "draft");
   const archivedCount = archivedPrograms.length;
 
+  function duplicate(program: Program) {
+    const clone = cloneProgramAsActive(program);
+    void updateDb((draft) => {
+      draft.programs.forEach((item) => {
+        if (item.userId === user.id && item.status === "active") item.status = "archived";
+      });
+      draft.programs.unshift(clone);
+      const target = draft.users.find((item) => item.id === user.id);
+      if (target) {
+        target.activeProgramId = clone.id;
+        target.activeBlockId = clone.blocks[0]?.id;
+      }
+      draft.programGaps = analyzeProgramGaps(clone, draft);
+      return draft;
+    });
+  }
+
   const sbdExerciseIds = new Set(["ex_squat_comp", "ex_bench_comp", "ex_deadlift_comp", "ex_paused_squat", "ex_box_squat", "ex_paused_bench", "ex_deficit_deadlift"]);
 
   function hasSbdName(name?: string): boolean {
@@ -5372,23 +5389,6 @@ function BuilderScreen({
       || templateLaunchList[0];
     return hasSbdExposure && powerbuilding4 ? powerbuilding4 : fallback;
   }, [hasSbdExposure, templateLaunchList]);
-
-  function duplicate(program: Program) {
-    const clone = cloneProgramAsActive(program);
-    void updateDb((draft) => {
-      draft.programs.forEach((item) => {
-        if (item.userId === user.id && item.status === "active") item.status = "archived";
-      });
-      draft.programs.unshift(clone);
-      const target = draft.users.find((item) => item.id === user.id);
-      if (target) {
-        target.activeProgramId = clone.id;
-        target.activeBlockId = clone.blocks[0]?.id;
-      }
-      draft.programGaps = analyzeProgramGaps(clone, draft);
-      return draft;
-    });
-  }
 
   async function createProgram(mode: ProgramBuildMode, options?: { replaceExistingDraft?: boolean; splitIdOverride?: string; successMessage?: string }) {
     if (request.daysPerWeek < 1 || request.daysPerWeek > 7) {
@@ -5780,7 +5780,6 @@ function BuilderScreen({
           {generationState.message}
         </div>
       )}
-
       {/* Two-column layout on desktop */}
       <div className="mt-4 lg:grid lg:grid-cols-3 lg:gap-6">
         {/* Left: form */}
@@ -7524,7 +7523,6 @@ function ExercisePicker({
     setNewExName("");
     onPick(exercise);
   }
-
   const allMatches = db.exercises
     .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
     .filter((exercise) => {

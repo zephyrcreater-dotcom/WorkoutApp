@@ -195,7 +195,6 @@ The app uses a local-first training database with an explicit local-only mode an
 - `HANDOFF.md`
 
 ---
-
 ## Current Handoff — Block Builder Cleanup (Session 44)
 
 ### What changed
