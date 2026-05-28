@@ -1,8 +1,73 @@
 # HANDOFF.md
 
+## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
+
+- App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.
+- Today/Logger editor values must write to active workout session draft immediately, not only on Save Set.
+- Tab navigation must restore the same active workout/session, exercise, set, readiness check-in, and typed weight/reps/RPE/feel/note values.
+- Plan defaults initialize once; dirty/session draft values win afterward.
+
+## Current Handoff — Block Builder Initialization Loop Guard (Session 66)
+
+- Block Builder initialization must avoid render/effect loops. Template selection and draft hydration should populate split/day/requirements once per explicit action. Suggested block names should be derived placeholders, not repeatedly written into state. Requirement auto-selection should be guarded so it does not reopen/reset the picker every render.
+
+## Current Handoff — Today/Logger Active Session Draft Persistence (Session 65)
+
+- Today/Logger must preserve an active workout session across tab navigation. Entered check-in values, active exercise/set, typed weight/reps/RPE, difficulty, notes, added/skipped/deleted sets, and added/removed exercises should persist immediately in a session draft. Returning to Today should restore the active session, not rebuild from the plan. Plan/library defaults initialize only once and must not overwrite dirty/started session state.
+- Logger exercise/set selection and unsaved set-editor values now need a durable draft layer separate from the planned workout definition. The active session still owns logged exercises/sets in the database, while in-progress UI state such as selected set, dirty typed inputs, and unsaved readiness form values is restored from the active session draft on logger re-entry.
+- Navigating to Analytics, Settings, Library, Week, or Block while a workout is in progress must not destroy the logger context. Returning to `Today` should reopen the live logger for that same session instead of dropping back to the Today dashboard or regenerating the workout from the block plan.
+
+## Current Handoff — Active Workout State Isolation From Library Edits (Session 64)
+
+- Active Today/Logger workout session state must be isolated from Library/default exercise edits. Library/settings changes update future defaults and metadata, but must not silently overwrite active workout progress, logged sets, active set values, skipped/deleted/added sets, or unsaved workout edits. If a workout has started or is dirty, rehydration from plan/library/Supabase must not replace the local session state.
+- Started Today workouts now need a session-owned `plannedExerciseSnapshot` per logged exercise. Logger resume, set targeting, and planned-set lookup must prefer that snapshot over live program/template definitions.
+- Library/loading-profile edits may still update live display metadata such as exercise name or muscle tags through the shared exercise library, but planned set targets, actual logged sets, and active draft values must continue to come from the session snapshot/local session state unless the user explicitly applies new defaults later.
+
+## Current Handoff — Shared Exercise Source + Workflow-Preserving Picker + Logger Remove (Session 63)
+
+- All exercise pickers must use the shared Library source so default/custom/variation exercises appear consistently. Creating exercises or variations from inside Today/Logger/Week/Block workflows must preserve unsaved local edits and return to the same picker context. Mobile picker inputs must avoid iOS zoom with 16px+ font sizes and keyboard-safe scrolling. Machine/cable loading profile UI should show one clear increment path, not both default and custom inputs. Today/Logger workout edit mode needs a remove exercise action that removes only from the workout, not the Library.
+- `ExercisePicker`, requirement autofill candidate generation, and Library list/search now need to stay on the same shared exercise-source helper. Search must cover ids, parent names, variation metadata, default exercises, custom exercises, and visible variations from one merged source before per-picker filters are applied.
+- Creating from inside a picker should stay in the picker. The current fix path is an inline picker-side create flow for both new exercises and variations, so Week/Block requirement state, Today inline day edits, and Logger session edits are preserved without routing to Library.
+- Logger exercise removal is session-only. Removing an exercise must never delete it from Library, must preserve the rest of the session, and must move the active logger selection predictably: previous exercise if available, otherwise next, otherwise the no-exercises state.
+
 ## What This App Is
 
 Iron Orbit Training is a local-first PWA for workout programming and tracking across powerlifting, hypertrophy/bodybuilding, powerbuilding, conditioning, and general health. It is meant to replace an Excel workout tracking system and eventually become an adaptive training coach.
+
+## Current Handoff — Manual Requirement Slot Assignment Wins (Session 62)
+
+- Manual requirement-slot selection must respect the selected target slot. If the user is filling Chest and manually selects an incline/upper-chest exercise, it should fill Chest because that was the target slot. Auto-fill uses smart specificity; manual selection uses explicit target-slot assignment. Requirement counting should honor explicit `fulfillsRequirementId`/assigned slot before inferred muscle allocation.
+- Requirement counting order is now: explicit assigned slot first, then explicit auto-fill assignment when present, then inferred specificity allocation for unassigned exercises.
+- Broad `Add Exercise` flows that are not opened for a specific requirement slot should stay unassigned and continue using normal inferred allocation after add.
+
+## Current Handoff — Upper Chest Autofill Candidate Source Sync (Session 61)
+
+- Upper Chest autofill had a targeted failure where picker results showed valid upper-chest exercises but Auto-fill found none. Picker-visible candidates and autofill candidates must come from the same source/filter logic; parent Chest fullness must not exclude child Upper Chest candidates.
+- Requirement autofill should start from the same requirement-visible picker candidate set, then exclude only exact duplicates already selected on the day before ranking the remaining matches.
+- The `No new matching exercises found` warning came from the `chooseForMe()` path when no candidate survived into the `selected` array. Duplicate-only exhaustion should produce a clearer reason than the generic no-match message.
+- Default exercise metadata should treat `Incline Dumbbell Press` as upper-chest biased (`upper-chest` + `chest`). Built-in metadata refreshes may correct existing default-library copies, but custom/user-modified exercises must not be overwritten.
+
+## Current Handoff — Block Builder Setup UI Cleanup (Session 59)
+
+- Block Builder dropdowns should show only one chevron. Start Week should not be part of the primary new-block setup; default to Week 1 or move it under advanced schedule settings. Any gray/secondary builder control that looks clickable must either work or be visibly disabled.
+- Template and goal selects in the Block Builder should use one consistent custom-select treatment so native browser arrows do not stack with a manual chevron.
+- Planning Rules and Progression/Fatigue rows should read as intentional toggles with clear expand/collapse affordances, and disabled secondary actions like `Deploy Block` should look unavailable instead of broken.
+- Block Builder initialization must avoid render/effect loops. Template selection and draft hydration should populate split/day/requirements once per explicit action. Suggested block names should be derived placeholders, not repeatedly written into state. Requirement auto-selection should be guarded so it does not reopen/reset the picker every render.
+
+## Current Handoff — Custom Exercise Requirement Counting Canonicalization (Session 60)
+
+- Custom exercises and variations must count toward Week/Block requirements the same as default exercises.
+- Requirement counting should use a shared `getExerciseMuscleKeys` helper that reads all relevant custom/default exercise muscle fields, normalizes to canonical keys, and falls back to library/parent lookup when planned exercise instances are missing muscle data.
+- When exercises match both parent and child requirements, allocation must assign them to the most specific unmet requirement first. For example, upper-chest + chest exercises fill Upper Chest before generic Chest. Filtering by muscle and assigning requirement slots are separate steps.
+
+## Current Handoff — Requirement Autofill Specificity + Unified Status (Session 58)
+
+- Requirement autofill must allocate specific muscle requirements before generic parent requirements. If Upper Chest exists as a requirement, upper-chest exercises should fill that slot before generic Chest slots.
+- Requirement chips, warning text, and completion states must use the same computed requirement status and never contradict each other.
+- Generic parent requirements should prefer general parent matches first, then fall back to child-biased matches only after the specific child requirements are satisfied.
+- Explicit/manual requirement assignments must be preserved; auto-fill only fills remaining open slots.
+- Requirement matching must use canonical muscle keys. Display labels like `Upper Chest` must normalize to the same key as requirements like `upper-chest`. Specific requirements get first claim before generic parent requirements. Requirement chips, warnings, and completion messages must all use one computed requirement status.
+- Requirement counting must use the same canonical muscle source as exercise display/library rows. Use a helper to collect and normalize all muscle fields from an exercise. Specific requirements like upper-chest, side-delts, rear-delts, mid-back, and upper-back must be counted before generic parent muscles.
 
 ## Current Handoff — Universal Workout Prescription + Ordering Pass (Session 57)
 
