@@ -1,5 +1,47 @@
 # ROADMAP.md
 
+## Today Shell Stability + Logger Immediate Draft Persistence — Completed (Session 67)
+
+### Delivered
+- Normalized Today branch wrappers so Today, off-program builder, and Today exercise detail all live inside the same page-shell width/alignment instead of swapping wrappers.
+- Removed remaining Today-specific top-shell spacing/styling differences so header/nav placement stays consistent across Today, Week, Block, Library, Analytics, and Settings.
+- Added immediate active-session draft writes for logger field edits and readiness draft changes so typed values are persisted before `Save Set`.
+
+### Next steps
+- Manually verify cross-tab shell stability plus unsaved logger draft restore on desktop and iPhone-sized layouts.
+
+## Today/Logger Active Session Draft Persistence — Completed (Session 65)
+
+### Delivered
+- Added a durable active-workout draft layer for Today/Logger so unsaved logger UI state survives tab navigation and page reloads instead of living only inside `LiveLogger` component state.
+- Persisted the active exercise, active set selection, dirty set draft values, note editor state, and in-progress readiness form draft to local storage per user/session while keeping logged exercises/sets in the database-backed workout session.
+- Updated app navigation so returning to `Today` while an in-progress workout exists reopens the live logger for that active session instead of falling back to the Today dashboard and plan-derived resume state.
+
+### Next steps
+- Manually verify the full navigation/reload flow on desktop and iPhone-sized layouts, especially dirty set drafts, readiness-in-progress, and completed-workout cleanup after `Finish Workout`.
+
+## Active Workout State Isolation From Library Edits — Completed (Session 64)
+
+### Delivered
+- Added a session-owned `plannedExerciseSnapshot` to started Today workouts so logger/today planned-set lookup no longer depends on live program or template definitions after the workout begins.
+- Changed logger resume and draft hydration to prefer session snapshots and actual logged data over live default-weight/loading-profile recommendations, preventing Library/settings edits from silently reseeding the active set draft.
+- Added a one-time snapshot backfill for older in-progress sessions during DB normalization and logger resume so active workouts stay stable across return flows and reloads.
+
+### Next steps
+- Manually verify Library/loading-profile edits mid-workout, then reload the app and confirm the same Today workout resumes with the same active exercise, set, and logged data.
+
+## Shared Exercise Source + Workflow-Preserving Picker + Logger Remove — Completed (Session 63)
+
+### Delivered
+- Unified picker/library/requirement-candidate sourcing around one shared visible exercise helper so custom exercises and variations created in Library or inside a picker resolve from the same merged source before picker filters run.
+- Replaced the picker’s workflow-breaking create escape hatch with an in-picker create exercise / create variation flow so Today, Logger, Week Planner, and Block Builder keep their unsaved local editor state.
+- Moved the logger add-exercise overlays onto the same keyboard-safe sheet treatment and simplified machine/cable increment editing into one resolved increment path or one custom override path.
+- Added a logger-side remove exercise action that deletes the exercise from the workout session only and keeps active-exercise focus predictable after removal.
+
+### Next steps
+- Manually verify iPhone Safari keyboard behavior for sheet and inline picker variants, especially one-result search states.
+- Spot-check machine and cable exercises that should use non-selectorized defaults later if more explicit per-exercise loading-profile assignments are needed.
+
 ## Manual Requirement Slot Assignment Wins — Completed (Session 62)
 
 ### Delivered

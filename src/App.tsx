@@ -118,7 +118,7 @@ import {
   generateWeekReview
 } from "./lib/trainingMath";
 import { parseCSVText, buildImportReviewSummary, applyImportGroups, applyMatchOverride } from "./lib/importers/csvWorkoutImport";
-import { getEffectiveLoading } from "./lib/loadingProfiles";
+import { CUSTOM_INCREMENT_LOADING_PROFILE_ID, EQUIPMENT_DEFAULT_PROFILE_IDS, getEffectiveLoading } from "./lib/loadingProfiles";
 import { downloadExercisesCSV, downloadFullBackupJSON, downloadTrainingDataWorkbook, downloadWorkoutHistoryCSV } from "./lib/importers/exporters";
 import {
   buildExerciseImportReviewSummary,
@@ -469,21 +469,74 @@ function exerciseMatchesRequirementTarget(exercise: Exercise, targetMuscle: Musc
   });
 }
 
+type SharedExerciseLibrarySourceFilter = "all" | "default" | "custom" | "archived";
+
+function buildExerciseSearchText(exercise: Exercise, exerciseById?: Map<ID, Exercise>): string {
+  const parent = exercise.parentExerciseId ? exerciseById?.get(exercise.parentExerciseId) : undefined;
+  return [
+    exercise.id,
+    exercise.name,
+    exercise.variationType,
+    exercise.variationName,
+    exercise.variationGroup,
+    parent?.name,
+    exercise.muscleGroup,
+    ...exercise.primaryMuscles,
+    ...exercise.secondaryMuscles,
+    ...exercise.directVolumeMuscles,
+    ...exercise.indirectVolumeMuscles,
+    ...exercise.equipment,
+    exercise.movementPattern,
+    ...(exercise.movementPatterns || []),
+    ...(exercise.tagLabels || []),
+  ]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .join(" ")
+    .toLowerCase();
+}
+
+function matchesExerciseSearch(exercise: Exercise, query: string, exerciseById?: Map<ID, Exercise>): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return true;
+  if (exercise.id.toLowerCase().includes(normalizedQuery)) return true;
+  return buildExerciseSearchText(exercise, exerciseById).includes(normalizedQuery);
+}
+
+function getSharedExerciseLibrarySource(
+  exercises: Exercise[],
+  userId: ID,
+  options?: {
+    query?: string;
+    sourceFilter?: SharedExerciseLibrarySourceFilter;
+    includeVariations?: boolean;
+  }
+): Exercise[] {
+  const sourceFilter = options?.sourceFilter ?? "all";
+  const includeVariations = options?.includeVariations ?? true;
+  const exerciseById = new Map(exercises.map((exercise) => [exercise.id, exercise] as const));
+
+  return exercises.filter((exercise) => {
+    if (exercise.ownerUserId && exercise.ownerUserId !== userId) return false;
+    if (exercise.isArchived) {
+      return sourceFilter === "archived" && matchesExerciseSearch(exercise, options?.query || "", exerciseById);
+    }
+    if (sourceFilter === "custom" && !exercise.ownerUserId) return false;
+    if (sourceFilter === "default" && !!exercise.ownerUserId) return false;
+    if (!includeVariations && exercise.isVariation) return false;
+    return matchesExerciseSearch(exercise, options?.query || "", exerciseById);
+  });
+}
+
 function getRequirementPickerVisibleExercises(
   exercises: Exercise[],
   userId: ID,
   targetMuscle: MuscleGroup,
   query = ""
 ): Exercise[] {
-  const normalizedQuery = query.trim().toLowerCase();
-  return exercises.filter((exercise) => {
-    if (exercise.isArchived) return false;
-    if (exercise.ownerUserId && exercise.ownerUserId !== userId) return false;
-    if (!exerciseMatchesRequirementTarget(exercise, targetMuscle)) return false;
-    if (!normalizedQuery) return true;
-    const text = `${exercise.name} ${getExercisePrimaryMuscleKeys(exercise).join(" ")} ${exercise.muscleGroup}`.toLowerCase();
-    return text.includes(normalizedQuery);
-  });
+  return getSharedExerciseLibrarySource(exercises, userId, {
+    query,
+    includeVariations: true,
+  }).filter((exercise) => exerciseMatchesRequirementTarget(exercise, targetMuscle));
 }
 
 function shouldDebugRequirementAutofill(requirement: SplitDayRequirement | undefined): boolean {
@@ -963,6 +1016,7 @@ function isSessionResumableOnTodayCard(db: TrainingDatabase, userId: string, ses
 
 // localStorage-backed builder form draft per user
 const builderDraftKey = (userId: string) => `iron_orbit_builder_draft_${userId}`;
+const BLOCK_BUILDER_DEBUG = false;
 interface BuilderFormSnapshot {
   selectedSplitId: string;
   buildMode: ProgramBuildMode;
@@ -986,6 +1040,141 @@ function saveBuilderDraft(userId: string, snap: BuilderFormSnapshot): void {
 }
 function clearBuilderDraft(userId: string): void {
   localStorage.removeItem(builderDraftKey(userId));
+}
+
+function blockBuilderDebug(label: string, payload: Record<string, unknown>): void {
+  if (!BLOCK_BUILDER_DEBUG) return;
+  console.log(`[BLOCK_BUILDER_DEBUG] ${label}`, payload);
+}
+
+function builderRequestBasicsEqual(a: ProgramRequest, b: ProgramRequest): boolean {
+  return (
+    a.name === b.name &&
+    a.goal === b.goal &&
+    a.daysPerWeek === b.daysPerWeek &&
+    a.blockType === b.blockType &&
+    a.blockLengthWeeks === b.blockLengthWeeks &&
+    a.splitTemplateId === b.splitTemplateId &&
+    a.splitLoopMode === b.splitLoopMode &&
+    a.notes === b.notes
+  );
+}
+
+type LoggerSetDraftState = {
+  draftKey: string;
+  kind: SetKind;
+  actualWeight: string;
+  actualReps: string;
+  actualRpe: string;
+  setRating: SetRating;
+  formRating: string;
+  muscleFeelRating: string;
+  pumpRating: string;
+  painRating: string;
+  sorenessRating: string;
+  notes: string;
+};
+
+type ReadinessFormDraft = Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">;
+
+type ActiveWorkoutSessionDraft = {
+  sessionId: string;
+  workoutDayId?: string;
+  activeExerciseId?: string;
+  activeSetActualId?: string | null;
+  activeSetPlannedId?: string | null;
+  activeSetPlannedIndex?: number | null;
+  selectionMode?: "editing" | "actual" | "planned";
+  setDraft?: LoggerSetDraftState;
+  draftDirty?: boolean;
+  showSetNotes?: boolean;
+  readinessDraft?: ReadinessFormDraft;
+  lastLocalMutationAt: string;
+};
+
+type AppUiSnapshot = {
+  todaySelectedDayId: string | null;
+  lastActiveLoggerSessionId?: string;
+};
+
+const workoutDraftKey = (userId: string, sessionId: string) => `iron_orbit_active_workout_draft_${userId}_${sessionId}`;
+const appUiSnapshotKey = (userId: string) => `iron_orbit_app_ui_${userId}`;
+
+function createDefaultReadinessDraft(): ReadinessFormDraft {
+  return {
+    sleepQuality: 3,
+    stress: 1,
+    soreness: 1,
+    motivation: 3,
+    energy: 3,
+    jointPain: 1,
+    bodyweight: 0,
+    nutritionQuality: 3,
+    caffeine: false,
+    timeOfDay: "evening",
+    limitations: "",
+  };
+}
+
+function normalizeReadinessDraft(value?: Partial<ReadinessFormDraft> | null): ReadinessFormDraft {
+  const base = createDefaultReadinessDraft();
+  if (!value) return base;
+  return {
+    ...base,
+    ...value,
+    bodyweight: typeof value.bodyweight === "number" ? value.bodyweight : 0,
+    caffeine: value.caffeine === true,
+    limitations: typeof value.limitations === "string" ? value.limitations : "",
+  };
+}
+
+function loadActiveWorkoutSessionDraft(userId: string, sessionId?: string): ActiveWorkoutSessionDraft | undefined {
+  if (!sessionId) return undefined;
+  try {
+    const raw = localStorage.getItem(workoutDraftKey(userId, sessionId));
+    return raw ? JSON.parse(raw) as ActiveWorkoutSessionDraft : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveActiveWorkoutSessionDraft(userId: string, sessionId: string, snapshot: ActiveWorkoutSessionDraft): void {
+  try {
+    localStorage.setItem(workoutDraftKey(userId, sessionId), JSON.stringify(snapshot));
+  } catch {
+    // Ignore localStorage quota issues; the active session DB remains the durable fallback.
+  }
+}
+
+function clearActiveWorkoutSessionDraft(userId: string, sessionId?: string): void {
+  if (!sessionId) return;
+  try {
+    localStorage.removeItem(workoutDraftKey(userId, sessionId));
+  } catch {
+    // Ignore localStorage errors during cleanup.
+  }
+}
+
+function loadAppUiSnapshot(userId: string): AppUiSnapshot {
+  try {
+    const raw = localStorage.getItem(appUiSnapshotKey(userId));
+    if (!raw) return { todaySelectedDayId: null };
+    const parsed = JSON.parse(raw) as Partial<AppUiSnapshot>;
+    return {
+      todaySelectedDayId: typeof parsed.todaySelectedDayId === "string" ? parsed.todaySelectedDayId : null,
+      lastActiveLoggerSessionId: typeof parsed.lastActiveLoggerSessionId === "string" ? parsed.lastActiveLoggerSessionId : undefined,
+    };
+  } catch {
+    return { todaySelectedDayId: null };
+  }
+}
+
+function saveAppUiSnapshot(userId: string, snapshot: AppUiSnapshot): void {
+  try {
+    localStorage.setItem(appUiSnapshotKey(userId), JSON.stringify(snapshot));
+  } catch {
+    // Ignore localStorage quota issues; this is navigation convenience state only.
+  }
 }
 
 const equipmentOptions: EquipmentCategory[] = ["barbell", "dumbbell", "cable", "machine", "bodyweight", "cardio", "bands"];
@@ -1201,6 +1390,38 @@ function App() {
   // null = show the current block day (default). Persists across screen changes so Today retains
   // context when returning from the logger or completed-review.
   const [todaySelectedDayId, setTodaySelectedDayId] = useState<string | null>(null);
+  const [hydratedUiUserId, setHydratedUiUserId] = useState<string | undefined>();
+  const currentUserId = currentUser?.id;
+  const persistedActiveSession = db && currentUserId
+    ? db.sessions.find((session) => session.userId === currentUserId && (session.status === "in-progress" || session.status === "review"))
+    : undefined;
+  const activeSession = db
+    ? (activeSessionId
+      ? db.sessions.find((session) => session.id === activeSessionId) || persistedActiveSession
+      : persistedActiveSession)
+    : undefined;
+
+  useEffect(() => {
+    if (!db || !currentUserId) return;
+    if (hydratedUiUserId === currentUserId) return;
+    const snapshot = loadAppUiSnapshot(currentUserId);
+    setTodaySelectedDayId(snapshot.todaySelectedDayId);
+    if (snapshot.lastActiveLoggerSessionId && activeSession?.id === snapshot.lastActiveLoggerSessionId) {
+      setLoggerNavigation({ previousScreen: "today", loggerMode: "active-logger" });
+      setActiveSessionId(activeSession.id);
+      setScreen("logger");
+    }
+    setHydratedUiUserId(currentUserId);
+  }, [activeSession?.id, currentUserId, db, hydratedUiUserId]);
+
+  useEffect(() => {
+    if (!db || !currentUserId) return;
+    if (hydratedUiUserId !== currentUserId) return;
+    saveAppUiSnapshot(currentUserId, {
+      todaySelectedDayId,
+      lastActiveLoggerSessionId: activeSession?.id,
+    });
+  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, todaySelectedDayId]);
 
   if (loading) {
     return (
@@ -1270,10 +1491,8 @@ function App() {
     );
   }
 
-  const persistedActiveSession = db.sessions.find((session) => session.userId === currentUser.id && (session.status === "in-progress" || session.status === "review"));
-  const activeSession = activeSessionId ? db.sessions.find((session) => session.id === activeSessionId) || persistedActiveSession : persistedActiveSession;
   const appDb = db;
-  const currentUserId = currentUser.id;
+  const resolvedCurrentUserId = currentUser.id;
 
   function openCompletedSessionReview(sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) {
     setCompletedReviewState({ sessionId, returnScreen });
@@ -1305,6 +1524,21 @@ function App() {
     setScreen("logger");
   }
 
+  function navigateToScreen(nextScreen: Screen) {
+    if (nextScreen === "today" && activeSession?.id) {
+      setResumeMessage(undefined);
+      setLoggerNavigation((current) => ({
+        previousScreen: "today",
+        completedReviewState: current.completedReviewState,
+        loggerMode: current.loggerMode || "active-logger",
+      }));
+      setActiveSessionId(activeSession.id);
+      setScreen("logger");
+      return;
+    }
+    setScreen(nextScreen);
+  }
+
   async function resumeWorkoutSession(
     requestedSessionId?: string,
     options?: {
@@ -1314,7 +1548,7 @@ function App() {
     }
   ) {
     const requestedSession = requestedSessionId
-      ? appDb.sessions.find((candidate) => candidate.id === requestedSessionId && candidate.userId === currentUserId)
+      ? appDb.sessions.find((candidate) => candidate.id === requestedSessionId && candidate.userId === resolvedCurrentUserId)
       : undefined;
     const navigationState: LoggerNavigationState = {
       previousScreen: options?.previousScreen || (screen === "week" ? "week" : "today"),
@@ -1330,7 +1564,7 @@ function App() {
       return;
     }
 
-    const resumeState = resolveWorkoutResumeState(appDb, currentUserId, requestedSessionId);
+    const resumeState = resolveWorkoutResumeState(appDb, resolvedCurrentUserId, requestedSessionId);
     if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") {
       setResumeMessage(undefined);
       setActiveSessionId(resumeState.session.id);
@@ -1339,7 +1573,7 @@ function App() {
     }
 
     console.error("Workout resume failed", {
-      userId: currentUserId,
+      userId: resolvedCurrentUserId,
       requestedSessionId,
       reason: resumeState.reason,
       activeSessionId,
@@ -1354,42 +1588,35 @@ function App() {
       <header className={`safe-top sticky top-0 z-30 backdrop-blur-xl ${screen === "logger" ? "bg-iron-950/95" : "border-b border-white/[0.08] bg-iron-950/90 px-4"}`}>
         {screen !== "logger" && (
           <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 py-3">
-            <button className="flex min-w-0 items-center gap-2.5 text-left" onClick={() => setScreen("today")}>
-              <div className={`flex h-8 w-8 shrink-0 items-center justify-center text-iron-950 ${screen === "today" ? "rounded-md bg-[#0a84ff] shadow-[0_8px_20px_rgba(10,132,255,0.18)]" : "rounded-lg bg-volt"}`}>
+            <button className="flex min-w-0 items-center gap-2.5 text-left" onClick={() => (screen === "today" ? setScreen("today") : navigateToScreen("today"))}>
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-volt text-iron-950">
                 <Dumbbell className="h-4 w-4" />
               </div>
               <div className="min-w-0">
                 <p className="truncate text-sm font-bold">Iron Orbit</p>
                 <p className="truncate text-xs text-iron-500">
-                  {screen === "today"
-                    ? currentUser.displayName
-                    : authMode === "cloud" && cloud.userEmail
-                      ? `${currentUser.displayName} · ${cloud.userEmail}`
-                      : "Local only"}
+                  {authMode === "cloud" && cloud.userEmail
+                    ? `${currentUser.displayName} · ${cloud.userEmail}`
+                    : `${currentUser.displayName} · Local only`}
                 </p>
               </div>
             </button>
             <div className="flex items-center gap-2">
-              {screen !== "today" && (
-                <button
-                  className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
-                    cloud.status === "synced"
-                      ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
-                      : cloud.status === "syncing" || cloud.status === "hydrating"
-                        ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
-                        : cloud.status === "failed"
-                          ? "border-ember/30 bg-ember/10 text-orange-100"
-                          : "border-white/10 bg-white/5 text-iron-300"
-                  }`}
-                  onClick={() => setScreen("settings")}
-                  title={cloud.message}
-                >
-                  {renderCloudStatusLabel(cloud.status)}
-                </button>
-              )}
-              {screen === "today" && (
-                <p className="hidden text-xs text-iron-500 sm:block">{renderCloudStatusLabel(cloud.status)}</p>
-              )}
+              <button
+                className={`hidden rounded-full border px-3 py-1 text-xs font-bold sm:inline-flex ${
+                  cloud.status === "synced"
+                    ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+                    : cloud.status === "syncing" || cloud.status === "hydrating"
+                      ? "border-sky-500/30 bg-sky-500/10 text-sky-200"
+                      : cloud.status === "failed"
+                        ? "border-ember/30 bg-ember/10 text-orange-100"
+                        : "border-white/10 bg-white/5 text-iron-300"
+                }`}
+                onClick={() => setScreen("settings")}
+                title={cloud.message}
+              >
+                {renderCloudStatusLabel(cloud.status)}
+              </button>
               {activeSession && (
                 <button className="btn-primary hidden sm:inline-flex" onClick={() => void resumeWorkoutSession(activeSession.id)}>
                   <Timer className="h-4 w-4" />
@@ -1397,7 +1624,7 @@ function App() {
                 </button>
               )}
               <button
-                className={`tap-highlight inline-flex h-10 w-10 items-center justify-center border text-iron-300 transition hover:bg-white/[0.06] hover:text-white ${screen === "today" ? "rounded-md border-white/[0.08] bg-white/[0.03]" : "rounded-full border-white/[0.1] bg-white/[0.02]"}`}
+                className="tap-highlight inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/[0.1] bg-white/[0.02] text-iron-300 transition hover:bg-white/[0.06] hover:text-white"
                 onClick={() => setScreen("settings")}
                 aria-label="Open settings"
                 title="Settings"
@@ -1420,7 +1647,7 @@ function App() {
                     ? "font-semibold text-volt"
                     : "font-medium text-iron-400 hover:bg-white/[0.05] hover:text-iron-200"
                 }`}
-                onClick={() => setScreen(item.id)}
+                onClick={() => navigateToScreen(item.id)}
               >
                 {screen === item.id && (
                   <span className="absolute left-0 top-1/2 h-5 w-0.5 -translate-y-1/2 rounded-r-full bg-volt" />
@@ -1551,7 +1778,7 @@ function App() {
                 className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-[0.9rem] px-1 text-[0.62rem] font-medium transition ${
                   screen === item.id ? "bg-[#101b2c] text-[#6ab2ff]" : "text-iron-500"
                 }`}
-                onClick={() => setScreen(item.id)}
+                onClick={() => navigateToScreen(item.id)}
               >
                 <item.icon className={`h-5 w-5 ${screen === item.id ? "text-[#6ab2ff]" : "text-iron-500"}`} />
                 {item.label}
@@ -1633,6 +1860,7 @@ function TodayScreen({
   const [showInlineAddExercise, setShowInlineAddExercise] = useState(false);
   const [activeEditExerciseId, setActiveEditExerciseId] = useState<string | null>(null);
   const [exerciseDetail, setExerciseDetail] = useState<TodayExerciseDetailState | null>(null);
+  const todayPageClassName = "mx-auto max-w-[54rem] space-y-5 xl:mx-0";
 
   useEffect(() => {
     setShowEditDay(false);
@@ -1818,6 +2046,7 @@ function TodayScreen({
         if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
         return draft;
       });
+      clearActiveWorkoutSessionDraft(user.id, otherInProgress.id);
     }
     const session: WorkoutSession = {
       id: createId("session"),
@@ -1837,6 +2066,7 @@ function TodayScreen({
         id: createId("logex"),
         exerciseId: exercise.exerciseId,
         plannedExerciseId: exercise.id,
+        plannedExerciseSnapshot: clonePlannedExerciseSnapshot(exercise),
         order: index + 1,
         sets: [],
         weakPointTags: []
@@ -1946,6 +2176,7 @@ function TodayScreen({
         if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
         return draft;
       });
+      clearActiveWorkoutSessionDraft(user.id, otherInProgress.id);
     }
     const session: WorkoutSession = {
       id: createId("session"),
@@ -2053,7 +2284,7 @@ function TodayScreen({
 
   if (offProgramBuilder.active) {
     return (
-      <div className="space-y-5">
+      <div className={todayPageClassName}>
         <PageTitle eyebrow="Off-Program Builder" title="Build your individual workout before starting." />
         <section className="panel p-4">
           <div className="mb-4 flex items-center justify-between gap-3">
@@ -2168,36 +2399,40 @@ function TodayScreen({
     const exercise = planned ? db.exercises.find((item) => item.id === planned.exerciseId) : undefined;
     if (planned && exercise) {
       return (
-        <TodayExerciseDetailView
-          db={db}
-          user={user}
-          day={selectedDay}
-          planned={planned}
-          exercise={exercise}
-          onBack={() => setExerciseDetail(null)}
-          onEditExercise={() => {
-            setExerciseDetail(null);
-            if (!showEditDay) beginInlineEdit();
-            setActiveEditExerciseId(planned.id);
-          }}
-        />
+        <div className={todayPageClassName}>
+          <TodayExerciseDetailView
+            db={db}
+            user={user}
+            day={selectedDay}
+            planned={planned}
+            exercise={exercise}
+            onBack={() => setExerciseDetail(null)}
+            onEditExercise={() => {
+              setExerciseDetail(null);
+              if (!showEditDay) beginInlineEdit();
+              setActiveEditExerciseId(planned.id);
+            }}
+          />
+        </div>
       );
     }
     return (
-      <section className="space-y-4">
-        <button className="inline-flex items-center gap-2 text-sm text-iron-400 transition hover:text-iron-100" onClick={() => setExerciseDetail(null)}>
-          <ChevronLeft className="h-4 w-4" />
-          Back to Today
-        </button>
-        <Panel title="Exercise not found" icon={ShieldAlert}>
-          <EmptyState title="That exercise could not be opened" detail="The workout may have changed while you were editing." />
-        </Panel>
-      </section>
+      <div className={todayPageClassName}>
+        <section className="space-y-4">
+          <button className="inline-flex items-center gap-2 text-sm text-iron-400 transition hover:text-iron-100" onClick={() => setExerciseDetail(null)}>
+            <ChevronLeft className="h-4 w-4" />
+            Back to Today
+          </button>
+          <Panel title="Exercise not found" icon={ShieldAlert}>
+            <EmptyState title="That exercise could not be opened" detail="The workout may have changed while you were editing." />
+          </Panel>
+        </section>
+      </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-[54rem] space-y-5 xl:mx-0">
+    <div className={todayPageClassName}>
       {resumeMessage && (
         <section className="rounded-lg border border-ember/40 bg-ember/10 p-4">
           <div className="flex items-start justify-between gap-3">
@@ -2689,12 +2924,15 @@ function TodayScreen({
                                 <div className="mb-3 flex items-center justify-end">
                                   <button
                                     className="text-xs text-orange-300 transition hover:text-orange-200"
-                                    onClick={() => setEditDraft((current) => current ? ({
-                                      ...current,
-                                      exercises: current.exercises
-                                        .filter((item) => item.id !== planned.id)
-                                        .map((item, itemIndex) => ({ ...item, order: itemIndex + 1 })),
-                                    }) : current)}
+                                    onClick={() => {
+                                      if (!confirm("Remove exercise from this workout?")) return;
+                                      setEditDraft((current) => current ? ({
+                                        ...current,
+                                        exercises: current.exercises
+                                          .filter((item) => item.id !== planned.id)
+                                          .map((item, itemIndex) => ({ ...item, order: itemIndex + 1 })),
+                                      }) : current);
+                                    }}
                                   >
                                     Remove
                                   </button>
@@ -2773,17 +3011,14 @@ function TodayScreen({
                       </div>
                       {showInlineAddExercise && (
                         <div className="border-t border-white/[0.06] bg-[#09101a] px-4 py-4">
-                          <div className="mb-3 flex items-center justify-between gap-3">
-                            <p className="text-sm font-medium text-iron-100">Add exercise</p>
-                            <button className="text-xs text-iron-500 transition hover:text-iron-200" onClick={() => setShowInlineAddExercise(false)}>
-                              Cancel
-                            </button>
-                          </div>
                           <ExercisePicker
                             db={db}
                             user={user}
                             updateDb={updateDb}
                             alreadyAddedIds={editDraft.exercises.map((item) => item.exerciseId)}
+                            variant="week-inline"
+                            title="Add exercise"
+                            onClose={() => setShowInlineAddExercise(false)}
                             onPick={(exercise) => {
                               const planned = buildPlannedExerciseFromExercise({
                                 db,
@@ -3232,7 +3467,15 @@ function LiveLogger({
 }) {
   const LOGGER_DEBUG = false;
   const sessionRecord = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
-  const [activeExerciseId, setActiveExerciseId] = useState(sessionRecord?.loggedExercises[sessionRecord.currentExerciseIndex || 0]?.id || sessionRecord?.loggedExercises[0]?.id);
+  const storedSessionDraft = useMemo(
+    () => loadActiveWorkoutSessionDraft(user.id, sessionId),
+    [sessionId, user.id]
+  );
+  const [activeExerciseId, setActiveExerciseId] = useState(
+    storedSessionDraft?.activeExerciseId
+    || sessionRecord?.loggedExercises[sessionRecord.currentExerciseIndex || 0]?.id
+    || sessionRecord?.loggedExercises[0]?.id
+  );
   const resumeState = useMemo(
     () => resolveWorkoutResumeState(db, user.id, sessionId, activeExerciseId, true),
     [activeExerciseId, db, sessionId, user.id]
@@ -3306,9 +3549,10 @@ function LiveLogger({
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
   const [showSkipExerciseConfirm, setShowSkipExerciseConfirm] = useState(false);
-  const [showSetNotes, setShowSetNotes] = useState(false);
+  const [showSetNotes, setShowSetNotes] = useState(storedSessionDraft?.showSetNotes ?? false);
   const [showCompletionSummary, setShowCompletionSummary] = useState(false);
   const [completionSummary, setCompletionSummary] = useState<{ score: number; status: string; hardSets: number; skippedSets: number; completedSets: number; suggestions: string[] } | null>(null);
+  const [pendingRemoveExerciseLogId, setPendingRemoveExerciseLogId] = useState<string | null>(null);
   const [pendingDeleteTarget, setPendingDeleteTarget] = useState<{ actualSetId?: string; plannedSetId?: string; lineupKey: string } | null>(null);
   const [openSwipeSetId, setOpenSwipeSetId] = useState<string | undefined>();
   const [isSwipeEnabled, setIsSwipeEnabled] = useState(() => {
@@ -3338,8 +3582,10 @@ function LiveLogger({
   const [setContextMenuId, setSetContextMenuId] = useState<string | null>(null);
   const [exerciseContextMenuId, setExerciseContextMenuId] = useState<string | null>(null);
   const exerciseLongPressTimerRef = useRef<number | null>(null);
+  const pendingUiDraftHydrationRef = useRef<string | null>(sessionId || null);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
+  const [readinessDraft, setReadinessDraft] = useState<ReadinessFormDraft>(() => normalizeReadinessDraft(storedSessionDraft?.readinessDraft));
 
   const activeLoggerProgram = db.programs.find((p) => p.id === session?.programId && p.userId === user.id);
   const activeLoggerBlock = activeLoggerProgram?.blocks.find((b) => b.id === session?.blockId);
@@ -3353,14 +3599,153 @@ function LiveLogger({
     goal: activeLoggerProgram?.goal || activeLoggerBlock?.goal || user.goal,
     gymId: session?.gymId,
   });
-  const adjustedWeight = weightRec?.recommendedWeight ?? undefined;
   const selectionDraftSeed = useMemo(() => buildDraftFromSet({
     actualSet: selectedActualSet,
     plannedSet: currentPlannedSet,
     previousCompletedSet,
     draftKey,
-    recommendedWeight: adjustedWeight,
-  }), [adjustedWeight, currentPlannedSet, draftKey, previousCompletedSet, selectedActualSet]);
+  }), [currentPlannedSet, draftKey, previousCompletedSet, selectedActualSet]);
+
+  function persistActiveWorkoutDraftImmediately(
+    overrides: Partial<ActiveWorkoutSessionDraft> & {
+      activeExerciseId?: string;
+      activeSetActualId?: string | null;
+      activeSetPlannedId?: string | null;
+      activeSetPlannedIndex?: number | null;
+      selectionMode?: ActiveWorkoutSessionDraft["selectionMode"];
+      setDraft?: LoggerSetDraftState;
+      draftDirty?: boolean;
+      showSetNotes?: boolean;
+      readinessDraft?: ReadinessFormDraft;
+    } = {}
+  ) {
+    if (!session?.id || pendingUiDraftHydrationRef.current === session.id) return;
+    const snapshot: ActiveWorkoutSessionDraft = {
+      sessionId: session.id,
+      workoutDayId: session.workoutDayId,
+      activeExerciseId: overrides.activeExerciseId ?? activeExerciseId,
+      activeSetActualId: overrides.activeSetActualId ?? (editingSetId ?? selectedActualSet?.id ?? null),
+      activeSetPlannedId: overrides.activeSetPlannedId ?? (selectedActualLineupItem?.plannedSet?.id ?? currentPlannedSet?.id ?? null),
+      activeSetPlannedIndex: overrides.activeSetPlannedIndex ?? (selectedActualLineupItem?.plannedIndex ?? (selectedLoggingIndex ?? effectiveSetIndex)),
+      selectionMode: overrides.selectionMode ?? (editingSetId ? "editing" : selectedActualSet?.id ? "actual" : "planned"),
+      setDraft: overrides.setDraft ?? setDraft,
+      draftDirty: overrides.draftDirty ?? draftDirty,
+      showSetNotes: overrides.showSetNotes ?? showSetNotes,
+      readinessDraft: overrides.readinessDraft ?? readinessDraft,
+      lastLocalMutationAt: nowIso(),
+    };
+    saveActiveWorkoutSessionDraft(user.id, session.id, snapshot);
+  }
+
+  function updateSetDraftImmediately(
+    updater: LoggerSetDraftState | ((current: LoggerSetDraftState) => LoggerSetDraftState),
+    options?: {
+      draftDirty?: boolean;
+      clearRecommendation?: boolean;
+      showSetNotes?: boolean;
+    }
+  ) {
+    const nextDirty = options?.draftDirty ?? true;
+    if (options?.clearRecommendation !== false) setRecentlyAppliedRecommendationKey(null);
+    setSetDraft((current) => {
+      const nextDraft = typeof updater === "function" ? updater(current) : updater;
+      persistActiveWorkoutDraftImmediately({
+        setDraft: nextDraft,
+        draftDirty: nextDirty,
+        showSetNotes: options?.showSetNotes,
+      });
+      return nextDraft;
+    });
+    setDraftDirty(nextDirty);
+  }
+
+  function updateReadinessDraftImmediately(
+    updater: ReadinessFormDraft | ((current: ReadinessFormDraft) => ReadinessFormDraft)
+  ) {
+    setReadinessDraft((current) => {
+      const nextDraft = typeof updater === "function" ? updater(current) : updater;
+      persistActiveWorkoutDraftImmediately({ readinessDraft: nextDraft });
+      return nextDraft;
+    });
+  }
+
+  useEffect(() => {
+    pendingUiDraftHydrationRef.current = sessionId || null;
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!session?.id || pendingUiDraftHydrationRef.current !== session.id) return;
+    const storedDraft = loadActiveWorkoutSessionDraft(user.id, session.id);
+    const normalizedReadinessDraft = normalizeReadinessDraft(storedDraft?.readinessDraft);
+
+    if (!storedDraft) {
+      setReadinessDraft(normalizedReadinessDraft);
+      setShowSetNotes(false);
+      setDraftDirty(false);
+      setSetDraft(selectionDraftSeed);
+      pendingUiDraftHydrationRef.current = null;
+      return;
+    }
+
+    if (
+      storedDraft.activeExerciseId
+      && session.loggedExercises.some((item) => item.id === storedDraft.activeExerciseId)
+      && storedDraft.activeExerciseId !== activeExerciseLog?.id
+    ) {
+      setActiveExerciseId(storedDraft.activeExerciseId);
+      return;
+    }
+
+    setReadinessDraft(normalizedReadinessDraft);
+
+    let resolvedSelection = false;
+    if (storedDraft.selectionMode === "editing" && storedDraft.activeSetActualId) {
+      const target = lineupItems.find((item) => item.actualSet?.id === storedDraft.activeSetActualId);
+      if (target?.actualSet) {
+        setEditingSetId(target.actualSet.id);
+        setFocusedActualSetId(target.actualSet.id);
+        setSelectedLoggingIndex(null);
+        resolvedSelection = true;
+      }
+    }
+
+    if (!resolvedSelection && storedDraft.selectionMode === "actual" && storedDraft.activeSetActualId) {
+      const target = lineupItems.find((item) => item.actualSet?.id === storedDraft.activeSetActualId);
+      if (target?.actualSet) {
+        setEditingSetId(null);
+        setFocusedActualSetId(target.actualSet.id);
+        setSelectedLoggingIndex(null);
+        resolvedSelection = true;
+      }
+    }
+
+    if (!resolvedSelection) {
+      const target = lineupItems.find((item) => {
+        if (storedDraft.activeSetPlannedId && item.plannedSet?.id === storedDraft.activeSetPlannedId) return true;
+        return storedDraft.activeSetPlannedIndex !== undefined
+          && storedDraft.activeSetPlannedIndex !== null
+          && item.plannedIndex === storedDraft.activeSetPlannedIndex;
+      });
+      if (target?.plannedIndex !== undefined) {
+        setEditingSetId(null);
+        setFocusedActualSetId(null);
+        setSelectedLoggingIndex(target.plannedIndex);
+        resolvedSelection = true;
+      }
+    }
+
+    if (storedDraft.draftDirty && storedDraft.setDraft && resolvedSelection) {
+      setSetDraft(storedDraft.setDraft);
+      setDraftDirty(true);
+      setShowSetNotes(storedDraft.showSetNotes ?? !!storedDraft.setDraft.notes);
+    } else {
+      setDraftDirty(false);
+      setSetDraft(selectionDraftSeed);
+      setShowSetNotes(storedDraft.showSetNotes ?? false);
+    }
+
+    pendingUiDraftHydrationRef.current = null;
+  }, [activeExerciseLog?.id, lineupItems, selectionDraftSeed, session, sessionId, user.id]);
 
   function loggerDebugSnapshot() {
     const activeExerciseName = exercise?.name || "(unknown)";
@@ -3401,6 +3786,30 @@ function LiveLogger({
       || log.offProgramPlannedSets.some((set, index) => !set.id || set.setNumber !== index + 1);
     return needsNormalization;
   });
+  const needsPlannedExerciseSnapshotBackfill = !!session?.id && session.loggedExercises.some((log) => {
+    if (!log.plannedExerciseId || log.plannedExerciseSnapshot) return false;
+    return !!findLivePlannedExercise(db, session, log);
+  });
+
+  useEffect(() => {
+    if (!session?.id || !needsPlannedExerciseSnapshotBackfill) return;
+    loggerDebug("BACKFILL_PLANNED_EXERCISE_SNAPSHOTS_START");
+    void updateDb((draft) => {
+      const target = draft.sessions.find((item) => item.id === session.id);
+      if (!target) return draft;
+      let changed = false;
+      target.loggedExercises.forEach((log) => {
+        if (!log.plannedExerciseId || log.plannedExerciseSnapshot) return;
+        const livePlanned = findLivePlannedExercise(draft, target, log);
+        if (!livePlanned) return;
+        log.plannedExerciseSnapshot = clonePlannedExerciseSnapshot(livePlanned);
+        changed = true;
+      });
+      if (changed) target.updatedAt = nowIso();
+      return draft;
+    });
+    loggerDebug("BACKFILL_PLANNED_EXERCISE_SNAPSHOTS_END");
+  }, [needsPlannedExerciseSnapshotBackfill, session, updateDb]);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
@@ -3432,6 +3841,46 @@ function LiveLogger({
       editingSetId,
     });
   }, [selectedActualSet?.id, effectiveSetIndex, selectedLoggingIndex, focusedActualSetId, editingSetId]);
+
+  useEffect(() => {
+    if (!session?.id || pendingUiDraftHydrationRef.current === session.id) return;
+    const selectionMode: ActiveWorkoutSessionDraft["selectionMode"] = editingSetId
+      ? "editing"
+      : selectedActualSet?.id
+        ? "actual"
+        : "planned";
+    const snapshot: ActiveWorkoutSessionDraft = {
+      sessionId: session.id,
+      workoutDayId: session.workoutDayId,
+      activeExerciseId,
+      activeSetActualId: editingSetId ?? selectedActualSet?.id ?? null,
+      activeSetPlannedId: selectedActualLineupItem?.plannedSet?.id ?? currentPlannedSet?.id ?? null,
+      activeSetPlannedIndex: selectedActualLineupItem?.plannedIndex ?? (selectedLoggingIndex ?? effectiveSetIndex),
+      selectionMode,
+      setDraft,
+      draftDirty,
+      showSetNotes,
+      readinessDraft,
+      lastLocalMutationAt: nowIso(),
+    };
+    saveActiveWorkoutSessionDraft(user.id, session.id, snapshot);
+  }, [
+    activeExerciseId,
+    currentPlannedSet?.id,
+    draftDirty,
+    editingSetId,
+    effectiveSetIndex,
+    readinessDraft,
+    selectedActualLineupItem?.plannedIndex,
+    selectedActualLineupItem?.plannedSet?.id,
+    selectedActualSet?.id,
+    selectedLoggingIndex,
+    session?.id,
+    session?.workoutDayId,
+    setDraft,
+    showSetNotes,
+    user.id,
+  ]);
 
   useEffect(() => {
     const ref = swipeSkipHoldTimerRef;
@@ -3644,6 +4093,7 @@ function LiveLogger({
                   }
                   return draft;
                 });
+                clearActiveWorkoutSessionDraft(user.id, recoverableSession.id);
               }
               setActiveSessionId(undefined);
               setScreen("today");
@@ -3693,6 +4143,7 @@ function LiveLogger({
                 if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
                 return draft;
               });
+              clearActiveWorkoutSessionDraft(user.id, session.id);
               setActiveSessionId(undefined);
               setScreen("today");
             }}
@@ -3701,23 +4152,18 @@ function LiveLogger({
           </button>
         </div>
         {showAddExercisePicker && (
-          <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
-            <section className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <h3 className="text-xl font-black">Add exercise</h3>
-                <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
-              </div>
-              <ExercisePicker
-                db={db}
-                user={user}
-                updateDb={updateDb}
-                onPick={(ex) => {
-                  setShowAddExercisePicker(false);
-                  setPendingOffProgramExercise(ex);
-                }}
-              />
-            </section>
-          </div>
+          <ExercisePicker
+            db={db}
+            user={user}
+            updateDb={updateDb}
+            variant="week-sheet"
+            title="Add exercise"
+            onClose={() => setShowAddExercisePicker(false)}
+            onPick={(ex) => {
+              setShowAddExercisePicker(false);
+              setPendingOffProgramExercise(ex);
+            }}
+          />
         )}
         {pendingOffProgramExercise && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
@@ -3867,6 +4313,9 @@ function LiveLogger({
   });
 
   function addReadiness(input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">) {
+    const nextDraft = normalizeReadinessDraft(input);
+    setReadinessDraft(nextDraft);
+    persistActiveWorkoutDraftImmediately({ readinessDraft: nextDraft });
     const readiness: ReadinessCheckIn = {
       ...input,
       id: createId("readiness"),
@@ -4257,12 +4706,24 @@ function LiveLogger({
       setFocusedActualSetId(lineupItem.actualSet.id);
       setSelectedLoggingIndex(null);
       setEditingSetId(lineupItem.actualSet.id);
+      persistActiveWorkoutDraftImmediately({
+        activeSetActualId: lineupItem.actualSet.id,
+        activeSetPlannedId: lineupItem.plannedSet?.id ?? null,
+        activeSetPlannedIndex: lineupItem.plannedIndex ?? null,
+        selectionMode: "editing",
+      });
       return;
     }
     if (lineupItem.plannedIndex !== undefined) {
       setFocusedActualSetId(null);
       setEditingSetId(null);
       setSelectedLoggingIndex(lineupItem.plannedIndex);
+      persistActiveWorkoutDraftImmediately({
+        activeSetActualId: null,
+        activeSetPlannedId: lineupItem.plannedSet?.id ?? null,
+        activeSetPlannedIndex: lineupItem.plannedIndex,
+        selectionMode: "planned",
+      });
     }
   }
 
@@ -4276,10 +4737,24 @@ function LiveLogger({
     if (lineupItem.actualSet?.id) {
       setFocusedActualSetId(lineupItem.actualSet.id);
       setSelectedLoggingIndex(null);
+      persistActiveWorkoutDraftImmediately({
+        activeSetActualId: lineupItem.actualSet.id,
+        activeSetPlannedId: lineupItem.plannedSet?.id ?? null,
+        activeSetPlannedIndex: lineupItem.plannedIndex ?? null,
+        selectionMode: "actual",
+      });
       return;
     }
     setFocusedActualSetId(null);
-    if (lineupItem.plannedIndex !== undefined) setSelectedLoggingIndex(lineupItem.plannedIndex);
+    if (lineupItem.plannedIndex !== undefined) {
+      setSelectedLoggingIndex(lineupItem.plannedIndex);
+      persistActiveWorkoutDraftImmediately({
+        activeSetActualId: null,
+        activeSetPlannedId: lineupItem.plannedSet?.id ?? null,
+        activeSetPlannedIndex: lineupItem.plannedIndex,
+        selectionMode: "planned",
+      });
+    }
   }
 
   // Skips a specific planned set by index — used by swipe-to-skip on set rows.
@@ -4429,19 +4904,13 @@ function LiveLogger({
 
 
   function adjustWeight(delta: number) {
-    setDraftDirty(true);
-    setRecentlyAppliedRecommendationKey(null);
-    setSetDraft((d) => ({ ...d, actualWeight: String(Math.max(0, Math.round(((Number(d.actualWeight) || 0) + delta) * 1000) / 1000)) }));
+    updateSetDraftImmediately((d) => ({ ...d, actualWeight: String(Math.max(0, Math.round(((Number(d.actualWeight) || 0) + delta) * 1000) / 1000)) }));
   }
   function adjustReps(delta: number) {
-    setDraftDirty(true);
-    setRecentlyAppliedRecommendationKey(null);
-    setSetDraft((d) => ({ ...d, actualReps: String(Math.max(0, (Number(d.actualReps) || 0) + delta)) }));
+    updateSetDraftImmediately((d) => ({ ...d, actualReps: String(Math.max(0, (Number(d.actualReps) || 0) + delta)) }));
   }
   function adjustRpe(delta: number) {
-    setDraftDirty(true);
-    setRecentlyAppliedRecommendationKey(null);
-    setSetDraft((d) => ({ ...d, actualRpe: String(Math.max(0, Math.min(10, Number(((Number(d.actualRpe) || 0) + delta).toFixed(1))))) }));
+    updateSetDraftImmediately((d) => ({ ...d, actualRpe: String(Math.max(0, Math.min(10, Number(((Number(d.actualRpe) || 0) + delta).toFixed(1))))) }));
   }
 
   function navigateToNextExercise() {
@@ -4671,6 +5140,59 @@ function LiveLogger({
     loggerDebug("FINISH_EXERCISE_END", { result: hasMoreExercises ? "next-exercise" : "finish-workout" });
   }
 
+  function removeExerciseFromSession(logId: string) {
+    const removalIndex = liveSession.loggedExercises.findIndex((logged) => logged.id === logId);
+    if (removalIndex < 0) return;
+    const removingActiveExercise = liveExerciseLog.id === logId;
+    const previousLog = removalIndex > 0 ? liveSession.loggedExercises[removalIndex - 1] : undefined;
+    const nextLog = liveSession.loggedExercises[removalIndex + 1];
+    const fallbackLog = previousLog || nextLog;
+
+    void updateDb((draft) => {
+      const target = draft.sessions.find((item) => item.id === liveSession.id);
+      if (!target) return draft;
+      const targetRemovalIndex = target.loggedExercises.findIndex((logged) => logged.id === logId);
+      if (targetRemovalIndex < 0) return draft;
+      target.loggedExercises.splice(targetRemovalIndex, 1);
+      target.loggedExercises.forEach((logged, index) => {
+        logged.order = index + 1;
+      });
+      if (editingCompletedWorkout && target.status === "completed") {
+        target.status = "in-progress";
+      } else if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) {
+        target.status = "in-progress";
+      }
+      if (!target.loggedExercises.length) {
+        target.currentExerciseIndex = 0;
+        target.currentSetIndex = 0;
+      } else if (removingActiveExercise) {
+        const fallbackIndex = fallbackLog ? target.loggedExercises.findIndex((logged) => logged.id === fallbackLog.id) : 0;
+        target.currentExerciseIndex = fallbackIndex >= 0 ? fallbackIndex : 0;
+        target.currentSetIndex = 0;
+      } else {
+        const activeIndex = target.loggedExercises.findIndex((logged) => logged.id === liveExerciseLog.id);
+        target.currentExerciseIndex = activeIndex >= 0 ? activeIndex : Math.max(0, Math.min(targetRemovalIndex, target.loggedExercises.length - 1));
+        target.currentSetIndex = 0;
+      }
+      target.updatedAt = nowIso();
+      return draft;
+    });
+
+    setPendingRemoveExerciseLogId(null);
+    setExerciseContextMenuId(null);
+    setOpenSwipeSetId(undefined);
+    setSwipeDrag(null);
+    swipeGestureRef.current = null;
+    setPendingDeleteTarget(null);
+    setEditingSetId(null);
+    setFocusedActualSetId(null);
+    setSelectedLoggingIndex(null);
+
+    if (removingActiveExercise) {
+      setActiveExerciseId(fallbackLog?.id);
+    }
+  }
+
   function abandonWorkout() {
     if (!confirm("Abandon this in-progress workout? Logged data for this session will stay marked abandoned.")) return;
     void updateDb((draft) => {
@@ -4681,6 +5203,7 @@ function LiveLogger({
       }
       return draft;
     });
+    clearActiveWorkoutSessionDraft(user.id, liveSession.id);
     setActiveSessionId(undefined);
     setScreen("today");
   }
@@ -4688,8 +5211,10 @@ function LiveLogger({
   function applySuggestion(nextRecommendation?: Recommendation) {
     if (!nextRecommendation?.action?.suggestedWeight) return;
     const suggestedWeight = nextRecommendation.action.suggestedWeight;
-    setSetDraft((current) => applyRecommendationToCurrentDraft(current, nextRecommendation, currentPlannedSet));
-    setDraftDirty(true);
+    updateSetDraftImmediately(
+      (current) => applyRecommendationToCurrentDraft(current, nextRecommendation, currentPlannedSet),
+      { draftDirty: true, clearRecommendation: false }
+    );
     setRecentlyAppliedRecommendationKey(
       `${nextRecommendation.action?.setId ?? "none"}:${nextRecommendation.action?.targetExerciseIndex ?? -1}:${nextRecommendation.action?.targetSetIndex ?? -1}:${nextRecommendation.action?.suggestedWeight ?? "none"}:${nextRecommendation.action?.suggestedReps ?? "none"}:${nextRecommendation.action?.suggestedRpe ?? "none"}`
     );
@@ -4799,6 +5324,24 @@ function LiveLogger({
           </div>
         </div>
       )}
+      {pendingRemoveExerciseLogId && (() => {
+        const targetLog = session.loggedExercises.find((logged) => logged.id === pendingRemoveExerciseLogId);
+        const targetExercise = targetLog ? db.exercises.find((item) => item.id === targetLog.exerciseId) : undefined;
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+            <div className="panel w-full max-w-sm space-y-4 p-6">
+              <h3 className="text-lg font-semibold">Remove exercise from this workout?</h3>
+              <p className="text-sm text-iron-300">
+                {targetExercise?.name ? `${targetExercise.name} will be removed from this workout only.` : "This exercise will be removed from this workout only."} It will stay in your Library.
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <button className="btn-secondary" onClick={() => setPendingRemoveExerciseLogId(null)}>Cancel</button>
+                <button className="btn-danger" onClick={() => removeExerciseFromSession(pendingRemoveExerciseLogId)}>Remove Exercise</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
       {pendingDeleteTarget !== null && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
           <div className="panel w-full max-w-sm space-y-4 p-6">
@@ -4912,6 +5455,15 @@ function LiveLogger({
                   setShowSkipExerciseConfirm(true);
                 },
               },
+              {
+                label: "Remove Exercise",
+                icon: <Trash2 className="h-4 w-4" />,
+                destructive: true,
+                onClick: () => {
+                  if (!menuLog) return;
+                  setPendingRemoveExerciseLogId(menuLog.id);
+                },
+              },
             ]}
           />
         );
@@ -4999,6 +5551,7 @@ function LiveLogger({
                     if (target) finishWorkoutInDraft(draft, user, target);
                     return draft;
                   });
+                  clearActiveWorkoutSessionDraft(user.id, liveSession.id);
                   setShowCompletionSummary(false);
                   setActiveSessionId(undefined);
                   if (editingCompletedWorkout) {
@@ -5082,7 +5635,14 @@ function LiveLogger({
           </div>
         </div>
       )}
-      {!session.readiness && <ReadinessCard onSubmit={addReadiness} user={user} />}
+      {!session.readiness && (
+        <ReadinessCard
+          draft={readinessDraft}
+          onDraftChange={updateReadinessDraftImmediately}
+          onSubmit={addReadiness}
+          user={user}
+        />
+      )}
 
       {/* Exercise tab strip — all screen sizes */}
       {session.loggedExercises.length > 1 && (
@@ -5104,6 +5664,13 @@ function LiveLogger({
                   swipeGestureRef.current = null;
                   setSwipeDrag(null);
                   setPendingDeleteTarget(null);
+                  persistActiveWorkoutDraftImmediately({
+                    activeExerciseId: logged.id,
+                    activeSetActualId: null,
+                    activeSetPlannedId: null,
+                    activeSetPlannedIndex: 0,
+                    selectionMode: "planned",
+                  });
                 }}
                 onPointerDown={() => {
                   if (exerciseLongPressTimerRef.current) clearTimeout(exerciseLongPressTimerRef.current);
@@ -5126,8 +5693,8 @@ function LiveLogger({
 
       <section className="min-w-0 space-y-4 pb-6 max-xl:pb-24">
         <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] py-2">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-semibold leading-tight text-iron-200">{exercise.name}</h3>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-sm font-semibold leading-tight text-iron-200">{exercise.name}</h3>
                 {exercise.setupCues.length > 0 && (
                   <p className="text-xs text-iron-400">{exercise.setupCues.slice(0, 2).join(" · ")}</p>
                 )}
@@ -5137,6 +5704,13 @@ function LiveLogger({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
+                <button
+                  className="tap-highlight rounded-md p-1.5 text-iron-500 transition hover:bg-white/[0.07] hover:text-iron-300 active:scale-[0.97]"
+                  onClick={() => setExerciseContextMenuId(activeExerciseLog.id)}
+                  aria-label="Exercise actions"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </button>
               </div>
             </div>
             {compatibleMachines.length > 0 && (
@@ -5374,7 +5948,7 @@ function LiveLogger({
                       step="1"
                       value={setDraft.actualWeight}
                       placeholder={bodyweightMovement ? "BW" : undefined}
-                      onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualWeight: e.target.value })); }}
+                      onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualWeight: e.target.value }))}
                     />
                     <span className="logger-input-unit">{exerciseUnit}</span>
                   </div>
@@ -5394,7 +5968,7 @@ function LiveLogger({
                       type="number"
                       step="1"
                       value={setDraft.actualReps}
-                      onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualReps: e.target.value })); }}
+                      onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualReps: e.target.value }))}
                     />
                   </div>
                   <button className="logger-step-btn" onClick={() => adjustReps(1)}><Plus className="h-3.5 w-3.5" /></button>
@@ -5413,7 +5987,7 @@ function LiveLogger({
                       type="number"
                       step="0.5"
                       value={setDraft.actualRpe}
-                      onChange={(e) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, actualRpe: e.target.value })); }}
+                      onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualRpe: e.target.value }))}
                     />
                   </div>
                   <button className="logger-step-btn" onClick={() => adjustRpe(0.5)}><Plus className="h-3.5 w-3.5" /></button>
@@ -5428,7 +6002,7 @@ function LiveLogger({
               {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => {
                 const labels: Record<number, string> = { 1: "1\nHarder", 2: "2\nA bit hard", 3: "3\nAs planned", 4: "4\nA bit easy", 5: "5\nEasy" };
                 return (
-                  <button key={rating} className={`min-h-10 rounded-sm text-[0.62rem] font-semibold leading-tight transition ${setDraft.setRating === rating ? "bg-[#0a84ff] text-white" : "bg-white/[0.06] text-iron-400 hover:bg-white/10 hover:text-iron-200"}`} onClick={() => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, setRating: rating })); }}>
+                  <button key={rating} className={`min-h-10 rounded-sm text-[0.62rem] font-semibold leading-tight transition ${setDraft.setRating === rating ? "bg-[#0a84ff] text-white" : "bg-white/[0.06] text-iron-400 hover:bg-white/10 hover:text-iron-200"}`} onClick={() => updateSetDraftImmediately((draft) => ({ ...draft, setRating: rating }))}>
                     {labels[rating].split("\n").map((line, i) => <span key={i} className={i === 0 ? "block text-xs" : "block opacity-70"}>{line}</span>)}
                   </button>
                 );
@@ -5438,13 +6012,13 @@ function LiveLogger({
             <div className="mt-4">
               {!showSetNotes && !setDraft.notes
                 ? (
-                  <button className="text-xs font-bold text-iron-500 hover:text-iron-300" onClick={() => setShowSetNotes(true)}>
+                  <button className="text-xs font-bold text-iron-500 hover:text-iron-300" onClick={() => { setShowSetNotes(true); persistActiveWorkoutDraftImmediately({ showSetNotes: true }); }}>
                     + Add note
                   </button>
                 ) : (
                   <div>
                     {!showSetNotes && setDraft.notes && (
-                      <button className="mb-1 text-xs font-bold text-iron-400 hover:text-iron-200" onClick={() => setShowSetNotes(true)}>
+                      <button className="mb-1 text-xs font-bold text-iron-400 hover:text-iron-200" onClick={() => { setShowSetNotes(true); persistActiveWorkoutDraftImmediately({ showSetNotes: true }); }}>
                         Note: {setDraft.notes.slice(0, 60)}{setDraft.notes.length > 60 ? "…" : ""} (tap to edit)
                       </button>
                     )}
@@ -5453,7 +6027,7 @@ function LiveLogger({
                         className="field min-h-14"
                         placeholder="Optional set notes..."
                         value={setDraft.notes}
-                        onChange={(event) => { setDraftDirty(true); setRecentlyAppliedRecommendationKey(null); setSetDraft((draft) => ({ ...draft, notes: event.target.value })); }}
+                        onChange={(event) => updateSetDraftImmediately((draft) => ({ ...draft, notes: event.target.value }), { showSetNotes: true })}
                       />
                     )}
                   </div>
@@ -5541,23 +6115,18 @@ function LiveLogger({
             </button>
           </div>
           {showAddExercisePicker && (
-            <div className="fixed inset-0 z-50 flex items-end bg-black/70 p-3 sm:items-center sm:justify-center">
-              <section className="max-h-[85dvh] w-full max-w-lg overflow-y-auto rounded-lg border border-white/10 bg-iron-950 p-4">
-                <div className="mb-4 flex items-center justify-between gap-3">
-                  <h3 className="text-xl font-black">Add exercise</h3>
-                  <button className="btn-ghost" onClick={() => setShowAddExercisePicker(false)}>Cancel</button>
-                </div>
-                <ExercisePicker
-                  db={db}
-                  user={user}
-                  updateDb={updateDb}
-                  onPick={(exercise) => {
-                    setShowAddExercisePicker(false);
-                    setPendingOffProgramExercise(exercise);
-                  }}
-                />
-              </section>
-            </div>
+            <ExercisePicker
+              db={db}
+              user={user}
+              updateDb={updateDb}
+              variant="week-sheet"
+              title="Add exercise"
+              onClose={() => setShowAddExercisePicker(false)}
+              onPick={(exercise) => {
+                setShowAddExercisePicker(false);
+                setPendingOffProgramExercise(exercise);
+              }}
+            />
           )}
           {pendingOffProgramExercise && (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
@@ -5638,6 +6207,7 @@ function BuilderScreen({
   const [showSbdAdvanced, setShowSbdAdvanced] = useState(false);
   const [showAdvancedRules, setShowAdvancedRules] = useState(false);
   const [showBlockTypeMenu, setShowBlockTypeMenu] = useState(false);
+  const hydratedDraftProgramIdRef = useRef<string | null>(null);
   const [request, setRequest] = useState<ProgramRequest>(savedDraft ? {
     ...defaultRequest,
     name: savedDraft.requestName,
@@ -5680,7 +6250,10 @@ function BuilderScreen({
       return draft;
     });
   }
-  const selectedSplit = db.splitTemplates.find((split) => split.id === selectedSplitId);
+  const selectedSplit = useMemo(
+    () => db.splitTemplates.find((split) => split.id === selectedSplitId),
+    [db.splitTemplates, selectedSplitId]
+  );
   const generatedSplit = useMemo(() => {
     const splitDays = selectedSplit?.days.length ? selectedSplit.days : [];
     return splitDays.length ? splitDays : generateSplitFromText({ daysPerWeek: request.daysPerWeek, goal: request.goal, text: request.notes });
@@ -5689,9 +6262,55 @@ function BuilderScreen({
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const draftProgram = db.programs.find((program) => program.userId === user.id && program.status === "draft");
   const workingProgram = draftProgram || activeProgram;
-  const schedulePreview = [0, 1].map((weekIndex) => buildSplitSchedule(generatedSplit, request.daysPerWeek, weekIndex, request.splitLoopMode));
+  const schedulePreview = useMemo(
+    () => [0, 1].map((weekIndex) => buildSplitSchedule(generatedSplit, request.daysPerWeek, weekIndex, request.splitLoopMode)),
+    [generatedSplit, request.daysPerWeek, request.splitLoopMode]
+  );
   const archivedPrograms = db.programs.filter((p) => p.userId === user.id && p.status !== "active" && p.status !== "draft");
   const archivedCount = archivedPrograms.length;
+
+  useEffect(() => {
+    if (blocksView !== "builder") return;
+    blockBuilderDebug("BUILDER_MOUNT", {
+      selectedSplitId,
+      blockNameInput: request.name,
+      suggestedBlockName: `${selectedSplit?.name || "Custom"} Block`,
+      hasCustomBlockName: request.name.trim().length > 0,
+      daysCount: generatedSplit.length,
+      requirementsCount: draftProgram?.blocks[0]?.weeks[0]?.workouts.reduce((sum, workout) => sum + deriveRequirements(workout, db.splitTemplates.flatMap((split) => split.days)).length, 0) ?? 0,
+    });
+  }, [blocksView, db.splitTemplates, draftProgram, generatedSplit.length, request.name, selectedSplit?.name, selectedSplitId]);
+
+  useEffect(() => {
+    if (blocksView !== "builder" || !draftProgram) return;
+    if (hydratedDraftProgramIdRef.current === draftProgram.id) return;
+
+    const draftBlock = draftProgram.blocks[0];
+    const nextSplitId = draftProgram.splitTemplateId || draftBlock?.splitTemplateId || "";
+    const nextRequest: ProgramRequest = {
+      ...request,
+      name: draftProgram.name || "",
+      goal: draftProgram.goal,
+      daysPerWeek: draftBlock?.trainingDaysPerWeek ?? request.daysPerWeek,
+      blockType: draftBlock?.type ?? request.blockType,
+      blockLengthWeeks: draftBlock?.lengthWeeks ?? draftBlock?.numberOfWeeks ?? request.blockLengthWeeks,
+      splitTemplateId: nextSplitId || undefined,
+      splitLoopMode: draftBlock?.loopMode ?? request.splitLoopMode,
+    };
+
+    blockBuilderDebug("DRAFT_LOADED", {
+      selectedSplitId: nextSplitId,
+      blockNameInput: nextRequest.name,
+      suggestedBlockName: `${db.splitTemplates.find((split) => split.id === nextSplitId)?.name || "Custom"} Block`,
+      hasCustomBlockName: nextRequest.name.trim().length > 0,
+      daysCount: draftBlock?.weeks[0]?.workouts.length ?? 0,
+      requirementsCount: draftBlock?.weeks[0]?.workouts.reduce((sum, workout) => sum + deriveRequirements(workout, db.splitTemplates.flatMap((split) => split.days)).length, 0) ?? 0,
+    });
+
+    hydratedDraftProgramIdRef.current = draftProgram.id;
+    setSelectedSplitId((current) => current === nextSplitId ? current : nextSplitId);
+    setRequest((current) => builderRequestBasicsEqual(current, nextRequest) ? current : nextRequest);
+  }, [blocksView, db.splitTemplates, draftProgram, request]);
 
   function duplicate(program: Program) {
     const clone = cloneProgramAsActive(program);
@@ -5902,6 +6521,14 @@ function BuilderScreen({
     if (hasExistingDraft && !confirm("Start a new block draft? Your current draft will be replaced unless you resume it first.")) return;
     const chosenSplitId = blank ? "" : (splitId ?? selectedSplitId);
     const chosenSplit = db.splitTemplates.find((item) => item.id === chosenSplitId);
+    hydratedDraftProgramIdRef.current = null;
+    blockBuilderDebug("NEW_BLOCK_CLICK", {
+      selectedSplitId: chosenSplitId,
+      blockNameInput: request.name,
+      suggestedBlockName: `${chosenSplit?.name || "Custom"} Block`,
+      hasCustomBlockName: request.name.trim().length > 0,
+      daysCount: chosenSplit?.days.length ?? 0,
+    });
     setSelectedSplitId(chosenSplitId || "");
     setRequest((current) => ({
       ...defaultRequest,
@@ -5989,7 +6616,16 @@ function BuilderScreen({
               <p className="text-sm font-semibold text-white">Draft in progress</p>
               <p className="text-xs text-iron-400">{draftProgram.name || "Unnamed block"} · {draftProgram.blocks[0]?.lengthWeeks ?? request.blockLengthWeeks} weeks</p>
             </div>
-            <button className="text-sm font-semibold text-[#f4842a]" onClick={() => setBlocksView("builder")}>Resume</button>
+            <button className="text-sm font-semibold text-[#f4842a]" onClick={() => {
+              blockBuilderDebug("RESUME_BLOCK_CLICK", {
+                selectedSplitId,
+                blockNameInput: request.name,
+                suggestedBlockName: `${selectedSplit?.name || "Custom"} Block`,
+                hasCustomBlockName: request.name.trim().length > 0,
+                daysCount: draftProgram.blocks[0]?.weeks[0]?.workouts.length ?? 0,
+              });
+              setBlocksView("builder");
+            }}>Resume</button>
           </div>
         )}
 
@@ -6249,9 +6885,12 @@ function BuilderScreen({
                     value={selectedSplitId}
                     onChange={(e) => {
                       const newId = e.target.value;
-                      const newSplit = db.splitTemplates.find((s) => s.id === newId);
-                      setSelectedSplitId(newId);
-                      setRequest((d) => ({ ...d, splitTemplateId: newId, daysPerWeek: newSplit?.daysPerWeek ?? d.daysPerWeek }));
+                      blockBuilderDebug("TEMPLATE_SELECTED", {
+                        selectedSplitId: newId,
+                        blockNameInput: request.name,
+                        suggestedBlockName: `${db.splitTemplates.find((split) => split.id === newId)?.name || "Custom"} Block`,
+                        hasCustomBlockName: request.name.trim().length > 0,
+                      });
                       void startNewBlock(newId);
                     }}
                     aria-label="Block template"
@@ -6753,7 +7392,7 @@ function WeeklyOverview({
                 </p>
               </div>
             </div>
-            <WorkoutDayEditor db={db} user={user} program={program} day={selectedEdDay} updateDb={updateDb} variant="week" />
+            <WorkoutDayEditor key={selectedEdDay.id} db={db} user={user} program={program} day={selectedEdDay} updateDb={updateDb} variant="week" />
           </div>
         )}
       </section>
@@ -6906,19 +7545,22 @@ function WorkoutDayEditor({
   variant?: "default" | "week";
 }) {
   const weekVariant = variant === "week";
-  const allSplitDays = db.splitTemplates.flatMap((split) => split.days);
-  const requirements = deriveRequirements(day, allSplitDays);
+  const allSplitDays = useMemo(() => db.splitTemplates.flatMap((split) => split.days), [db.splitTemplates]);
+  const requirements = useMemo(() => deriveRequirements(day, allSplitDays), [allSplitDays, day]);
   const exerciseById = useMemo(() => new Map(db.exercises.map((exercise) => [exercise.id, exercise] as const)), [db.exercises]);
   const requirementAllocation = useMemo(
     () => allocateExercisesToRequirements(day.exercises, requirements, exerciseById),
     [day.exercises, requirements, exerciseById]
   );
 
-  const reqProgress = requirements.map((req) => ({
-    req,
-    fulfilled: Math.min(requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0, req.requiredExerciseCount),
-    needed: req.requiredExerciseCount,
-  }));
+  const reqProgress = useMemo(
+    () => requirements.map((req) => ({
+      req,
+      fulfilled: Math.min(requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0, req.requiredExerciseCount),
+      needed: req.requiredExerciseCount,
+    })),
+    [requirementAllocation.fulfilledByRequirementId, requirements]
+  );
   const allReqsMet = requirementAllocation.allRequirementsMet;
   const firstUnmetIndex = findNextUnmetRequirementIndex(requirements, requirementAllocation);
 
@@ -6931,15 +7573,38 @@ function WorkoutDayEditor({
   const [pendingExtraExercise, setPendingExtraExercise] = useState<Exercise | null>(null);
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>(day.exercises[0]?.id);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | undefined>();
-  const [inlineReqPickerOpen, setInlineReqPickerOpen] = useState(weekVariant && firstUnmetIndex >= 0);
+  const [inlineReqPickerOpen, setInlineReqPickerOpen] = useState(false);
   const [daySettingsOpen, setDaySettingsOpen] = useState(false);
+  const lastAutoOpenedRequirementKeyRef = useRef<string | null>(null);
 
-  // Advance to the first unfulfilled requirement whenever exercises change
   useEffect(() => {
     if (showAllExercises) return;
-    const nextUnmet = findNextUnmetRequirementIndex(requirements, requirementAllocation);
-    if (nextUnmet >= 0) setCurrentReqIndex(nextUnmet);
-  }, [showAllExercises, requirementAllocation, requirements]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (firstUnmetIndex < 0) return;
+    if (firstUnmetIndex === currentReqIndex) return;
+    blockBuilderDebug("REQUIREMENT_AUTO_SELECTED", {
+      selectedDayId: day.id,
+      selectedRequirement: requirements[firstUnmetIndex]?.id,
+      requirementsCount: requirements.length,
+    });
+    setCurrentReqIndex(firstUnmetIndex);
+  }, [currentReqIndex, day.id, firstUnmetIndex, requirements, showAllExercises]);
+
+  useEffect(() => {
+    if (!weekVariant || showAllExercises || firstUnmetIndex < 0) return;
+    const currentRequirement = requirements[firstUnmetIndex];
+    if (!currentRequirement) return;
+    const nextAutoOpenKey = `${day.id}:${currentRequirement.id}:${day.exercises.length}`;
+    if (lastAutoOpenedRequirementKeyRef.current === nextAutoOpenKey || inlineReqPickerOpen) return;
+    lastAutoOpenedRequirementKeyRef.current = nextAutoOpenKey;
+    blockBuilderDebug("INLINE_PICKER_OPENED", {
+      selectedDayId: day.id,
+      selectedRequirement: currentRequirement.id,
+      requirementsCount: requirements.length,
+      pickerMode: "week-inline",
+    });
+    setCurrentReqIndex((current) => current === firstUnmetIndex ? current : firstUnmetIndex);
+    setInlineReqPickerOpen(true);
+  }, [day.exercises.length, day.id, firstUnmetIndex, inlineReqPickerOpen, requirements, showAllExercises, weekVariant]);
 
   useEffect(() => {
     if (!day.exercises.length) {
@@ -7377,8 +8042,9 @@ function WorkoutDayEditor({
       const muscleCount: Record<string, number> = {};
       const maxPerMuscle = 2;
       const limit = Math.max(3, Math.min(6, targetMuscles.length + 2));
-      const candidates = db.exercises
-        .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
+      const candidates = getSharedExerciseLibrarySource(db.exercises, user.id, {
+        includeVariations: true,
+      })
         .filter((ex) => {
           const muscleMatch = targetMuscles.length === 0 || ex.primaryMuscles.some((m) => targetMuscles.includes(m));
           const patternMatch = targetPatterns.length === 0 || targetPatterns.includes(ex.movementPattern) || ex.movementPatterns?.some((p) => targetPatterns.includes(p));
@@ -7925,6 +8591,7 @@ function ExercisePicker({
 }) {
   const weekSheet = variant === "week-sheet";
   const weekInline = variant === "week-inline";
+  const defaultIncrement = user.unit === "kg" ? 2.5 : 5;
   const [query, setQuery] = useState("");
   const [muscle, setMuscle] = useState("all");
   const [equipment, setEquipment] = useState("all");
@@ -7932,9 +8599,24 @@ function ExercisePicker({
   const [fatigue, setFatigue] = useState("all");
   const [showFilters, setShowFilters] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [newExName, setNewExName] = useState("");
-  const [newExMuscle, setNewExMuscle] = useState<MuscleGroup>("chest");
-  const [newExEquipment, setNewExEquipment] = useState<EquipmentCategory>("barbell");
+  const [createDraft, setCreateDraft] = useState<{
+    name: string;
+    muscle: MuscleGroup;
+    equipment: EquipmentCategory;
+    movementPattern: MovementPattern;
+    isVariation: boolean;
+    parentExerciseId: string;
+    variationType: string;
+  }>({
+    name: "",
+    muscle: "chest",
+    equipment: "barbell",
+    movementPattern: "isolation",
+    isVariation: false,
+    parentExerciseId: "",
+    variationType: "",
+  });
+  const [parentSearch, setParentSearch] = useState("");
   const requirementMode = grouped && targetMuscles.length > 0;
   const requirementMuscle = requirementMode ? targetMuscles[0] : undefined;
   const [manualMuscleOverride, setManualMuscleOverride] = useState(false);
@@ -7958,67 +8640,117 @@ function ExercisePicker({
     setMuscle(nextValue);
   }
 
+  function resetCreateForm() {
+    setShowCreateForm(false);
+    setParentSearch("");
+    setCreateDraft({
+      name: "",
+      muscle: requirementMuscle ?? "chest",
+      equipment: "barbell",
+      movementPattern: "isolation",
+      isVariation: false,
+      parentExerciseId: "",
+      variationType: "",
+    });
+  }
+
+  const visibleExercises = useMemo(
+    () => getSharedExerciseLibrarySource(db.exercises, user.id, {
+      query,
+      includeVariations: true,
+    }),
+    [db.exercises, query, user.id]
+  );
+  const parentExerciseOptions = useMemo(
+    () => getSharedExerciseLibrarySource(db.exercises, user.id, {
+      query: parentSearch,
+      includeVariations: false,
+    }).filter((exercise) => !exercise.isVariation),
+    [db.exercises, parentSearch, user.id]
+  );
+  const selectedParentExercise = createDraft.parentExerciseId
+    ? db.exercises.find((exercise) => exercise.id === createDraft.parentExerciseId)
+    : undefined;
+
   function handleQuickCreate() {
-    if (!newExName.trim() || !updateDb) return;
+    const parent = createDraft.parentExerciseId
+      ? db.exercises.find((exercise) => exercise.id === createDraft.parentExerciseId)
+      : undefined;
+    const isVariation = createDraft.isVariation && !!parent;
+    const trimmedName = createDraft.name.trim();
+    const variationType = createDraft.variationType.trim();
+    const resolvedName = trimmedName || (isVariation && parent ? `${parent.name} ${variationType || "Variation"}` : "");
+    if (!resolvedName || !updateDb || (createDraft.isVariation && !parent)) return;
+
+    const resolvedMuscle = parent?.primaryMuscles[0] || createDraft.muscle;
+    const resolvedEquipment = parent?.equipment[0] || createDraft.equipment;
+    const resolvedPattern = parent?.movementPatterns?.[0] || parent?.movementPattern || createDraft.movementPattern;
     const exercise: Exercise = {
       id: createId("ex"),
       ownerUserId: user.id,
-      name: newExName.trim(),
+      name: resolvedName,
       description: "",
-      muscleGroup: newExMuscle,
-      primaryMuscles: [newExMuscle],
-      secondaryMuscles: [],
-      equipment: [newExEquipment],
-      exerciseCategory: "isolation",
-      movementPattern: "isolation" as MovementPattern,
-      movementPatterns: ["isolation" as MovementPattern],
+      muscleGroup: resolvedMuscle,
+      primaryMuscles: parent?.primaryMuscles?.length ? structuredClone(parent.primaryMuscles) : [resolvedMuscle],
+      secondaryMuscles: parent?.secondaryMuscles?.length ? structuredClone(parent.secondaryMuscles) : [],
+      equipment: [resolvedEquipment],
+      exerciseCategory: parent?.exerciseCategory || "isolation",
+      movementPattern: resolvedPattern,
+      movementPatterns: parent?.movementPatterns?.length ? structuredClone(parent.movementPatterns) : [resolvedPattern],
       tags: [user.goal],
       tagLabels: [],
       variants: [],
       substitutionIds: [],
       notes: "",
       setupCues: [],
-      trackByBodyweight: newExEquipment === "bodyweight",
-      trackPerSide: newExEquipment === "dumbbell" || newExEquipment === "cable",
-      category: newExEquipment,
-      kind: ["accessory"],
-      directVolumeMuscles: [newExMuscle],
-      indirectVolumeMuscles: [],
+      trackByBodyweight: resolvedEquipment === "bodyweight",
+      trackPerSide: parent?.trackPerSide || resolvedEquipment === "dumbbell" || resolvedEquipment === "cable",
+      category: resolvedEquipment,
+      kind: parent?.kind?.length ? structuredClone(parent.kind) : ["accessory"],
+      directVolumeMuscles: parent?.directVolumeMuscles?.length ? structuredClone(parent.directVolumeMuscles) : [resolvedMuscle],
+      indirectVolumeMuscles: parent?.indirectVolumeMuscles?.length ? structuredClone(parent.indirectVolumeMuscles) : [],
       bestTrackedBy: ["load", "reps"],
-      fatigueRating: 2,
-      isCompound: false,
+      fatigueRating: parent?.fatigueRating || 2,
+      isCompound: parent?.isCompound || false,
       defaultUnit: user.unit as ExerciseUnit,
-      allowedUnits: [user.unit as ExerciseUnit],
-      defaultIncrement: user.unit === "kg" ? 2.5 : 5,
-      customIncrement: user.unit === "kg" ? 2.5 : 5,
-      canBeGymSpecific: false,
-      isGymSpecificEnabled: false,
+      allowedUnits: parent?.allowedUnits?.length ? structuredClone(parent.allowedUnits) : [user.unit as ExerciseUnit],
+      defaultIncrement: parent?.defaultIncrement || defaultIncrement,
+      customIncrement: parent?.customIncrement || defaultIncrement,
+      loadingProfileId: parent?.loadingProfileId,
+      canBeGymSpecific: parent?.canBeGymSpecific || false,
+      isGymSpecificEnabled: parent?.isGymSpecificEnabled || false,
       createdByUser: true,
       source: "custom" as const,
+      isVariation: isVariation || undefined,
+      parentExerciseId: isVariation ? parent.id : undefined,
+      variationType: isVariation && variationType ? variationType : undefined,
+      variationName: isVariation && variationType ? variationType : undefined,
+      variationGroup: isVariation ? (parent.variationGroup || parent.id) : undefined,
+      variationGroupId: isVariation ? (parent.variationGroupId || parent.id) : undefined,
       createdAt: nowIso(),
       updatedAt: nowIso(),
     };
     void updateDb((data) => {
       data.exercises.unshift(exercise);
+      if (isVariation) {
+        const parentTarget = data.exercises.find((item) => item.id === parent.id);
+        if (parentTarget) parentTarget.hasVariations = true;
+      }
       return data;
     });
-    setShowCreateForm(false);
-    setNewExName("");
+    resetCreateForm();
     onPick(exercise);
   }
-  const allMatches = db.exercises
-    .filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id))
+  const allMatches = visibleExercises
     .filter((exercise) => {
-      const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
       const targetPatternMatch = !targetPatterns.length || targetPatterns.includes(exercise.movementPattern) || exercise.movementPatterns?.some((patternItem) => targetPatterns.includes(patternItem));
       const muscleFilterMatch = requirementMode && !manualMuscleOverride && requirementMuscle
         ? exerciseMatchesRequirementTarget(exercise, requirementMuscle)
         : exerciseMatchesMuscleFilter(exercise, effectiveMuscleFilter);
       return (
-        text.includes(query.toLowerCase()) &&
         muscleFilterMatch &&
         (equipment === "all" || exercise.equipment.includes(equipment as EquipmentCategory)) &&
-        (pattern === "all" || exercise.movementPattern === pattern) &&
+        (pattern === "all" || exercise.movementPattern === pattern || exercise.movementPatterns?.includes(pattern as MovementPattern)) &&
         (fatigue === "all" || String(fatigueRatingForExercise(exercise)) === fatigue) &&
         (compoundFilter === "all" || (compoundFilter === "compound" ? isCompound(exercise) : exercise.kind.includes("isolation"))) &&
         // In grouped mode, only gate by movement pattern when targetMuscles is non-empty
@@ -8040,13 +8772,8 @@ function ExercisePicker({
   // For grouped muscle sections, query by primaryMuscles directly (not filtered by movement pattern)
   // so that exercises like Leg Extension always appear for quads regardless of day movement patterns.
   const muscleOnlyPool = grouped && groupedMuscles.length
-    ? db.exercises.filter((exercise) => {
-        if (exercise.isArchived) return false;
-        if (exercise.ownerUserId && exercise.ownerUserId !== user.id) return false;
-        const text = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.muscleGroup}`.toLowerCase();
-        return !query || text.includes(query.toLowerCase());
-      })
-    : db.exercises.filter((exercise) => !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id));
+    ? visibleExercises
+    : visibleExercises;
   const groupedSections = grouped && !query && effectiveMuscleFilter === "all" && groupedMuscles.length
     ? groupedMuscles.map((targetMuscle) => ({
         muscle: targetMuscle,
@@ -8099,7 +8826,7 @@ function ExercisePicker({
   const pickerBody = (
     <>
       {weekSheet || weekInline ? (
-        <div className="border-b border-white/[0.06] px-4 py-4">
+        <div className={`border-b border-white/[0.06] px-4 py-4 ${weekSheet ? "sticky top-0 z-10 bg-[#0d1016]/95 backdrop-blur" : "bg-iron-950"}`}>
           <div className="flex items-center justify-between gap-3">
             <p className="text-base font-semibold text-white">{title || "Add exercise"}</p>
             {onClose && <button className="btn-compact" onClick={onClose}>Cancel</button>}
@@ -8183,7 +8910,7 @@ function ExercisePicker({
         </div>
       )}
       {groupedSections.length ? (
-        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : weekInline ? "max-h-72 overflow-y-auto px-4 pb-4 scrollbar-none" : "mt-3 space-y-3"}>
+        <div className={weekSheet ? "min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(6rem+env(safe-area-inset-bottom))]" : weekInline ? "min-h-0 max-h-[min(60dvh,28rem)] overflow-y-auto px-4 pb-[calc(5rem+env(safe-area-inset-bottom))] scrollbar-none" : "mt-3 space-y-3"}>
           {groupedSections.map((section) => (
             <div key={section.muscle} className={weekSheet || weekInline ? "mb-4" : "mb-4"}>
               <p className={`${weekSheet || weekInline ? "mb-2 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500" : "label mb-2"}`}>{section.muscle}</p>
@@ -8192,7 +8919,7 @@ function ExercisePicker({
           ))}
         </div>
       ) : (
-        <div className={weekSheet ? "flex-1 overflow-y-auto px-4 pb-4" : weekInline ? "max-h-72 overflow-y-auto px-4 pb-4 scrollbar-none" : "mt-3"}>
+        <div className={weekSheet ? "min-h-0 flex-1 overflow-y-auto px-4 pb-[calc(6rem+env(safe-area-inset-bottom))]" : weekInline ? "min-h-0 max-h-[min(60dvh,28rem)] overflow-y-auto px-4 pb-[calc(5rem+env(safe-area-inset-bottom))] scrollbar-none" : "mt-3"}>
           <div className={weekSheet || weekInline ? "divide-y divide-white/[0.06] border-t border-white/[0.06]" : "divide-y divide-white/[0.06] border-y border-white/[0.06]"}>{matches.map(renderExerciseButton)}</div>
         </div>
       )}
@@ -8202,41 +8929,129 @@ function ExercisePicker({
           {!showCreateForm ? (
             <button
               className="btn-compact w-full text-[#8fb9ff]"
-              onClick={() => setShowCreateForm(true)}
+              onClick={() => {
+                setShowCreateForm(true);
+                setCreateDraft((current) => ({
+                  ...current,
+                  muscle: requirementMuscle ?? current.muscle,
+                }));
+              }}
             >
               <Plus className="h-3.5 w-3.5" />
-              Create new exercise
+              Create exercise or variation
             </button>
           ) : (
-            <div className="space-y-3">
-              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">New exercise</p>
+            <div className="space-y-3 rounded-sm border border-white/[0.08] bg-white/[0.03] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">New exercise</p>
+                <button
+                  className="btn-compact"
+                  onClick={() => setCreateDraft((current) => ({
+                    ...current,
+                    isVariation: !current.isVariation,
+                    parentExerciseId: current.isVariation ? "" : current.parentExerciseId,
+                    variationType: current.isVariation ? "" : current.variationType,
+                  }))}
+                >
+                  <GitBranch className="h-3.5 w-3.5" />
+                  {createDraft.isVariation ? "Variation on" : "Make variation"}
+                </button>
+              </div>
               <input
                 className="field"
                 style={{ fontSize: "16px" }}
-                placeholder="Exercise name"
-                value={newExName}
-                onChange={(e) => setNewExName(e.target.value)}
+                placeholder={createDraft.isVariation ? "Variation name" : "Exercise name"}
+                value={createDraft.name}
+                onChange={(e) => setCreateDraft((current) => ({ ...current, name: e.target.value }))}
                 autoFocus
               />
-              <div className="grid grid-cols-2 gap-2">
-                <select className="field" style={{ fontSize: "16px" }} value={newExMuscle} onChange={(e) => setNewExMuscle(e.target.value as MuscleGroup)}>
-                  {muscleOptions.map((m) => <option key={m} value={m}>{m}</option>)}
-                </select>
-                <select className="field" style={{ fontSize: "16px" }} value={newExEquipment} onChange={(e) => setNewExEquipment(e.target.value as EquipmentCategory)}>
-                  {equipmentOptions.map((eq) => <option key={eq} value={eq}>{eq}</option>)}
-                </select>
-              </div>
+              {createDraft.isVariation ? (
+                <div className="space-y-3">
+                  {selectedParentExercise ? (
+                    <div className={`rounded-sm border px-3 py-2 ${LIBRARY_BLUE_BORDER} ${LIBRARY_BLUE_FILL}`}>
+                      <p className={`text-xs font-semibold uppercase tracking-[0.14em] ${LIBRARY_BLUE_TEXT}`}>Parent exercise</p>
+                      <div className="mt-1 flex items-center justify-between gap-3">
+                        <p className="min-w-0 truncate text-sm font-medium text-white">{selectedParentExercise.name}</p>
+                        <button
+                          className="text-iron-300 transition hover:text-white"
+                          onClick={() => {
+                            setParentSearch("");
+                            setCreateDraft((current) => ({ ...current, parentExerciseId: "" }));
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <input
+                        className="field"
+                        style={{ fontSize: "16px" }}
+                        placeholder="Search parent exercise"
+                        value={parentSearch}
+                        onChange={(event) => setParentSearch(event.target.value)}
+                      />
+                      {parentSearch.trim() ? (
+                        <div className="mt-2 max-h-40 overflow-y-auto rounded-sm border border-white/[0.08] bg-iron-950/80">
+                          {parentExerciseOptions.length ? parentExerciseOptions.map((exercise) => (
+                            <button
+                              key={exercise.id}
+                              className="flex w-full items-center justify-between gap-3 border-b border-white/[0.06] px-3 py-2 text-left text-sm text-iron-200 transition last:border-b-0 hover:bg-white/[0.05]"
+                              onClick={() => {
+                                setParentSearch(exercise.name);
+                                setCreateDraft((current) => ({
+                                  ...current,
+                                  parentExerciseId: exercise.id,
+                                  muscle: exercise.primaryMuscles[0] || current.muscle,
+                                  equipment: exercise.equipment[0] || current.equipment,
+                                  movementPattern: exercise.movementPatterns?.[0] || exercise.movementPattern || current.movementPattern,
+                                }));
+                              }}
+                            >
+                              <span className="truncate">{exercise.name}</span>
+                              <ChevronRight className="h-4 w-4 text-iron-600" />
+                            </button>
+                          )) : <p className="px-3 py-2 text-xs text-iron-500">No parent exercises found.</p>}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  <input
+                    className="field"
+                    style={{ fontSize: "16px" }}
+                    placeholder="Variation type (optional)"
+                    value={createDraft.variationType}
+                    onChange={(event) => setCreateDraft((current) => ({ ...current, variationType: event.target.value }))}
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                  <select className="field" style={{ fontSize: "16px" }} value={createDraft.muscle} onChange={(e) => setCreateDraft((current) => ({ ...current, muscle: e.target.value as MuscleGroup }))}>
+                    {muscleOptions.map((m) => <option key={m} value={m}>{titleCaseLabel(m)}</option>)}
+                  </select>
+                  <select className="field" style={{ fontSize: "16px" }} value={createDraft.equipment} onChange={(e) => setCreateDraft((current) => ({ ...current, equipment: e.target.value as EquipmentCategory }))}>
+                    {equipmentOptions.map((eq) => <option key={eq} value={eq}>{formatEquipmentLabel(eq)}</option>)}
+                  </select>
+                  <select className="field" style={{ fontSize: "16px" }} value={createDraft.movementPattern} onChange={(e) => setCreateDraft((current) => ({ ...current, movementPattern: e.target.value as MovementPattern }))}>
+                    {movementOptions.map((item) => <option key={item} value={item}>{titleCaseLabel(item)}</option>)}
+                  </select>
+                </div>
+              )}
+              {createDraft.isVariation && !selectedParentExercise ? (
+                <p className="text-xs text-iron-500">Pick a parent exercise to keep the variation attached to the same family everywhere in the app.</p>
+              ) : null}
               <div className="flex gap-2">
                 <button
                   className="apollo-primary-btn flex-1 text-xs"
-                  disabled={!newExName.trim()}
+                  disabled={(!(createDraft.name.trim() || createDraft.variationType.trim())) || (createDraft.isVariation && !selectedParentExercise)}
                   onClick={handleQuickCreate}
                 >
                   Save &amp; add
                 </button>
                 <button
                   className="apollo-secondary-btn text-xs"
-                  onClick={() => { setShowCreateForm(false); setNewExName(""); }}
+                  onClick={resetCreateForm}
                 >
                   Cancel
                 </button>
@@ -8253,7 +9068,7 @@ function ExercisePicker({
       <div className="apollo-picker-panel">{pickerBody}</div>
     </div>
   ) : weekInline ? (
-    <div className="mt-3 overflow-hidden rounded-sm border border-white/[0.08] bg-iron-950">{pickerBody}</div>
+    <div className="mt-3 flex max-h-[min(72dvh,36rem)] flex-col overflow-hidden rounded-sm border border-white/[0.08] bg-iron-950">{pickerBody}</div>
   ) : (
     <div className="border border-white/[0.08] bg-iron-950/45 p-3">{pickerBody}</div>
   );
@@ -8670,15 +9485,11 @@ function LibraryScreen({
     setMusclePickerRole(undefined);
   }
 
-  const exercises = db.exercises.filter((exercise) => {
-    if (exercise.ownerUserId && exercise.ownerUserId !== user.id) return false;
-    const isCustom = !!(exercise.ownerUserId);
-    if (exercise.isArchived && sourceFilter !== "archived") return false;
-    if (sourceFilter === "custom" && !isCustom) return false;
-    if (sourceFilter === "default" && isCustom) return false;
-    if (exercise.isVariation && !query && !showVariations) return false;
-    const searchText = `${exercise.name} ${exercise.primaryMuscles.join(" ")} ${exercise.secondaryMuscles.join(" ")} ${exercise.equipment.join(" ")} ${exercise.movementPattern}`.toLowerCase();
-    const matchesQuery = searchText.includes(query.toLowerCase());
+  const exercises = getSharedExerciseLibrarySource(db.exercises, user.id, {
+    query,
+    sourceFilter: sourceFilter as SharedExerciseLibrarySourceFilter,
+    includeVariations: showVariations || Boolean(query.trim()),
+  }).filter((exercise) => {
     const groupedMuscles = muscle === "all"
       ? []
       : LIBRARY_MUSCLE_GROUPS.find((group) => group.id === muscle)?.muscles || [muscle as MuscleGroup];
@@ -8687,13 +9498,15 @@ function LibraryScreen({
     const matchesPattern = patternFilter === "all" || exercise.movementPattern === patternFilter || exercise.movementPatterns?.includes(patternFilter as MovementPattern);
     const matchesKind = kindFilter === "all" || (kindFilter === "compound" ? isCompound(exercise) : exercise.kind.includes("isolation") || !isCompound(exercise));
     const matchesGymSpecific = gymSpecificFilter === "all" || (gymSpecificFilter === "enabled" ? exercise.isGymSpecificEnabled : !exercise.isGymSpecificEnabled);
-    return matchesQuery && matchesMuscle && matchesEquipment && matchesPattern && matchesKind && matchesGymSpecific;
+    return matchesMuscle && matchesEquipment && matchesPattern && matchesKind && matchesGymSpecific;
   });
   const progressExercise = db.exercises.find((exercise) => exercise.id === progressExerciseId);
-  const parentExerciseOptions = db.exercises
-    .filter((exercise) => !exercise.isVariation && !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id) && exercise.id !== editingExerciseId)
+  const parentExerciseOptions = getSharedExerciseLibrarySource(db.exercises, user.id, {
+    includeVariations: false,
+  })
+    .filter((exercise) => !exercise.isVariation && exercise.id !== editingExerciseId)
     .sort((a, b) => a.name.localeCompare(b.name));
-  const filteredParentOptions = parentExerciseOptions.filter((exercise) => exercise.name.toLowerCase().includes(parentSearch.toLowerCase()));
+  const filteredParentOptions = parentExerciseOptions.filter((exercise) => matchesExerciseSearch(exercise, parentSearch));
 
   function saveEditExercise() {
     if (!draft.name.trim() || !editingExerciseId) return;
@@ -8873,17 +9686,28 @@ function LibraryScreen({
     }));
   }
 
+  const effectiveLoadingUnit = isWeightUnit(draft.defaultUnit) ? draft.defaultUnit : user.unit;
   const effectiveLoading = getEffectiveLoading(
     { category: draft.equipment, loadingProfileId: draft.loadingProfileId || undefined, defaultIncrement: draft.defaultIncrement, customIncrement: draft.customIncrement, trackPerSide: false },
     db.loadingProfiles,
-    user.unit as UnitPreference
+    effectiveLoadingUnit as UnitPreference
   );
-  const profileOptions = ["", ...(db.loadingProfiles ?? []).map((profile) => profile.id)];
-  const profileLabels: Record<string, string> = { "": "Auto / Default" };
+  const hasEquipmentDefaultProfile = Boolean(EQUIPMENT_DEFAULT_PROFILE_IDS[draft.equipment]);
+  const usesCustomIncrement = draft.loadingProfileId === CUSTOM_INCREMENT_LOADING_PROFILE_ID || (!draft.loadingProfileId && !hasEquipmentDefaultProfile);
+  const profileOptions = ["", CUSTOM_INCREMENT_LOADING_PROFILE_ID, ...(db.loadingProfiles ?? []).map((profile) => profile.id)];
+  const profileLabels: Record<string, string> = {
+    "": "Auto / Default",
+    [CUSTOM_INCREMENT_LOADING_PROFILE_ID]: "Custom increment",
+  };
   (db.loadingProfiles ?? []).forEach((profile) => {
     profileLabels[profile.id] = profile.name;
   });
-  const loadingHelperText = `${effectiveLoading.source === "exercise_profile" ? effectiveLoading.loadingProfileName : `Auto: ${formatEquipmentLabel(draft.equipment)}`} · ${effectiveLoading.increment} ${effectiveLoading.unit} jumps`;
+  const loadingHelperText = usesCustomIncrement
+    ? `Custom increment · ${effectiveLoading.increment} ${effectiveLoading.unit} jumps`
+    : `${effectiveLoading.source === "exercise_profile" ? effectiveLoading.loadingProfileName : `Auto: ${formatEquipmentLabel(draft.equipment)}`} · ${effectiveLoading.increment} ${effectiveLoading.unit} jumps`;
+  const loadingControlLabel = draft.equipment === "machine" || draft.equipment === "cable"
+    ? "Machine stack / increment"
+    : "Loading profile";
   const isDefaultExercise = Boolean(selectedExercise && !selectedExercise.ownerUserId);
   const variationCount = selectedExercise ? db.exercises.filter((exercise) => exercise.parentExerciseId === selectedExercise.id && !exercise.isArchived && (!exercise.ownerUserId || exercise.ownerUserId === user.id)).length : 0;
   const selectedParent = draft.parentExerciseId ? db.exercises.find((exercise) => exercise.id === draft.parentExerciseId) : undefined;
@@ -8935,7 +9759,7 @@ function LibraryScreen({
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
-            {effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default" ? (
+            {!usesCustomIncrement && (effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default") ? (
               <div className="md:col-span-2">
                 <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-2">
                   <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Default unit</p>
@@ -8954,18 +9778,34 @@ function LibraryScreen({
                 }))}
               />
             )}
-            <div className={effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default" ? "md:col-span-2" : ""}>
-              <SelectField label="Loading Profile" value={draft.loadingProfileId} options={profileOptions} labels={profileLabels} onChange={(value) => setDraft((item) => ({ ...item, loadingProfileId: value }))} />
+            <div className={!usesCustomIncrement && (effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default") ? "md:col-span-2" : ""}>
+              <SelectField label={loadingControlLabel} value={draft.loadingProfileId} options={profileOptions} labels={profileLabels} onChange={(value) => setDraft((item) => ({ ...item, loadingProfileId: value }))} />
               <p className="mt-1 text-xs text-iron-500">{loadingHelperText}</p>
             </div>
           </div>
 
-          {effectiveLoading.source !== "exercise_profile" && effectiveLoading.source !== "equipment_default" ? (
+          {usesCustomIncrement ? (
             <div className="grid gap-3 md:grid-cols-2">
-              <NumberField label="Default increment" value={draft.defaultIncrement} onChange={(defaultIncrement) => setDraft((item) => ({ ...item, defaultIncrement }))} />
-              <NumberField label="Custom increment" value={draft.customIncrement} onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement }))} />
+              <NumberField
+                label={`${draft.equipment === "machine" || draft.equipment === "cable" ? "Machine stack / custom increment" : "Custom increment"} (${effectiveLoading.unit})`}
+                value={draft.customIncrement}
+                step={effectiveLoading.unit === "kg" ? 0.5 : 1}
+                min={0.5}
+                onChange={(customIncrement) => setDraft((item) => ({ ...item, customIncrement, defaultIncrement: customIncrement }))}
+              />
+              <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+                <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Resolved loading</p>
+                <p className="mt-1 text-sm text-iron-200">{effectiveLoading.increment} {effectiveLoading.unit} jumps</p>
+                <p className="mt-1 text-xs text-iron-500">Only one editable increment path is shown here to avoid conflicting machine-stack inputs.</p>
+              </div>
             </div>
-          ) : null}
+          ) : (
+            <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-2">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Resolved increment</p>
+              <p className="mt-1 text-sm text-iron-200">{effectiveLoading.increment} {effectiveLoading.unit} jumps</p>
+              <p className="mt-1 text-xs text-iron-500">Auto/default keeps the stack increment read-only here. Switch to Custom increment only if this machine or cable uses a different jump size.</p>
+            </div>
+          )}
 
           <div className="border-y border-white/[0.08] py-4">
             <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Muscles</p>
@@ -12019,20 +12859,16 @@ function SettingsScreen({
   );
 }
 
-function ReadinessCard({ onSubmit }: { onSubmit: (input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">) => void; user: UserProfile }) {
-  const [draft, setDraft] = useState({
-    sleepQuality: 3,
-    stress: 1,
-    soreness: 1,
-    motivation: 3,
-    energy: 3,
-    jointPain: 1,
-    bodyweight: 0,
-    nutritionQuality: 3,
-    caffeine: false,
-    timeOfDay: "evening",
-    limitations: ""
-  });
+function ReadinessCard({
+  draft,
+  onDraftChange,
+  onSubmit,
+}: {
+  draft: ReadinessFormDraft;
+  onDraftChange: Dispatch<SetStateAction<ReadinessFormDraft>>;
+  onSubmit: (input: Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">) => void;
+  user: UserProfile;
+}) {
   const score = calculateReadinessScore(draft);
   return (
     <section className="border-b border-white/[0.06] pb-4">
@@ -12045,11 +12881,11 @@ function ReadinessCard({ onSubmit }: { onSubmit: (input: Omit<ReadinessCheckIn, 
       </div>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
         {(["sleepQuality", "stress", "soreness", "motivation", "energy", "jointPain", "nutritionQuality"] as const).map((key) => (
-          <SmallRating key={key} label={key.replace(/([A-Z])/g, " $1")} value={String(draft[key])} onChange={(value) => setDraft((current) => ({ ...current, [key]: Number(value) }))} />
+          <SmallRating key={key} label={key.replace(/([A-Z])/g, " $1")} value={String(draft[key])} onChange={(value) => onDraftChange((current) => ({ ...current, [key]: Number(value) }))} />
         ))}
-        <BigInput label="Bodyweight" value={draft.bodyweight ? String(draft.bodyweight) : ""} onChange={(value) => setDraft((current) => ({ ...current, bodyweight: Number(value) || 0 }))} />
+        <BigInput label="Bodyweight" value={draft.bodyweight ? String(draft.bodyweight) : ""} onChange={(value) => onDraftChange((current) => ({ ...current, bodyweight: Number(value) || 0 }))} />
       </div>
-      <textarea className="field mt-3 min-h-16" placeholder="Pain, limitations, travel, low sleep, etc." value={draft.limitations} onChange={(event) => setDraft((current) => ({ ...current, limitations: event.target.value }))} />
+      <textarea className="field mt-3 min-h-16" placeholder="Pain, limitations, travel, low sleep, etc." value={draft.limitations} onChange={(event) => onDraftChange((current) => ({ ...current, limitations: event.target.value }))} />
       <button className="tap-highlight mt-3 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded-md bg-[#0a84ff] px-4 py-2 text-sm font-bold text-white transition active:scale-[0.97] disabled:opacity-50" onClick={() => onSubmit({ ...draft, bodyweight: draft.bodyweight || undefined })}>Save Check-In</button>
     </section>
   );
@@ -12215,6 +13051,10 @@ function finishWorkoutInDraft(draft: TrainingDatabase, user: UserProfile, target
   }
 }
 
+function clonePlannedExerciseSnapshot(planned: PlannedExercise): PlannedExercise {
+  return structuredClone(planned);
+}
+
 function RestTimer({ seconds, setSeconds }: { seconds: number; setSeconds: Dispatch<SetStateAction<number>> }) {
   useEffect(() => {
     if (seconds <= 0) return undefined;
@@ -12230,12 +13070,23 @@ function RestTimer({ seconds, setSeconds }: { seconds: number; setSeconds: Dispa
   );
 }
 
-function findPlannedExercise(db: TrainingDatabase, session?: WorkoutSession, log?: LoggedExercise): PlannedExercise | undefined {
-  if (!session || !log) return undefined;
+function findLivePlannedExercise(db: TrainingDatabase, session?: WorkoutSession, log?: LoggedExercise): PlannedExercise | undefined {
+  if (!session || !log?.plannedExerciseId) return undefined;
   const template = db.workoutTemplates.find((item) => item.id === session.templateId);
   const templatePlanned = template?.days.flatMap((day) => day.exercises).find((item) => item.id === log.plannedExerciseId);
   if (templatePlanned) return templatePlanned;
-  return db.programs.flatMap((program) => program.blocks).flatMap((block) => block.weeks).flatMap((week) => week.workouts).flatMap((day) => day.exercises).find((item) => item.id === log.plannedExerciseId);
+  return db.programs
+    .flatMap((program) => program.blocks)
+    .flatMap((block) => block.weeks)
+    .flatMap((week) => week.workouts)
+    .flatMap((day) => day.exercises)
+    .find((item) => item.id === log.plannedExerciseId);
+}
+
+function findPlannedExercise(db: TrainingDatabase, session?: WorkoutSession, log?: LoggedExercise): PlannedExercise | undefined {
+  if (!session || !log) return undefined;
+  if (log.plannedExerciseSnapshot) return log.plannedExerciseSnapshot;
+  return findLivePlannedExercise(db, session, log);
 }
 
 function emptySetDraft(planned?: PlannedSet | null, last?: LoggedSet, draftKey = "") {
@@ -12288,16 +13139,12 @@ function buildDraftFromSet(params: {
   plannedSet?: PlannedSet | null;
   previousCompletedSet?: LoggedSet;
   draftKey: string;
-  recommendedWeight?: number;
 }): ReturnType<typeof emptySetDraft> {
-  const { actualSet, plannedSet, previousCompletedSet, draftKey, recommendedWeight } = params;
+  const { actualSet, plannedSet, previousCompletedSet, draftKey } = params;
   if (actualSet) {
     return draftFromSetOrPlan(actualSet, plannedSet ?? undefined, previousCompletedSet, draftKey);
   }
-  const plannedForDraft = !previousCompletedSet && plannedSet && plannedSet.plannedWeight === undefined && recommendedWeight
-    ? { ...plannedSet, plannedWeight: recommendedWeight }
-    : plannedSet;
-  return emptySetDraft(plannedForDraft, previousCompletedSet, draftKey);
+  return emptySetDraft(plannedSet, previousCompletedSet, draftKey);
 }
 
 function draftMatchesRecommendation(params: {

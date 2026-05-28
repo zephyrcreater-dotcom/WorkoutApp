@@ -1,5 +1,32 @@
 # DECISIONS.md
 
+## Today Shell Stability + Logger Immediate Draft Persistence Decisions (Session 67)
+
+- Today must use the same outer content shell as the rest of the app. Branch-specific Today flows such as off-program builder and exercise detail may change inner content, but they should not swap the outer page wrapper or shift nav/header spacing.
+- Effect-based draft persistence remains a backstop, but logger text/stepper/rating/readiness edits should also write immediately to the active-session draft so a fast tab switch cannot lose unsaved values between renders.
+- Once a logger draft exists for the active set, that draft is the authoritative restore source for Today/logger re-entry until the set is explicitly saved, skipped, abandoned, or the workout is finished.
+
+## Today/Logger Active Session Draft Persistence Decisions (Session 65)
+
+- The active workout session remains the source of truth for started-workout structure, logged exercises, logged sets, and saved readiness. High-frequency in-progress logger UI state such as the selected exercise/set, dirty typed set inputs, note-editor visibility, and unsaved readiness form values is persisted as a per-session draft so it survives logger unmounts and reloads without forcing a full database write on every keystroke.
+- Returning to `Today` while an in-progress or review workout exists should reopen the live logger, not the Today dashboard. The Today entry point is considered part of the active session flow once a workout is underway.
+- Stored logger drafts are advisory and must be validated against the current active session on hydrate. If the saved exercise/set target no longer exists because the user removed it, the logger should fall back predictably to the current resumable session state instead of restoring stale typed values onto a different set.
+- Finishing or abandoning a workout clears the persisted active-session draft so completed/abandoned sessions do not keep stale dirty logger UI state.
+
+## Active Workout State Isolation From Library Edits Decisions (Session 64)
+
+- Once a Today/Logger workout starts, the session owns planned exercise structure and actual logging state. Live Library/default exercise edits are future defaults, not authoritative inputs for the active session.
+- Logger set-draft hydration must not depend on mutable default-weight/loading-profile recommendations. Recommendation UI can update live, but draft values stay session-owned unless the user explicitly applies a suggestion.
+- Session resume should prefer a stored planned-exercise snapshot over live template/program definitions. If an older session is missing that snapshot, backfill it once and then keep using the snapshot.
+
+## Shared Exercise Source + Workflow-Preserving Picker + Logger Remove Decisions (Session 63)
+
+- Library search/visibility and picker visibility must come from the same shared exercise-source helper. Picker-specific filters like muscle, equipment, fatigue, pattern, grouped requirement scope, and hidden/variation display apply after the shared merge, not before.
+- Creating an exercise or variation from inside a picker should stay inside that picker instead of routing to Library. Preserving the current Today/Logger/Week/Block draft state is more important than reusing the full Library screen flow.
+- Search should prefer stable exercise ids and shared metadata, not just exercise names. Parent exercise names and variation metadata are part of picker/library searchability.
+- Machine/cable increment UI should present exactly one editable increment path at a time. Auto/default shows the resolved increment read-only; custom override shows one editable custom increment input.
+- Removing an exercise from Today/logger editing is a workout-session mutation only. It must not touch Library state, and active-exercise fallback should be previous exercise first, then next, then empty-state.
+
 ## Manual Requirement Slot Assignment Wins Decisions (Session 62)
 
 - Manual requirement-slot selection is explicit user intent and must override inferred muscle-specific allocation. If the user is filling `Chest`, the chosen exercise fills `Chest` even if its muscle metadata also matches `Upper Chest`.

@@ -2,6 +2,44 @@
 
 ## Known Bugs
 
+## Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
+
+- The Today shell wrapper mismatch and logger immediate-draft persistence bug are fixed in code and `npm run build` passes.
+- Manual UI verification is still recommended for:
+  - switching between Today, Week, Block, Library, Analytics, and Settings and confirming the shell/nav does not jump
+  - typing weight/reps/RPE/feel/note, leaving the logger immediately, and confirming the same draft restores on return
+  - changing readiness fields before saving the check-in and confirming those unsaved values restore after tab navigation
+  - confirming `Save Set`, `Finish Workout`, and `Abandon` still use/clear the drafted values correctly
+
+## Today/Logger Active Session Draft Persistence (Session 65)
+
+- The tab-navigation logger reset bug is fixed in code and `npm run build` passes.
+- Manual UI verification is still recommended for:
+  - changing readiness values, typing set values, leaving to Analytics/Settings/Library/Week/Block, and returning to `Today`
+  - confirming the same active exercise/set and dirty typed values restore after a page reload
+  - confirming `Finish Workout` and `Abandon` clear the active-session draft cleanly
+  - confirming removed exercises/sets fall back to a predictable remaining selection instead of restoring stale ids
+
+## Active Workout State Isolation From Library Edits (Session 64)
+
+- The active-workout overwrite bug is fixed in code and still needs manual UI verification for mid-workout Library/settings edits plus reload persistence.
+- Manual verification is still recommended for:
+  - editing loading profile/default increment/default weight during an in-progress Today workout
+  - returning to Today/logger with the same active exercise/set selection and unchanged logged values
+  - reloading the page after the Library edit and confirming the same active session resumes intact
+- `npm run build` should be run for validation after this fix.
+
+## Shared Exercise Source + Workflow-Preserving Picker + Logger Remove (Session 63)
+
+- The shared exercise-source fix, picker-side create flow, machine increment cleanup, and logger remove-exercise flow are implemented in code and `npm run build` passes.
+- Manual UI verification is still recommended for:
+  - Library-created custom exercises appearing in Today, Logger, Week Planner, and Block Builder pickers
+  - picker-side create-variation returning to the same requirement slot/day context
+  - iPhone Safari keyboard-safe sheet behavior and one-result search visibility
+  - machine/cable exercises that may need explicit non-selectorized loading-profile overrides later
+  - removing the active logger exercise in completed-edit vs in-progress sessions
+- Build still emits the existing large bundle warning from Vite output chunk size, but the app compiles successfully.
+
 ## Manual Requirement Slot Assignment Wins (Session 62)
 
 - The manual requirement-slot assignment bug is fixed in code and `npm run build` should be run for validation.

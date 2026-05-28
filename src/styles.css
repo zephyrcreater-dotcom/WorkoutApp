@@ -23,6 +23,7 @@ html,
 body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: calc(env(safe-area-inset-bottom) + 7rem);
 }
 
 body {
@@ -254,12 +255,14 @@ textarea {
 
   .apollo-picker-sheet {
     @apply fixed inset-0 z-50 bg-iron-950/90 backdrop-blur-sm;
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .apollo-picker-panel {
     @apply mx-auto flex h-full w-full max-w-3xl flex-col bg-[#0d1016] sm:my-6 sm:rounded-sm sm:border sm:border-white/[0.08];
     height: 100dvh;
     max-height: 100dvh;
+    padding-bottom: env(safe-area-inset-bottom);
   }
   @media (min-width: 640px) {
     .apollo-picker-panel {

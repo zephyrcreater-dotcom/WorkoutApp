@@ -1,5 +1,35 @@
 # HANDOFF.md
 
+## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
+
+- App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.
+- Today/Logger editor values must write to active workout session draft immediately, not only on Save Set.
+- Tab navigation must restore the same active workout/session, exercise, set, readiness check-in, and typed weight/reps/RPE/feel/note values.
+- Plan defaults initialize once; dirty/session draft values win afterward.
+
+## Current Handoff — Block Builder Initialization Loop Guard (Session 66)
+
+- Block Builder initialization must avoid render/effect loops. Template selection and draft hydration should populate split/day/requirements once per explicit action. Suggested block names should be derived placeholders, not repeatedly written into state. Requirement auto-selection should be guarded so it does not reopen/reset the picker every render.
+
+## Current Handoff — Today/Logger Active Session Draft Persistence (Session 65)
+
+- Today/Logger must preserve an active workout session across tab navigation. Entered check-in values, active exercise/set, typed weight/reps/RPE, difficulty, notes, added/skipped/deleted sets, and added/removed exercises should persist immediately in a session draft. Returning to Today should restore the active session, not rebuild from the plan. Plan/library defaults initialize only once and must not overwrite dirty/started session state.
+- Logger exercise/set selection and unsaved set-editor values now need a durable draft layer separate from the planned workout definition. The active session still owns logged exercises/sets in the database, while in-progress UI state such as selected set, dirty typed inputs, and unsaved readiness form values is restored from the active session draft on logger re-entry.
+- Navigating to Analytics, Settings, Library, Week, or Block while a workout is in progress must not destroy the logger context. Returning to `Today` should reopen the live logger for that same session instead of dropping back to the Today dashboard or regenerating the workout from the block plan.
+
+## Current Handoff — Active Workout State Isolation From Library Edits (Session 64)
+
+- Active Today/Logger workout session state must be isolated from Library/default exercise edits. Library/settings changes update future defaults and metadata, but must not silently overwrite active workout progress, logged sets, active set values, skipped/deleted/added sets, or unsaved workout edits. If a workout has started or is dirty, rehydration from plan/library/Supabase must not replace the local session state.
+- Started Today workouts now need a session-owned `plannedExerciseSnapshot` per logged exercise. Logger resume, set targeting, and planned-set lookup must prefer that snapshot over live program/template definitions.
+- Library/loading-profile edits may still update live display metadata such as exercise name or muscle tags through the shared exercise library, but planned set targets, actual logged sets, and active draft values must continue to come from the session snapshot/local session state unless the user explicitly applies new defaults later.
+
+## Current Handoff — Shared Exercise Source + Workflow-Preserving Picker + Logger Remove (Session 63)
+
+- All exercise pickers must use the shared Library source so default/custom/variation exercises appear consistently. Creating exercises or variations from inside Today/Logger/Week/Block workflows must preserve unsaved local edits and return to the same picker context. Mobile picker inputs must avoid iOS zoom with 16px+ font sizes and keyboard-safe scrolling. Machine/cable loading profile UI should show one clear increment path, not both default and custom inputs. Today/Logger workout edit mode needs a remove exercise action that removes only from the workout, not the Library.
+- `ExercisePicker`, requirement autofill candidate generation, and Library list/search now need to stay on the same shared exercise-source helper. Search must cover ids, parent names, variation metadata, default exercises, custom exercises, and visible variations from one merged source before per-picker filters are applied.
+- Creating from inside a picker should stay in the picker. The current fix path is an inline picker-side create flow for both new exercises and variations, so Week/Block requirement state, Today inline day edits, and Logger session edits are preserved without routing to Library.
+- Logger exercise removal is session-only. Removing an exercise must never delete it from Library, must preserve the rest of the session, and must move the active logger selection predictably: previous exercise if available, otherwise next, otherwise the no-exercises state.
+
 ## What This App Is
 
 Iron Orbit Training is a local-first PWA for workout programming and tracking across powerlifting, hypertrophy/bodybuilding, powerbuilding, conditioning, and general health. It is meant to replace an Excel workout tracking system and eventually become an adaptive training coach.

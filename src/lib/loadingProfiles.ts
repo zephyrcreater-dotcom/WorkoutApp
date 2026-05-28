@@ -52,12 +52,15 @@ export const DEFAULT_LOADING_PROFILES: LoadingProfile[] = [
   },
 ];
 
+export const CUSTOM_INCREMENT_LOADING_PROFILE_ID = "__custom__";
+
 // Equipment-type → default loading profile ID.
 // When an exercise has no explicit loadingProfileId, this provides the automatic default.
 export const EQUIPMENT_DEFAULT_PROFILE_IDS: Partial<Record<EquipmentCategory, string>> = {
   dumbbell: "lp_dumbbells",
   barbell: "lp_barbell_plates",
   cable: "lp_main_cable_stack",
+  machine: "lp_selectorized_machine",
   bodyweight: "lp_bodyweight",
 };
 
@@ -98,6 +101,17 @@ export function getEffectiveLoading(
   loadingProfiles: LoadingProfile[] | undefined,
   unit: UnitPreference,
 ): EffectiveLoading {
+  if (exercise.loadingProfileId === CUSTOM_INCREMENT_LOADING_PROFILE_ID) {
+    const increment = getExerciseIncrement(exercise, unit);
+    return {
+      unit,
+      increment,
+      source: "exercise_specific",
+      loadingProfileId: CUSTOM_INCREMENT_LOADING_PROFILE_ID,
+      loadingProfileName: "Custom increment",
+    };
+  }
+
   // 1. Explicit exercise-level profile override.
   const profileId = exercise.loadingProfileId;
   if (profileId && loadingProfiles) {

@@ -4,7 +4,7 @@ import { syncActiveBlockProgress } from "./blockProgression";
 import { createId, nowIso } from "./ids";
 import { defaultCompoundSettings } from "./programmingLogic";
 import { calculateSetPerformanceScore, calculateWorkoutScore } from "./trainingMath";
-import type { ExerciseCategoryLabel, FatigueLevel, MuscleGroup, TrainingDatabase, TrainingGoal, UserProfile } from "../types/domain";
+import type { ExerciseCategoryLabel, FatigueLevel, LoggedExercise, MuscleGroup, PlannedExercise, TrainingDatabase, TrainingGoal, UserProfile, WorkoutSession } from "../types/domain";
 
 const DB_NAME = "iron-orbit-training-db";
 const DB_VERSION = 1;
@@ -52,6 +52,23 @@ function defaultUserDisplayName(email?: string): string {
 function looksLikeSupabaseAccountProfile(user: UserProfile | undefined): boolean {
   if (!user) return false;
   return user.username.includes("@") || user.id.includes("-");
+}
+
+function findLivePlannedExerciseForSession(
+  database: TrainingDatabase,
+  session: WorkoutSession,
+  logged: LoggedExercise,
+): PlannedExercise | undefined {
+  if (!logged.plannedExerciseId) return undefined;
+  const template = database.workoutTemplates.find((item) => item.id === session.templateId);
+  const templatePlanned = template?.days.flatMap((day) => day.exercises).find((item) => item.id === logged.plannedExerciseId);
+  if (templatePlanned) return templatePlanned;
+  return database.programs
+    .flatMap((program) => program.blocks)
+    .flatMap((block) => block.weeks)
+    .flatMap((week) => week.workouts)
+    .flatMap((day) => day.exercises)
+    .find((item) => item.id === logged.plannedExerciseId);
 }
 
 function makeDefaultLocalProfile(id = LOCAL_ONLY_USER_ID, email?: string): UserProfile {
@@ -386,6 +403,13 @@ function normalizeDatabase(data: TrainingDatabase): TrainingDatabase {
   next.sessions.forEach((session) => {
     const sessionUser = userMap.get(session.userId);
     session.loggedExercises.forEach((logged) => {
+      if (logged.plannedExerciseId && !logged.plannedExerciseSnapshot) {
+        const livePlanned = findLivePlannedExerciseForSession(next, session, logged);
+        if (livePlanned) {
+          logged.plannedExerciseSnapshot = structuredClone(livePlanned);
+          changed = true;
+        }
+      }
       const exercise = exerciseMap.get(logged.exerciseId);
       logged.sets.forEach((set) => {
         if (!set.unit) {

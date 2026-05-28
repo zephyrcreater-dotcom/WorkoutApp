@@ -666,6 +666,7 @@ export interface LoggedExercise {
   exerciseId: ID;
   machineId?: ID;
   plannedExerciseId?: ID;
+  plannedExerciseSnapshot?: PlannedExercise;
   order: number;
   sets: LoggedSet[];
   deletedPlannedSetIds?: ID[];
