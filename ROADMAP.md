@@ -1,5 +1,88 @@
 # ROADMAP.md
 
+## Today Shell Stability + Logger Immediate Draft Persistence — Completed (Session 67)
+
+### Delivered
+- Normalized Today branch wrappers so Today, off-program builder, and Today exercise detail all live inside the same page-shell width/alignment instead of swapping wrappers.
+- Removed remaining Today-specific top-shell spacing/styling differences so header/nav placement stays consistent across Today, Week, Block, Library, Analytics, and Settings.
+- Added immediate active-session draft writes for logger field edits and readiness draft changes so typed values are persisted before `Save Set`.
+
+### Next steps
+- Manually verify cross-tab shell stability plus unsaved logger draft restore on desktop and iPhone-sized layouts.
+
+## Today/Logger Active Session Draft Persistence — Completed (Session 65)
+
+### Delivered
+- Added a durable active-workout draft layer for Today/Logger so unsaved logger UI state survives tab navigation and page reloads instead of living only inside `LiveLogger` component state.
+- Persisted the active exercise, active set selection, dirty set draft values, note editor state, and in-progress readiness form draft to local storage per user/session while keeping logged exercises/sets in the database-backed workout session.
+- Updated app navigation so returning to `Today` while an in-progress workout exists reopens the live logger for that active session instead of falling back to the Today dashboard and plan-derived resume state.
+
+### Next steps
+- Manually verify the full navigation/reload flow on desktop and iPhone-sized layouts, especially dirty set drafts, readiness-in-progress, and completed-workout cleanup after `Finish Workout`.
+
+## Active Workout State Isolation From Library Edits — Completed (Session 64)
+
+### Delivered
+- Added a session-owned `plannedExerciseSnapshot` to started Today workouts so logger/today planned-set lookup no longer depends on live program or template definitions after the workout begins.
+- Changed logger resume and draft hydration to prefer session snapshots and actual logged data over live default-weight/loading-profile recommendations, preventing Library/settings edits from silently reseeding the active set draft.
+- Added a one-time snapshot backfill for older in-progress sessions during DB normalization and logger resume so active workouts stay stable across return flows and reloads.
+
+### Next steps
+- Manually verify Library/loading-profile edits mid-workout, then reload the app and confirm the same Today workout resumes with the same active exercise, set, and logged data.
+
+## Shared Exercise Source + Workflow-Preserving Picker + Logger Remove — Completed (Session 63)
+
+### Delivered
+- Unified picker/library/requirement-candidate sourcing around one shared visible exercise helper so custom exercises and variations created in Library or inside a picker resolve from the same merged source before picker filters run.
+- Replaced the picker’s workflow-breaking create escape hatch with an in-picker create exercise / create variation flow so Today, Logger, Week Planner, and Block Builder keep their unsaved local editor state.
+- Moved the logger add-exercise overlays onto the same keyboard-safe sheet treatment and simplified machine/cable increment editing into one resolved increment path or one custom override path.
+- Added a logger-side remove exercise action that deletes the exercise from the workout session only and keeps active-exercise focus predictable after removal.
+
+### Next steps
+- Manually verify iPhone Safari keyboard behavior for sheet and inline picker variants, especially one-result search states.
+- Spot-check machine and cable exercises that should use non-selectorized defaults later if more explicit per-exercise loading-profile assignments are needed.
+
+## Manual Requirement Slot Assignment Wins — Completed (Session 62)
+
+### Delivered
+- Requirement allocation now assigns any planned exercise with an explicit `fulfillsRequirementId` to that exact slot before inferred muscle-specific allocation runs.
+- Requirement-slot picker manual selections now store the selected target slot explicitly, while broad `Add Exercise` in the week/block day editor stays unassigned.
+- Auto-fill specificity behavior remains intact for unassigned or auto-targeted exercises because inferred allocation still runs after the explicit-assignment pass.
+
+### Next steps
+- Manually verify mixed manual + auto-fill flows in Week Planner and Block Builder, especially Chest vs Upper Chest and manual filter override behavior.
+
+## Upper Chest Autofill Candidate Source Sync — Completed (Session 61)
+
+### Delivered
+- Unified requirement autofill and requirement-scoped picker muscle matching so both start from the same visible candidate source before duplicate rejection and ranking.
+- Removed the extra requirement/day-pattern candidate gate that could leave Upper Chest with visible picker matches but zero autofill candidates.
+- Added a clearer duplicate-only warning path and corrected the built-in `Incline Dumbbell Press` metadata to be upper-chest biased (`upper-chest` + `chest`).
+
+### Next steps
+- Manually verify the Upper Chest day-editor flow in Block Builder and Week Planner, plus parent-muscle fallback behavior for Chest/Back/Shoulders slots.
+
+## Block Builder Setup UI Cleanup — Completed (Session 59)
+
+### Delivered
+- Removed the redundant `Start week` row from the main Block Builder Basics setup while keeping the new-block flow implicitly anchored to Week 1.
+- Fixed the Block Builder inline selects so `Goal` and `Template` now render with a single chevron instead of native-select plus custom-icon overlap.
+- Tightened builder secondary-action semantics so disabled Apollo secondary buttons visibly read as unavailable, and planning-rule rows now present as deliberate expandable controls.
+
+### Next steps
+- Manually verify the Block Builder setup on phone and desktop widths, especially disabled-state readability before a draft exists.
+
+## Requirement Autofill Specificity + Unified Status — Completed (Session 58)
+
+### Delivered
+- Replaced the old split counting paths in the Week planner / Block Builder day editor with one shared requirement allocator for slot counts, missing-state warnings, and completion state.
+- Changed requirement matching to respect specificity ordering so exact upper-chest/lats/upper-back/mid-back/side-delts targets are filled before broader chest/back/shoulders parent slots.
+- Updated auto-fill candidate ranking so parent requirements prefer general parent movements when available and only fall back to child-biased movements after specific slots are handled.
+- Preserved explicit/manual requirement slot assignments and limited auto-fill to remaining open slots.
+
+### Next steps
+- Manually verify Chest + Upper Chest and Back + Lats/Upper Back/Mid Back combinations in the day editor UI.
+
 ## Universal Workout Prescription + Ordering Pass — Completed (Session 57)
 
 ### Delivered
