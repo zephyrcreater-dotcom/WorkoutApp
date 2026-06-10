@@ -3538,13 +3538,20 @@ function LiveLogger({
   const draftKey = selectedActualSet
     ? `${editingSetId ? "edit" : "view"}:${selectedActualSet.id}`
     : `${activeExerciseLog?.id || "none"}:${effectiveSetIndex}`;
-  const [setDraft, setSetDraft] = useState(() => buildDraftFromSet({
-    actualSet: selectedActualSet,
-    plannedSet: currentPlannedSet,
-    previousCompletedSet,
-    draftKey,
-  }));
-  const [draftDirty, setDraftDirty] = useState(false);
+  const [setDraft, setSetDraft] = useState<LoggerSetDraftState>(() => {
+    // Restore stored draft immediately so the selectionDraftSeed effect (which checks draftDirty)
+    // cannot race and overwrite it before the async hydration effect runs.
+    if (storedSessionDraft?.draftDirty && storedSessionDraft.setDraft) {
+      return storedSessionDraft.setDraft;
+    }
+    return buildDraftFromSet({
+      actualSet: selectedActualSet,
+      plannedSet: currentPlannedSet,
+      previousCompletedSet,
+      draftKey,
+    });
+  });
+  const [draftDirty, setDraftDirty] = useState<boolean>(() => storedSessionDraft?.draftDirty ?? false);
   const [restRemaining, setRestRemaining] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
