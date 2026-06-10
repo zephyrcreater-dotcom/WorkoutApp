@@ -15,6 +15,11 @@
 - Review step: all exercises expanded with sets/reps/RPE inputs visible, no picker. Invalid prescriptions highlight orange and block Start Workout. "← Back to Builder" returns to build while preserving all edits. Start Workout only available from review.
 - State: `offProgramBuilderStep: "build" | "review"` (reset to "build" on goOffProgram/cancel). `offProgramSelectedCollapsed`, `offProgramActiveEditIdx` continue to serve the build step's accordion behavior.
 - Validation: `isValid(item)` checks sets ≥ 1, reps ≥ 1, RPE 1–10. `allValid` gates Start Workout in review.
+
+## Current Handoff — Active Workout Session Persistence Across Tab Navigation (Session 68)
+
+- Active workout sessions, including off-program workouts where applicable, must persist across tab navigation. Input changes to weight/reps/RPE/feel/note/check-in values write to session draft immediately. Save/Next/Finish actions commit the current session draft, and Finish Exercise/Finish Workout must save the active dirty set first, especially on the last set. Plan defaults initialize once; dirty session values win afterward.
+- Root cause fixed (Session 68): `LiveLogger` state initializers for `setDraft` and `draftDirty` now read from `storedSessionDraft` on mount. The prior bug was a race condition — on remount, the selectionDraftSeed effect ran after the hydration effect in the same render cycle and read `draftDirty = false` from Render 1's snapshot, overwriting the just-restored stored draft with plan defaults. Initializing both states eagerly from the stored draft eliminates the race.
 ## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
 
 - App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.
