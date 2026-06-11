@@ -1092,13 +1092,60 @@ type ActiveWorkoutSessionDraft = {
   lastLocalMutationAt: string;
 };
 
+type TodayWorkspaceMode =
+  | "scheduled-overview"
+  | "programmed-workout"
+  | "off-program-builder"
+  | "off-program-workout";
+
 type AppUiSnapshot = {
   todaySelectedDayId: string | null;
   lastActiveLoggerSessionId?: string;
+  todayWorkspaceMode?: TodayWorkspaceMode;
 };
+
+type PersistedOffProgramBuilderItem = {
+  exerciseId: string;
+  targetSets: number;
+  targetReps: number;
+  targetRpe: number;
+  plannedWeight?: number;
+  setsInput?: string;
+  repsInput?: string;
+  rpeInput?: string;
+};
+
+type OffProgramExerciseDraft = PersistedOffProgramBuilderItem;
+type OffProgramBuilderState = { active: boolean; exercises: OffProgramExerciseDraft[] };
 
 const workoutDraftKey = (userId: string, sessionId: string) => `iron_orbit_active_workout_draft_${userId}_${sessionId}`;
 const appUiSnapshotKey = (userId: string) => `iron_orbit_app_ui_${userId}`;
+const offProgramBuilderDraftKey = (userId: string) => `iron_orbit_off_program_builder_draft_${userId}`;
+
+function loadOffProgramBuilderDraft(userId: string): PersistedOffProgramBuilderItem[] | null {
+  try {
+    const raw = localStorage.getItem(offProgramBuilderDraftKey(userId));
+    return raw ? JSON.parse(raw) as PersistedOffProgramBuilderItem[] : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveOffProgramBuilderDraft(userId: string, items: PersistedOffProgramBuilderItem[]): void {
+  try {
+    localStorage.setItem(offProgramBuilderDraftKey(userId), JSON.stringify(items));
+  } catch {
+    // Ignore localStorage quota issues; the in-memory state still preserves the draft.
+  }
+}
+
+function clearOffProgramBuilderDraft(userId: string): void {
+  try {
+    localStorage.removeItem(offProgramBuilderDraftKey(userId));
+  } catch {
+    // Ignore localStorage cleanup errors.
+  }
+}
 
 function createDefaultReadinessDraft(): ReadinessFormDraft {
   return {
@@ -1155,14 +1202,25 @@ function clearActiveWorkoutSessionDraft(userId: string, sessionId?: string): voi
   }
 }
 
+const VALID_TODAY_WORKSPACE_MODES: TodayWorkspaceMode[] = [
+  "scheduled-overview",
+  "programmed-workout",
+  "off-program-builder",
+  "off-program-workout",
+];
+
 function loadAppUiSnapshot(userId: string): AppUiSnapshot {
   try {
     const raw = localStorage.getItem(appUiSnapshotKey(userId));
     if (!raw) return { todaySelectedDayId: null };
     const parsed = JSON.parse(raw) as Partial<AppUiSnapshot>;
+    const todayWorkspaceMode = VALID_TODAY_WORKSPACE_MODES.includes(parsed.todayWorkspaceMode as TodayWorkspaceMode)
+      ? parsed.todayWorkspaceMode as TodayWorkspaceMode
+      : undefined;
     return {
       todaySelectedDayId: typeof parsed.todaySelectedDayId === "string" ? parsed.todaySelectedDayId : null,
       lastActiveLoggerSessionId: typeof parsed.lastActiveLoggerSessionId === "string" ? parsed.lastActiveLoggerSessionId : undefined,
+      todayWorkspaceMode,
     };
   } catch {
     return { todaySelectedDayId: null };
@@ -1390,6 +1448,8 @@ function App() {
   // null = show the current block day (default). Persists across screen changes so Today retains
   // context when returning from the logger or completed-review.
   const [todaySelectedDayId, setTodaySelectedDayId] = useState<string | null>(null);
+  const [todayWorkspaceMode, setTodayWorkspaceMode] = useState<TodayWorkspaceMode>("scheduled-overview");
+  const [offProgramBuilder, setOffProgramBuilder] = useState<OffProgramBuilderState>({ active: false, exercises: [] });
   const [hydratedUiUserId, setHydratedUiUserId] = useState<string | undefined>();
   const currentUserId = currentUser?.id;
   const persistedActiveSession = db && currentUserId
@@ -1406,13 +1466,35 @@ function App() {
     if (hydratedUiUserId === currentUserId) return;
     const snapshot = loadAppUiSnapshot(currentUserId);
     setTodaySelectedDayId(snapshot.todaySelectedDayId);
-    if (snapshot.lastActiveLoggerSessionId && activeSession?.id === snapshot.lastActiveLoggerSessionId) {
+    if (snapshot.todayWorkspaceMode) {
+      setTodayWorkspaceMode(snapshot.todayWorkspaceMode);
+    }
+    if (snapshot.todayWorkspaceMode === "off-program-builder") {
+      const persistedDraft = loadOffProgramBuilderDraft(currentUserId);
+      setOffProgramBuilder({ active: true, exercises: persistedDraft ?? [] });
+    } else {
+      setOffProgramBuilder({ active: false, exercises: [] });
+    }
+    const shouldRestoreActiveLogger =
+      snapshot.todayWorkspaceMode === "programmed-workout"
+      || snapshot.todayWorkspaceMode === "off-program-workout"
+      || (!snapshot.todayWorkspaceMode && !persistedActiveSession?.offProgram);
+    if (shouldRestoreActiveLogger && snapshot.lastActiveLoggerSessionId && activeSession?.id === snapshot.lastActiveLoggerSessionId) {
       setLoggerNavigation({ previousScreen: "today", loggerMode: "active-logger" });
       setActiveSessionId(activeSession.id);
       setScreen("logger");
     }
     setHydratedUiUserId(currentUserId);
-  }, [activeSession?.id, currentUserId, db, hydratedUiUserId]);
+  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, persistedActiveSession?.offProgram]);
+
+  useEffect(() => {
+    if (!currentUserId) return;
+    if (offProgramBuilder.active && offProgramBuilder.exercises.length > 0) {
+      saveOffProgramBuilderDraft(currentUserId, offProgramBuilder.exercises);
+      return;
+    }
+    clearOffProgramBuilderDraft(currentUserId);
+  }, [currentUserId, offProgramBuilder.active, offProgramBuilder.exercises]);
 
   useEffect(() => {
     if (!db || !currentUserId) return;
@@ -1420,8 +1502,9 @@ function App() {
     saveAppUiSnapshot(currentUserId, {
       todaySelectedDayId,
       lastActiveLoggerSessionId: activeSession?.id,
+      todayWorkspaceMode,
     });
-  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, todaySelectedDayId]);
+  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, todaySelectedDayId, todayWorkspaceMode]);
 
   if (loading) {
     return (
@@ -1521,20 +1604,28 @@ function App() {
     });
     setResumeMessage(undefined);
     setActiveSessionId(sessionId);
+    const targetSession = appDb.sessions.find((session) => session.id === sessionId);
+    setTodayWorkspaceMode(targetSession?.offProgram ? "off-program-workout" : "programmed-workout");
     setScreen("logger");
   }
 
   function navigateToScreen(nextScreen: Screen) {
     if (nextScreen === "today" && activeSession?.id) {
-      setResumeMessage(undefined);
-      setLoggerNavigation((current) => ({
-        previousScreen: "today",
-        completedReviewState: current.completedReviewState,
-        loggerMode: current.loggerMode || "active-logger",
-      }));
-      setActiveSessionId(activeSession.id);
-      setScreen("logger");
-      return;
+      const shouldRestoreActiveLogger =
+        todayWorkspaceMode === "programmed-workout"
+        || todayWorkspaceMode === "off-program-workout"
+        || (todayWorkspaceMode === "scheduled-overview" && !activeSession.offProgram && activeSessionId != null);
+      if (shouldRestoreActiveLogger) {
+        setResumeMessage(undefined);
+        setLoggerNavigation((current) => ({
+          previousScreen: "today",
+          completedReviewState: current.completedReviewState,
+          loggerMode: current.loggerMode || "active-logger",
+        }));
+        setActiveSessionId(activeSession.id);
+        setScreen("logger");
+        return;
+      }
     }
     setScreen(nextScreen);
   }
@@ -1560,6 +1651,7 @@ function App() {
     if (requestedSession?.status === "completed") {
       setResumeMessage(undefined);
       setActiveSessionId(requestedSession.id);
+      setTodayWorkspaceMode(requestedSession.offProgram ? "off-program-workout" : "programmed-workout");
       setScreen("logger");
       return;
     }
@@ -1568,6 +1660,7 @@ function App() {
     if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") {
       setResumeMessage(undefined);
       setActiveSessionId(resumeState.session.id);
+      setTodayWorkspaceMode(resumeState.session.offProgram ? "off-program-workout" : "programmed-workout");
       setScreen("logger");
       return;
     }
@@ -1676,6 +1769,10 @@ function App() {
               clearResumeMessage={() => setResumeMessage(undefined)}
               todaySelectedDayId={todaySelectedDayId}
               setTodaySelectedDayId={setTodaySelectedDayId}
+              todayWorkspaceMode={todayWorkspaceMode}
+              onTodayWorkspaceModeChange={setTodayWorkspaceMode}
+              offProgramBuilder={offProgramBuilder}
+              setOffProgramBuilder={setOffProgramBuilder}
             />
           )}
           {screen === "logger" && (
@@ -1806,6 +1903,10 @@ function TodayScreen({
   clearResumeMessage,
   todaySelectedDayId,
   setTodaySelectedDayId,
+  todayWorkspaceMode,
+  onTodayWorkspaceModeChange,
+  offProgramBuilder,
+  setOffProgramBuilder,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -1835,6 +1936,10 @@ function TodayScreen({
   clearResumeMessage: () => void;
   todaySelectedDayId: string | null;
   setTodaySelectedDayId: (id: string | null) => void;
+  todayWorkspaceMode: TodayWorkspaceMode;
+  onTodayWorkspaceModeChange: (mode: TodayWorkspaceMode) => void;
+  offProgramBuilder: OffProgramBuilderState;
+  setOffProgramBuilder: React.Dispatch<React.SetStateAction<OffProgramBuilderState>>;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const todayPlan = getCurrentWorkoutForUser(db, user.id);
@@ -2025,8 +2130,6 @@ function TodayScreen({
     }
   }
 
-  type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number; plannedWeight?: number };
-  const [offProgramBuilder, setOffProgramBuilder] = useState<{ active: boolean; exercises: OffProgramExerciseDraft[] }>({ active: false, exercises: [] });
   const [showOffProgramPicker, setShowOffProgramPicker] = useState(false);
   const [offProgramSelectedCollapsed, setOffProgramSelectedCollapsed] = useState(false);
   const [offProgramActiveEditIdx, setOffProgramActiveEditIdx] = useState<number | null>(null);
@@ -2125,11 +2228,12 @@ function TodayScreen({
   }
 
   function goOffProgram() {
-    setOffProgramBuilder({ active: true, exercises: [] });
+    setOffProgramBuilder((current) => ({ ...current, active: true }));
     setShowOffProgramPicker(false);
     setOffProgramBuilderStep("build");
     setOffProgramActiveEditIdx(null);
     setOffProgramSelectedCollapsed(false);
+    onTodayWorkspaceModeChange("off-program-builder");
   }
 
   function finishActiveBlock() {
@@ -2217,6 +2321,7 @@ function TodayScreen({
       return draft;
     });
     setOffProgramBuilder({ active: false, exercises: [] });
+    onTodayWorkspaceModeChange("off-program-workout");
     onOpenLoggerSession(session.id, { previousScreen: "today" });
   }
 
@@ -2290,28 +2395,64 @@ function TodayScreen({
 
   if (offProgramBuilder.active) {
     const selectedCount = offProgramBuilder.exercises.length;
-    const isValid = (item: OffProgramExerciseDraft) => item.targetSets >= 1 && item.targetReps >= 1 && item.targetRpe >= 1 && item.targetRpe <= 10;
+    const isValid = (item: OffProgramExerciseDraft) => item.targetSets >= 1 && item.targetReps >= 1 && item.targetRpe >= 0 && item.targetRpe <= 10;
     const allValid = offProgramBuilder.exercises.every(isValid);
 
     function updateExercise(idx: number, patch: Partial<OffProgramExerciseDraft>) {
-      setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, ...patch } : ex2) }));
+      setOffProgramBuilder((builder) => ({
+        ...builder,
+        exercises: builder.exercises.map((exerciseItem, exerciseIndex) => (
+          exerciseIndex === idx ? { ...exerciseItem, ...patch } : exerciseItem
+        )),
+      }));
     }
+
     function removeExercise(idx: number) {
-      setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.filter((_, i) => i !== idx) }));
+      setOffProgramBuilder((builder) => ({
+        ...builder,
+        exercises: builder.exercises.filter((_, exerciseIndex) => exerciseIndex !== idx),
+      }));
       setOffProgramActiveEditIdx(null);
     }
 
-    // Compact field: smaller, flatter inputs for prescription editors
+    function commitBuilderNumberInput(
+      idx: number,
+      key: "targetSets" | "targetReps" | "targetRpe",
+      inputKey: "setsInput" | "repsInput" | "rpeInput",
+      options: { min: number; max: number; fallback: number; roundToHalf?: boolean },
+    ) {
+      setOffProgramBuilder((builder) => ({
+        ...builder,
+        exercises: builder.exercises.map((exerciseItem, exerciseIndex) => {
+          if (exerciseIndex !== idx) return exerciseItem;
+          const rawInput = exerciseItem[inputKey];
+          const parsed = rawInput?.trim() ? Number(rawInput) : Number.NaN;
+          const fallback = Number.isFinite(exerciseItem[key]) ? exerciseItem[key] : options.fallback;
+          const normalizedBase = Number.isFinite(parsed) ? parsed : fallback;
+          const rounded = options.roundToHalf ? Math.round(normalizedBase * 2) / 2 : Math.round(normalizedBase);
+          const committedValue = Math.max(options.min, Math.min(options.max, rounded));
+          return {
+            ...exerciseItem,
+            [inputKey]: undefined,
+            [key]: committedValue,
+          };
+        }),
+      }));
+    }
+
     const compactFieldCls = (errored: boolean) =>
       `w-full rounded-sm border bg-iron-950/70 px-2 py-1 text-center text-sm text-white outline-none transition placeholder:text-iron-600 focus:border-[#0a84ff]/50 focus:bg-iron-950 ${errored ? "border-orange-500/60" : "border-white/[0.08]"}`;
 
-    // Shared exercise row renderer — compact in build, always-expanded in review
     function renderExerciseRow(item: OffProgramExerciseDraft, idx: number, alwaysExpanded: boolean) {
-      const ex = db.exercises.find((e) => e.id === item.exerciseId);
+      const ex = db.exercises.find((exerciseItem) => exerciseItem.id === item.exerciseId);
+      const displayUnit = getExerciseDisplayUnit(ex, user);
       const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise: ex, targetReps: item.targetReps, targetRpe: item.targetRpe });
       const lastLog = getLatestExercisePerformanceLog(db, user.id, item.exerciseId);
       const isEditing = alwaysExpanded || offProgramActiveEditIdx === idx;
       const invalid = !isValid(item);
+      const setsDisplayValue = item.setsInput ?? String(item.targetSets);
+      const repsDisplayValue = item.repsInput ?? String(item.targetReps);
+      const rpeDisplayValue = item.rpeInput ?? String(item.targetRpe);
       return (
         <div key={item.exerciseId} className={`rounded-sm border ${invalid ? "border-orange-500/30 bg-orange-500/[0.04]" : "border-white/[0.07] bg-white/[0.03]"}`}>
           {!alwaysExpanded && (
@@ -2321,7 +2462,7 @@ function TodayScreen({
             >
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-semibold text-iron-100">{idx + 1}. {ex?.name}</p>
-                <p className="text-[0.7rem] text-iron-500">{item.targetSets}×{item.targetReps} @ RPE {item.targetRpe}{suggestedWeight ? ` · ~${suggestedWeight} ${user.unit}` : ""}</p>
+                <p className="text-[0.7rem] text-iron-500">{item.targetSets}×{item.targetReps} @ RPE {item.targetRpe}{suggestedWeight ? ` · ~${suggestedWeight} ${displayUnit}` : ""}</p>
               </div>
               <span className="shrink-0 text-[0.6rem] text-iron-600">{isEditing ? "▲" : "▼"}</span>
             </button>
@@ -2333,42 +2474,59 @@ function TodayScreen({
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold text-iron-100">{idx + 1}. {ex?.name}</p>
                     <p className="text-[0.7rem] text-iron-500">
-                      {lastLog ? `Last: ${lastLog.weight} ${user.unit} × ${lastLog.reps}` : "No history"}
-                      {suggestedWeight ? ` · ~${suggestedWeight} ${user.unit}` : ""}
+                      {lastLog ? `Last: ${lastLog.weight} ${lastLog.unit ?? displayUnit} × ${lastLog.reps}` : "No history"}
+                      {suggestedWeight ? ` · ~${suggestedWeight} ${displayUnit}` : ""}
                     </p>
                   </div>
-                  <button className="shrink-0 text-[0.7rem] text-iron-500 hover:text-orange-300 transition" onClick={() => removeExercise(idx)}>Remove</button>
+                  <button className="shrink-0 text-[0.7rem] text-iron-500 transition hover:text-orange-300" onClick={() => removeExercise(idx)}>Remove</button>
                 </div>
               )}
               {!alwaysExpanded && (
                 <div className="mb-2 flex items-center gap-3 text-[0.7rem] text-iron-500">
-                  {lastLog && <span>Last: {lastLog.weight} {user.unit} × {lastLog.reps}</span>}
-                  {suggestedWeight && <span className="text-[#0a84ff]/80">~{suggestedWeight} {user.unit}</span>}
+                  {lastLog && <span>Last: {lastLog.weight} {lastLog.unit ?? displayUnit} × {lastLog.reps}</span>}
+                  {suggestedWeight && <span className="text-[#0a84ff]/80">~{suggestedWeight} {displayUnit}</span>}
                 </div>
               )}
               <div className="grid grid-cols-3 gap-1.5">
                 <div>
                   <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-wide text-iron-600">Sets</p>
-                  <input className={compactFieldCls(item.targetSets < 1)} type="number" min={1} value={item.targetSets}
-                    onChange={(e) => updateExercise(idx, { targetSets: Math.max(1, Number(e.target.value) || 1) })}
-                    onBlur={(e) => updateExercise(idx, { targetSets: Math.max(1, Number(e.target.value) || 1) })} />
+                  <input
+                    className={compactFieldCls(item.targetSets < 1)}
+                    type="number"
+                    min={1}
+                    value={setsDisplayValue}
+                    onChange={(e) => updateExercise(idx, { setsInput: e.target.value })}
+                    onBlur={() => commitBuilderNumberInput(idx, "targetSets", "setsInput", { min: 1, max: 20, fallback: 3 })}
+                  />
                 </div>
                 <div>
                   <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-wide text-iron-600">Reps</p>
-                  <input className={compactFieldCls(item.targetReps < 1)} type="number" min={1} value={item.targetReps}
-                    onChange={(e) => updateExercise(idx, { targetReps: Math.max(1, Number(e.target.value) || 1) })}
-                    onBlur={(e) => updateExercise(idx, { targetReps: Math.max(1, Number(e.target.value) || 1) })} />
+                  <input
+                    className={compactFieldCls(item.targetReps < 1)}
+                    type="number"
+                    min={1}
+                    value={repsDisplayValue}
+                    onChange={(e) => updateExercise(idx, { repsInput: e.target.value })}
+                    onBlur={() => commitBuilderNumberInput(idx, "targetReps", "repsInput", { min: 1, max: 100, fallback: 8 })}
+                  />
                 </div>
                 <div>
                   <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-wide text-iron-600">RPE</p>
-                  <input className={compactFieldCls(item.targetRpe < 1 || item.targetRpe > 10)} type="number" min={1} max={10} step={0.5} value={item.targetRpe}
-                    onChange={(e) => updateExercise(idx, { targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) })}
-                    onBlur={(e) => updateExercise(idx, { targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) })} />
+                  <input
+                    className={compactFieldCls(item.targetRpe < 0 || item.targetRpe > 10)}
+                    type="number"
+                    min={0}
+                    max={10}
+                    step={0.5}
+                    value={rpeDisplayValue}
+                    onChange={(e) => updateExercise(idx, { rpeInput: e.target.value })}
+                    onBlur={() => commitBuilderNumberInput(idx, "targetRpe", "rpeInput", { min: 0, max: 10, fallback: 7, roundToHalf: true })}
+                  />
                 </div>
               </div>
               {invalid && <p className="mt-1.5 text-[0.62rem] text-orange-400">Check sets / reps / RPE.</p>}
               {!alwaysExpanded && (
-                <button className="mt-2 text-[0.7rem] text-iron-600 hover:text-orange-300 transition" onClick={() => removeExercise(idx)}>Remove exercise</button>
+                <button className="mt-2 text-[0.7rem] text-iron-600 transition hover:text-orange-300" onClick={() => removeExercise(idx)}>Remove exercise</button>
               )}
             </div>
           )}
@@ -2376,21 +2534,27 @@ function TodayScreen({
       );
     }
 
-    // ── REVIEW STEP ──────────────────────────────────────────────────
     if (offProgramBuilderStep === "review") {
       return (
         <div className={todayPageClassName}>
-          {/* Compact page header */}
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
               <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">Off-Program Builder</p>
               <p className="text-base font-bold text-iron-100">Review Workout</p>
             </div>
-            <button className="btn-ghost text-xs" onClick={() => { setOffProgramBuilder({ active: false, exercises: [] }); setOffProgramBuilderStep("build"); }}>Cancel</button>
+            <button
+              className="btn-ghost text-xs"
+              onClick={() => {
+                setOffProgramBuilder({ active: false, exercises: [] });
+                setOffProgramBuilderStep("build");
+                onTodayWorkspaceModeChange("scheduled-overview");
+              }}
+            >
+              Cancel
+            </button>
           </div>
 
-          {/* Exercise list */}
-          <div className="mb-1 rounded-sm border border-white/[0.07] bg-white/[0.02] divide-y divide-white/[0.05]">
+          <div className="mb-1 divide-y divide-white/[0.05] rounded-sm border border-white/[0.07] bg-white/[0.02]">
             <div className="px-3 py-2">
               <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">{selectedCount} Exercise{selectedCount !== 1 ? "s" : ""}</p>
             </div>
@@ -2405,7 +2569,6 @@ function TodayScreen({
             <p className="mb-3 text-[0.7rem] text-orange-400">Fix highlighted exercises before starting.</p>
           )}
 
-          {/* CTAs */}
           <div className="mt-4 flex gap-2">
             <button className="apollo-secondary-btn flex-1 text-sm" onClick={() => { setOffProgramBuilderStep("build"); setOffProgramActiveEditIdx(null); }}>
               ← Back
@@ -2419,23 +2582,29 @@ function TodayScreen({
       );
     }
 
-    // ── BUILD STEP ───────────────────────────────────────────────────
     return (
       <div className={todayPageClassName}>
-        {/* Compact page header */}
         <div className="mb-4 flex items-center justify-between gap-3">
           <div>
             <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">Off-Program Builder</p>
             <p className="text-base font-bold text-iron-100">Build Workout</p>
           </div>
-          <button className="btn-ghost text-xs" onClick={() => { setOffProgramBuilder({ active: false, exercises: [] }); setOffProgramBuilderStep("build"); }}>Cancel</button>
+          <button
+            className="btn-ghost text-xs"
+            onClick={() => {
+              setOffProgramBuilder({ active: false, exercises: [] });
+              setOffProgramBuilderStep("build");
+              onTodayWorkspaceModeChange("scheduled-overview");
+            }}
+          >
+            Cancel
+          </button>
         </div>
 
-        {/* Selected exercises summary block */}
         <div className="mb-3 rounded-sm border border-white/[0.07] bg-white/[0.02]">
           <button
             className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left lg:cursor-default"
-            onClick={() => setOffProgramSelectedCollapsed((v) => !v)}
+            onClick={() => setOffProgramSelectedCollapsed((collapsed) => !collapsed)}
           >
             <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-500">
               {selectedCount === 0 ? "No exercises selected" : `${selectedCount} exercise${selectedCount !== 1 ? "s" : ""} selected`}
@@ -2445,16 +2614,14 @@ function TodayScreen({
             )}
           </button>
 
-          {/* Mobile: toggle-controlled */}
           {selectedCount > 0 && !offProgramSelectedCollapsed && (
-            <div className="border-t border-white/[0.05] divide-y divide-white/[0.04] lg:hidden">
+            <div className="divide-y divide-white/[0.04] border-t border-white/[0.05] lg:hidden">
               {offProgramBuilder.exercises.map((item, idx) => renderExerciseRow(item, idx, false))}
             </div>
           )}
 
-          {/* Desktop: always show */}
           {selectedCount > 0 && (
-            <div className="hidden border-t border-white/[0.05] divide-y divide-white/[0.04] lg:block">
+            <div className="hidden divide-y divide-white/[0.04] border-t border-white/[0.05] lg:block">
               {offProgramBuilder.exercises.map((item, idx) => renderExerciseRow(item, idx, false))}
             </div>
           )}
@@ -2464,7 +2631,6 @@ function TodayScreen({
           )}
         </div>
 
-        {/* Action row */}
         <div className="mb-4 flex gap-2">
           <button
             className="btn-primary flex-1 disabled:opacity-40"
@@ -2493,6 +2659,7 @@ function TodayScreen({
               void updateDb((draft) => { draft.sessions.unshift(session); return draft; });
               setOffProgramBuilder({ active: false, exercises: [] });
               setOffProgramBuilderStep("build");
+              onTodayWorkspaceModeChange("off-program-workout");
               onOpenLoggerSession(session.id, { previousScreen: "today" });
             }}
           >
@@ -2500,7 +2667,6 @@ function TodayScreen({
           </button>
         </div>
 
-        {/* Exercise picker section */}
         <div className="rounded-sm border border-white/[0.07] bg-white/[0.02]">
           <p className="border-b border-white/[0.05] px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">Add Exercise</p>
           <div className="p-2">
@@ -2508,14 +2674,17 @@ function TodayScreen({
               db={db}
               user={user}
               updateDb={updateDb}
-              selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
-              alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
+              selectedIds={offProgramBuilder.exercises.map((exercise) => exercise.exerciseId)}
+              alreadyAddedIds={offProgramBuilder.exercises.map((exercise) => exercise.exerciseId)}
               onPick={(exercise) => {
-                if (offProgramBuilder.exercises.some((e) => e.exerciseId === exercise.id)) return;
+                if (offProgramBuilder.exercises.some((existing) => existing.exerciseId === exercise.id)) return;
                 const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: 8, targetRpe: 7 });
-                setOffProgramBuilder((b) => ({
-                  ...b,
-                  exercises: [...b.exercises, { exerciseId: exercise.id, targetSets: 3, targetReps: 8, targetRpe: 7, plannedWeight: suggestedWeight }],
+                setOffProgramBuilder((builder) => ({
+                  ...builder,
+                  exercises: [
+                    ...builder.exercises,
+                    { exerciseId: exercise.id, targetSets: 3, targetReps: 8, targetRpe: 7, plannedWeight: suggestedWeight },
+                  ],
                 }));
                 setOffProgramSelectedCollapsed(true);
               }}
@@ -4425,19 +4594,19 @@ function LiveLogger({
   const activeLineupItem = clampedActiveLineupIndex >= 0 ? lineupItems[clampedActiveLineupIndex] : undefined;
   const hasNextSetInExercise = clampedActiveLineupIndex >= 0 && clampedActiveLineupIndex < lineupItems.length - 1;
   const dirtySetIsValid = draftDirty && hasDraftValidValues;
-  const derivedPrimaryAction: "save-changes" | "save-set" | "next-set" | "finish-exercise" = isEditingLoggedSet
+  const derivedPrimaryAction: "save-changes" | "next-set" | "finish-exercise" | "finish-workout" = isEditingLoggedSet
     ? "save-changes"
-    : dirtySetIsValid
-      ? "save-set"
-      : hasNextSetInExercise
-        ? "next-set"
+    : hasNextSetInExercise
+      ? "next-set"
+      : currentSetWouldCompleteWorkout
+        ? "finish-workout"
         : "finish-exercise";
   const primaryActionLabel = derivedPrimaryAction === "save-changes"
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
-    : derivedPrimaryAction === "save-set"
-      ? "Save Set"
-      : derivedPrimaryAction === "next-set"
-        ? "Next Set"
+    : derivedPrimaryAction === "next-set"
+      ? "Next Set"
+      : derivedPrimaryAction === "finish-workout"
+        ? "Finish Workout"
         : "Finish Exercise";
   const plannedLineupItems = lineupItems.filter((item) => !item.isExtra);
   const completedPlannedCount = plannedLineupItems.filter((item) => !!item.actualSet).length;
@@ -6210,10 +6379,6 @@ function LiveLogger({
                       logSet(setDraft.setRating, "stay");
                       return;
                     }
-                    if (derivedPrimaryAction === "save-set") {
-                      logSet(setDraft.setRating, "stay");
-                      return;
-                    }
                     if (derivedPrimaryAction === "next-set") {
                       loggerDebug("NEXT_SET_START", { fromLineupIndex: clampedActiveLineupIndex });
                       if (hasDraftValidValues && currentPendingSetIsUncovered && !isPastLastPlannedSet) {
@@ -6225,6 +6390,7 @@ function LiveLogger({
                       loggerDebug("NEXT_SET_END", { mode: "advance-only", toLineupIndex: clampedActiveLineupIndex + 1 });
                       return;
                     }
+                    // Finish actions save the active dirty set first through finishExercise().
                     finishExercise();
                   }}
                 >

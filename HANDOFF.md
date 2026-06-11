@@ -15,7 +15,6 @@
 - Review step: all exercises expanded with sets/reps/RPE inputs visible, no picker. Invalid prescriptions highlight orange and block Start Workout. "← Back to Builder" returns to build while preserving all edits. Start Workout only available from review.
 - State: `offProgramBuilderStep: "build" | "review"` (reset to "build" on goOffProgram/cancel). `offProgramSelectedCollapsed`, `offProgramActiveEditIdx` continue to serve the build step's accordion behavior.
 - Validation: `isValid(item)` checks sets ≥ 1, reps ≥ 1, RPE 1–10. `allValid` gates Start Workout in review.
-
 ## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
 
 - App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.
