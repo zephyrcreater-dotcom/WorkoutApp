@@ -1,5 +1,12 @@
 # HANDOFF.md
 
+## Current Handoff — Mobile Add Exercise Picker Keyboard Safety (Session 68)
+
+- Mobile Add Exercise picker must be keyboard-safe. Search input should stay visible while typing, results should scroll inside the sheet and remain above the keyboard, one-result searches must be selectable, inputs should be 16px+ to avoid iOS zoom, and adding multiple exercises should not require repeated page scrolling.
+- All Add Exercise flows (Today inline edit, Off-Program Builder, WorkoutDayEditor requirement picker, Logger, Off-Program session) now use `variant="week-sheet"` which renders as a `fixed inset-0 z-50` overlay with `height: 100dvh` (dynamic viewport height that shrinks with iOS keyboard).
+- The search header inside the sheet is `sticky top-0 z-10` so it stays visible while the results scroll below it. The results area uses `min-h-0 flex-1 overflow-y-auto` to fill remaining space and scroll internally.
+- CSS fix: removed double `safe-area-inset-bottom` padding (was on both `.apollo-picker-sheet` and `.apollo-picker-panel`; now only on the panel). Added `overflow: hidden` to the panel to prevent overflow on older iOS. Desktop resets `padding-bottom: 0` at `sm:` breakpoint.
+
 ## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
 
 - App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.

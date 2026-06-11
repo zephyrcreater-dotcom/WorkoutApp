@@ -2335,23 +2335,24 @@ function TodayScreen({
             <Plus className="h-4 w-4" /> {showOffProgramPicker ? "Hide Exercise Search" : "Add Exercise"}
           </button>
           {showOffProgramPicker && (
-            <div className="mb-4 rounded-lg border border-white/10 bg-iron-950/45 p-3">
-              <ExercisePicker
-                db={db}
-                user={user}
-                updateDb={updateDb}
-                selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
-                alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
-                onPick={(exercise) => {
-                  if (offProgramBuilder.exercises.some((e) => e.exerciseId === exercise.id)) return;
-                  const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: 8, targetRpe: 7 });
-                  setOffProgramBuilder((b) => ({
-                    ...b,
-                    exercises: [...b.exercises, { exerciseId: exercise.id, targetSets: 3, targetReps: 8, targetRpe: 7, plannedWeight: suggestedWeight }],
-                  }));
-                }}
-              />
-            </div>
+            <ExercisePicker
+              db={db}
+              user={user}
+              updateDb={updateDb}
+              variant="week-sheet"
+              title="Add Exercise"
+              selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
+              alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
+              onClose={() => setShowOffProgramPicker(false)}
+              onPick={(exercise) => {
+                if (offProgramBuilder.exercises.some((e) => e.exerciseId === exercise.id)) return;
+                const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: 8, targetRpe: 7 });
+                setOffProgramBuilder((b) => ({
+                  ...b,
+                  exercises: [...b.exercises, { exerciseId: exercise.id, targetSets: 3, targetReps: 8, targetRpe: 7, plannedWeight: suggestedWeight }],
+                }));
+              }}
+            />
           )}
           <div className="grid gap-2 sm:grid-cols-2">
             <button
@@ -3010,13 +3011,12 @@ function TodayScreen({
                         </button>
                       </div>
                       {showInlineAddExercise && (
-                        <div className="border-t border-white/[0.06] bg-[#09101a] px-4 py-4">
-                          <ExercisePicker
+                        <ExercisePicker
                             db={db}
                             user={user}
                             updateDb={updateDb}
                             alreadyAddedIds={editDraft.exercises.map((item) => item.exerciseId)}
-                            variant="week-inline"
+                            variant="week-sheet"
                             title="Add exercise"
                             onClose={() => setShowInlineAddExercise(false)}
                             onPick={(exercise) => {
@@ -3041,7 +3041,6 @@ function TodayScreen({
                               setShowInlineAddExercise(false);
                             }}
                           />
-                        </div>
                       )}
                     </section>
                   )}
@@ -8207,7 +8206,7 @@ function WorkoutDayEditor({
                 alreadyAddedIds={alreadyAddedIds}
                 targetMuscles={[currentReq.targetMuscle]}
                 grouped
-                variant="week-inline"
+                variant="week-sheet"
                 title={`Add ${currentReq.targetMuscle} exercise`}
                 requirementStatusLabel={`${titleCaseLabel(currentReq.targetMuscle)} ${reqProgress.find((item) => item.req.id === currentReq.id)?.fulfilled ?? 0}/${currentReq.requiredExerciseCount}`}
                 onClose={() => setInlineReqPickerOpen(false)}

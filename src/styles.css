@@ -255,11 +255,10 @@ textarea {
 
   .apollo-picker-sheet {
     @apply fixed inset-0 z-50 bg-iron-950/90 backdrop-blur-sm;
-    padding-bottom: env(safe-area-inset-bottom);
   }
 
   .apollo-picker-panel {
-    @apply mx-auto flex h-full w-full max-w-3xl flex-col bg-[#0d1016] sm:my-6 sm:rounded-sm sm:border sm:border-white/[0.08];
+    @apply mx-auto flex h-full w-full max-w-3xl flex-col overflow-hidden bg-[#0d1016] sm:my-6 sm:rounded-sm sm:border sm:border-white/[0.08];
     height: 100dvh;
     max-height: 100dvh;
     padding-bottom: env(safe-area-inset-bottom);
@@ -268,6 +267,7 @@ textarea {
     .apollo-picker-panel {
       height: min(90dvh, 56rem);
       max-height: min(90dvh, 56rem);
+      padding-bottom: 0;
     }
   }
 
