@@ -2028,6 +2028,9 @@ function TodayScreen({
   type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number; plannedWeight?: number };
   const [offProgramBuilder, setOffProgramBuilder] = useState<{ active: boolean; exercises: OffProgramExerciseDraft[] }>({ active: false, exercises: [] });
   const [showOffProgramPicker, setShowOffProgramPicker] = useState(false);
+  const [offProgramSelectedCollapsed, setOffProgramSelectedCollapsed] = useState(false);
+  const [offProgramActiveEditIdx, setOffProgramActiveEditIdx] = useState<number | null>(null);
+  const [offProgramBuilderStep, setOffProgramBuilderStep] = useState<"build" | "review">("build");
 
   function startWorkout(day?: WorkoutDay) {
     if (!day) return;
@@ -2124,6 +2127,9 @@ function TodayScreen({
   function goOffProgram() {
     setOffProgramBuilder({ active: true, exercises: [] });
     setShowOffProgramPicker(false);
+    setOffProgramBuilderStep("build");
+    setOffProgramActiveEditIdx(null);
+    setOffProgramSelectedCollapsed(false);
   }
 
   function finishActiveBlock() {
@@ -2283,111 +2289,239 @@ function TodayScreen({
   }
 
   if (offProgramBuilder.active) {
-    return (
-      <div className={todayPageClassName}>
-        <PageTitle eyebrow="Off-Program Builder" title="Build your individual workout before starting." />
-        <section className="panel p-4">
+    const selectedCount = offProgramBuilder.exercises.length;
+    const isValid = (item: OffProgramExerciseDraft) => item.targetSets >= 1 && item.targetReps >= 1 && item.targetRpe >= 1 && item.targetRpe <= 10;
+    const allValid = offProgramBuilder.exercises.every(isValid);
+
+    function updateExercise(idx: number, patch: Partial<OffProgramExerciseDraft>) {
+      setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, ...patch } : ex2) }));
+    }
+    function removeExercise(idx: number) {
+      setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.filter((_, i) => i !== idx) }));
+      setOffProgramActiveEditIdx(null);
+    }
+
+    // Compact field: smaller, flatter inputs for prescription editors
+    const compactFieldCls = (errored: boolean) =>
+      `w-full rounded-sm border bg-iron-950/70 px-2 py-1 text-center text-sm text-white outline-none transition placeholder:text-iron-600 focus:border-[#0a84ff]/50 focus:bg-iron-950 ${errored ? "border-orange-500/60" : "border-white/[0.08]"}`;
+
+    // Shared exercise row renderer — compact in build, always-expanded in review
+    function renderExerciseRow(item: OffProgramExerciseDraft, idx: number, alwaysExpanded: boolean) {
+      const ex = db.exercises.find((e) => e.id === item.exerciseId);
+      const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise: ex, targetReps: item.targetReps, targetRpe: item.targetRpe });
+      const lastLog = getLatestExercisePerformanceLog(db, user.id, item.exerciseId);
+      const isEditing = alwaysExpanded || offProgramActiveEditIdx === idx;
+      const invalid = !isValid(item);
+      return (
+        <div key={item.exerciseId} className={`rounded-sm border ${invalid ? "border-orange-500/30 bg-orange-500/[0.04]" : "border-white/[0.07] bg-white/[0.03]"}`}>
+          {!alwaysExpanded && (
+            <button
+              className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
+              onClick={() => setOffProgramActiveEditIdx(isEditing ? null : idx)}
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-iron-100">{idx + 1}. {ex?.name}</p>
+                <p className="text-[0.7rem] text-iron-500">{item.targetSets}×{item.targetReps} @ RPE {item.targetRpe}{suggestedWeight ? ` · ~${suggestedWeight} ${user.unit}` : ""}</p>
+              </div>
+              <span className="shrink-0 text-[0.6rem] text-iron-600">{isEditing ? "▲" : "▼"}</span>
+            </button>
+          )}
+          {isEditing && (
+            <div className={`px-3 pb-2.5 ${alwaysExpanded ? "pt-2.5" : "border-t border-white/[0.06] pt-2"}`}>
+              {alwaysExpanded && (
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-iron-100">{idx + 1}. {ex?.name}</p>
+                    <p className="text-[0.7rem] text-iron-500">
+                      {lastLog ? `Last: ${lastLog.weight} ${user.unit} × ${lastLog.reps}` : "No history"}
+                      {suggestedWeight ? ` · ~${suggestedWeight} ${user.unit}` : ""}
+                    </p>
+                  </div>
+                  <button className="shrink-0 text-[0.7rem] text-iron-500 hover:text-orange-300 transition" onClick={() => removeExercise(idx)}>Remove</button>
+                </div>
+              )}
+              {!alwaysExpanded && (
+                <div className="mb-2 flex items-center gap-3 text-[0.7rem] text-iron-500">
+                  {lastLog && <span>Last: {lastLog.weight} {user.unit} × {lastLog.reps}</span>}
+                  {suggestedWeight && <span className="text-[#0a84ff]/80">~{suggestedWeight} {user.unit}</span>}
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-1.5">
+                <div>
+                  <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-wide text-iron-600">Sets</p>
+                  <input className={compactFieldCls(item.targetSets < 1)} type="number" min={1} value={item.targetSets}
+                    onChange={(e) => updateExercise(idx, { targetSets: Math.max(1, Number(e.target.value) || 1) })}
+                    onBlur={(e) => updateExercise(idx, { targetSets: Math.max(1, Number(e.target.value) || 1) })} />
+                </div>
+                <div>
+                  <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-wide text-iron-600">Reps</p>
+                  <input className={compactFieldCls(item.targetReps < 1)} type="number" min={1} value={item.targetReps}
+                    onChange={(e) => updateExercise(idx, { targetReps: Math.max(1, Number(e.target.value) || 1) })}
+                    onBlur={(e) => updateExercise(idx, { targetReps: Math.max(1, Number(e.target.value) || 1) })} />
+                </div>
+                <div>
+                  <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-wide text-iron-600">RPE</p>
+                  <input className={compactFieldCls(item.targetRpe < 1 || item.targetRpe > 10)} type="number" min={1} max={10} step={0.5} value={item.targetRpe}
+                    onChange={(e) => updateExercise(idx, { targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) })}
+                    onBlur={(e) => updateExercise(idx, { targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) })} />
+                </div>
+              </div>
+              {invalid && <p className="mt-1.5 text-[0.62rem] text-orange-400">Check sets / reps / RPE.</p>}
+              {!alwaysExpanded && (
+                <button className="mt-2 text-[0.7rem] text-iron-600 hover:text-orange-300 transition" onClick={() => removeExercise(idx)}>Remove exercise</button>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── REVIEW STEP ──────────────────────────────────────────────────
+    if (offProgramBuilderStep === "review") {
+      return (
+        <div className={todayPageClassName}>
+          {/* Compact page header */}
           <div className="mb-4 flex items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-volt">Selected exercises</p>
-              <p className="text-xs text-iron-400">Tap an exercise below to add it. Weight targets come from your training history.</p>
+              <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">Off-Program Builder</p>
+              <p className="text-base font-bold text-iron-100">Review Workout</p>
             </div>
-            <button className="btn-ghost" onClick={() => setOffProgramBuilder({ active: false, exercises: [] })}>Cancel</button>
+            <button className="btn-ghost text-xs" onClick={() => { setOffProgramBuilder({ active: false, exercises: [] }); setOffProgramBuilderStep("build"); }}>Cancel</button>
           </div>
-          {offProgramBuilder.exercises.length > 0 ? (
-            <div className="mb-4 space-y-3">
-              {offProgramBuilder.exercises.map((item, idx) => {
-                const ex = db.exercises.find((e) => e.id === item.exerciseId);
-                const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise: ex, targetReps: item.targetReps, targetRpe: item.targetRpe });
-                const lastLog = getLatestExercisePerformanceLog(db, user.id, item.exerciseId);
-                return (
-                  <div key={item.exerciseId} className="rounded-lg border border-white/10 bg-white/[0.06] p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-black">{idx + 1}. {ex?.name}</p>
-                        {lastLog && <p className="text-xs text-iron-400">Last logged: {lastLog.weight} {user.unit} × {lastLog.reps}</p>}
-                        {suggestedWeight ? <p className="text-xs text-volt">Starting weight: {suggestedWeight} {user.unit}</p> : <p className="text-xs text-iron-500">No saved starting weight yet.</p>}
-                      </div>
-                      <button className="btn-ghost text-orange-200 text-xs" onClick={() => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.filter((_, i) => i !== idx) }))}>Remove</button>
-                    </div>
-                    <div className="mt-3 grid grid-cols-3 gap-2">
-                      <div>
-                        <p className="text-[0.65rem] font-medium text-iron-500">Sets</p>
-                        <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} value={item.targetSets} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetSets: Math.max(1, Number(e.target.value) || 1) } : ex2) }))} />
-                      </div>
-                      <div>
-                        <p className="text-[0.65rem] font-medium text-iron-500">Reps</p>
-                        <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} value={item.targetReps} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetReps: Math.max(1, Number(e.target.value) || 1) } : ex2) }))} />
-                      </div>
-                      <div>
-                        <p className="text-[0.65rem] font-medium text-iron-500">RPE</p>
-                        <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} max={10} step={0.5} value={item.targetRpe} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) } : ex2) }))} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+
+          {/* Exercise list */}
+          <div className="mb-1 rounded-sm border border-white/[0.07] bg-white/[0.02] divide-y divide-white/[0.05]">
+            <div className="px-3 py-2">
+              <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">{selectedCount} Exercise{selectedCount !== 1 ? "s" : ""}</p>
             </div>
-          ) : (
-            <p className="mb-4 text-sm text-iron-400">No exercises added yet. Search below to add some.</p>
+            {offProgramBuilder.exercises.map((item, idx) => (
+              <div key={item.exerciseId} className="px-0">
+                {renderExerciseRow(item, idx, true)}
+              </div>
+            ))}
+          </div>
+
+          {!allValid && (
+            <p className="mb-3 text-[0.7rem] text-orange-400">Fix highlighted exercises before starting.</p>
           )}
-          <button className="btn-ghost mb-3 w-full" onClick={() => setShowOffProgramPicker((v) => !v)}>
-            <Plus className="h-4 w-4" /> {showOffProgramPicker ? "Hide Exercise Search" : "Add Exercise"}
+
+          {/* CTAs */}
+          <div className="mt-4 flex gap-2">
+            <button className="apollo-secondary-btn flex-1 text-sm" onClick={() => { setOffProgramBuilderStep("build"); setOffProgramActiveEditIdx(null); }}>
+              ← Back
+            </button>
+            <button className="btn-primary flex-1 disabled:opacity-40" disabled={!allValid || selectedCount === 0} onClick={startOffProgramSession}>
+              <Timer className="h-3.5 w-3.5" />
+              Start Workout
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── BUILD STEP ───────────────────────────────────────────────────
+    return (
+      <div className={todayPageClassName}>
+        {/* Compact page header */}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">Off-Program Builder</p>
+            <p className="text-base font-bold text-iron-100">Build Workout</p>
+          </div>
+          <button className="btn-ghost text-xs" onClick={() => { setOffProgramBuilder({ active: false, exercises: [] }); setOffProgramBuilderStep("build"); }}>Cancel</button>
+        </div>
+
+        {/* Selected exercises summary block */}
+        <div className="mb-3 rounded-sm border border-white/[0.07] bg-white/[0.02]">
+          <button
+            className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left lg:cursor-default"
+            onClick={() => setOffProgramSelectedCollapsed((v) => !v)}
+          >
+            <p className="text-[0.65rem] font-semibold uppercase tracking-wider text-iron-500">
+              {selectedCount === 0 ? "No exercises selected" : `${selectedCount} exercise${selectedCount !== 1 ? "s" : ""} selected`}
+            </p>
+            {selectedCount > 0 && (
+              <span className="text-[0.6rem] text-iron-600 lg:hidden">{offProgramSelectedCollapsed ? "▼" : "▲"}</span>
+            )}
           </button>
-          {showOffProgramPicker && (
-            <div className="mb-4 rounded-lg border border-white/10 bg-iron-950/45 p-3">
-              <ExercisePicker
-                db={db}
-                user={user}
-                updateDb={updateDb}
-                selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
-                alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
-                onPick={(exercise) => {
-                  if (offProgramBuilder.exercises.some((e) => e.exerciseId === exercise.id)) return;
-                  const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: 8, targetRpe: 7 });
-                  setOffProgramBuilder((b) => ({
-                    ...b,
-                    exercises: [...b.exercises, { exerciseId: exercise.id, targetSets: 3, targetReps: 8, targetRpe: 7, plannedWeight: suggestedWeight }],
-                  }));
-                }}
-              />
+
+          {/* Mobile: toggle-controlled */}
+          {selectedCount > 0 && !offProgramSelectedCollapsed && (
+            <div className="border-t border-white/[0.05] divide-y divide-white/[0.04] lg:hidden">
+              {offProgramBuilder.exercises.map((item, idx) => renderExerciseRow(item, idx, false))}
             </div>
           )}
-          <div className="grid gap-2 sm:grid-cols-2">
-            <button
-              className="btn-primary"
-              disabled={offProgramBuilder.exercises.length === 0}
-              onClick={startOffProgramSession}
-            >
-              <Timer className="h-4 w-4" />
-              Start Workout ({offProgramBuilder.exercises.length} exercise{offProgramBuilder.exercises.length !== 1 ? "s" : ""})
-            </button>
-            <button
-              className="btn-secondary"
-              onClick={() => {
-                const session: WorkoutSession = {
-                  id: createId("session"),
-                  userId: user.id,
-                  gymId: user.activeGymId,
-                  name: "Off-Program Workout",
-                  status: "in-progress",
-                  startedAt: nowIso(),
-                  updatedAt: nowIso(),
-                  currentExerciseIndex: 0,
-                  currentSetIndex: 0,
-                  loggedExercises: [],
-                  recommendations: [],
-                  offProgram: true,
-                };
-                void updateDb((draft) => { draft.sessions.unshift(session); return draft; });
-                setOffProgramBuilder({ active: false, exercises: [] });
-                onOpenLoggerSession(session.id, { previousScreen: "today" });
+
+          {/* Desktop: always show */}
+          {selectedCount > 0 && (
+            <div className="hidden border-t border-white/[0.05] divide-y divide-white/[0.04] lg:block">
+              {offProgramBuilder.exercises.map((item, idx) => renderExerciseRow(item, idx, false))}
+            </div>
+          )}
+
+          {selectedCount === 0 && (
+            <p className="border-t border-white/[0.05] px-3 py-2 text-[0.7rem] text-iron-600">Add exercises below to build your workout.</p>
+          )}
+        </div>
+
+        {/* Action row */}
+        <div className="mb-4 flex gap-2">
+          <button
+            className="btn-primary flex-1 disabled:opacity-40"
+            disabled={selectedCount === 0}
+            onClick={() => { setOffProgramBuilderStep("review"); setOffProgramActiveEditIdx(null); }}
+          >
+            Review Workout →
+          </button>
+          <button
+            className="apollo-secondary-btn shrink-0 text-sm"
+            onClick={() => {
+              const session: WorkoutSession = {
+                id: createId("session"),
+                userId: user.id,
+                gymId: user.activeGymId,
+                name: "Off-Program Workout",
+                status: "in-progress",
+                startedAt: nowIso(),
+                updatedAt: nowIso(),
+                currentExerciseIndex: 0,
+                currentSetIndex: 0,
+                loggedExercises: [],
+                recommendations: [],
+                offProgram: true,
+              };
+              void updateDb((draft) => { draft.sessions.unshift(session); return draft; });
+              setOffProgramBuilder({ active: false, exercises: [] });
+              setOffProgramBuilderStep("build");
+              onOpenLoggerSession(session.id, { previousScreen: "today" });
+            }}
+          >
+            Empty Session
+          </button>
+        </div>
+
+        {/* Exercise picker section */}
+        <div className="rounded-sm border border-white/[0.07] bg-white/[0.02]">
+          <p className="border-b border-white/[0.05] px-3 py-2 text-[0.65rem] font-semibold uppercase tracking-wider text-iron-600">Add Exercise</p>
+          <div className="p-2">
+            <ExercisePicker
+              db={db}
+              user={user}
+              updateDb={updateDb}
+              selectedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
+              alreadyAddedIds={offProgramBuilder.exercises.map((e) => e.exerciseId)}
+              onPick={(exercise) => {
+                if (offProgramBuilder.exercises.some((e) => e.exerciseId === exercise.id)) return;
+                const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: 8, targetRpe: 7 });
+                setOffProgramBuilder((b) => ({
+                  ...b,
+                  exercises: [...b.exercises, { exerciseId: exercise.id, targetSets: 3, targetReps: 8, targetRpe: 7, plannedWeight: suggestedWeight }],
+                }));
+                setOffProgramSelectedCollapsed(true);
               }}
-            >
-              Start Empty Session
-            </button>
+            />
           </div>
-        </section>
+        </div>
       </div>
     );
   }
