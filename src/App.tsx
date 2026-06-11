@@ -4190,11 +4190,30 @@ function LiveLogger({
     return () => {
       if (ref.current !== null) window.clearTimeout(ref.current);
     };
-  }, []);
+    saveActiveWorkoutSessionDraft(user.id, session.id, snapshot);
+  }
 
-  useEffect(() => {
-    setRecentlyAppliedRecommendationKey(null);
-  }, [draftKey]);
+  function updateSetDraftImmediately(
+    updater: LoggerSetDraftState | ((current: LoggerSetDraftState) => LoggerSetDraftState),
+    options?: {
+      draftDirty?: boolean;
+      clearRecommendation?: boolean;
+      showSetNotes?: boolean;
+    }
+  ) {
+    const nextDirty = options?.draftDirty ?? true;
+    if (options?.clearRecommendation !== false) setRecentlyAppliedRecommendationKey(null);
+    setSetDraft((current) => {
+      const nextDraft = typeof updater === "function" ? updater(current) : updater;
+      persistActiveWorkoutDraftImmediately({
+        setDraft: nextDraft,
+        draftDirty: nextDirty,
+        showSetNotes: options?.showSetNotes,
+      });
+      return nextDraft;
+    });
+    setDraftDirty(nextDirty);
+  }
 
   useEffect(() => {
     loggerDebug("ACTIVE_EXERCISE_CHANGE", { effect: "reset-ui-on-activeExerciseId" });
