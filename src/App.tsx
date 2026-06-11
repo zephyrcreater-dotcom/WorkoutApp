@@ -1092,13 +1092,47 @@ type ActiveWorkoutSessionDraft = {
   lastLocalMutationAt: string;
 };
 
+type TodayWorkspaceMode =
+  | "scheduled-overview"
+  | "programmed-workout"
+  | "off-program-builder"
+  | "off-program-workout";
+
 type AppUiSnapshot = {
   todaySelectedDayId: string | null;
   lastActiveLoggerSessionId?: string;
+  todayWorkspaceMode?: TodayWorkspaceMode;
 };
+
+// Shared type for persisted off-program builder draft items (mirrors the
+// inline OffProgramExerciseDraft type inside TodayScreen).
+type PersistedOffProgramBuilderItem = {
+  exerciseId: string;
+  targetSets: number;
+  targetReps: number;
+  targetRpe: number;
+  plannedWeight?: number;
+};
+// Shared alias used by both App (state owner) and TodayScreen (render/handlers).
+type OffProgramExerciseDraft = PersistedOffProgramBuilderItem;
+type OffProgramBuilderState = { active: boolean; exercises: OffProgramExerciseDraft[] };
 
 const workoutDraftKey = (userId: string, sessionId: string) => `iron_orbit_active_workout_draft_${userId}_${sessionId}`;
 const appUiSnapshotKey = (userId: string) => `iron_orbit_app_ui_${userId}`;
+const offProgramBuilderDraftKey = (userId: string) => `iron_orbit_off_program_builder_draft_${userId}`;
+
+function loadOffProgramBuilderDraft(userId: string): PersistedOffProgramBuilderItem[] | null {
+  try {
+    const raw = localStorage.getItem(offProgramBuilderDraftKey(userId));
+    return raw ? (JSON.parse(raw) as PersistedOffProgramBuilderItem[]) : null;
+  } catch { return null; }
+}
+function saveOffProgramBuilderDraft(userId: string, items: PersistedOffProgramBuilderItem[]): void {
+  try { localStorage.setItem(offProgramBuilderDraftKey(userId), JSON.stringify(items)); } catch { /* ignore quota */ }
+}
+function clearOffProgramBuilderDraft(userId: string): void {
+  try { localStorage.removeItem(offProgramBuilderDraftKey(userId)); } catch { /* ignore */ }
+}
 
 function createDefaultReadinessDraft(): ReadinessFormDraft {
   return {
@@ -1155,14 +1189,22 @@ function clearActiveWorkoutSessionDraft(userId: string, sessionId?: string): voi
   }
 }
 
+const VALID_TODAY_WORKSPACE_MODES: TodayWorkspaceMode[] = [
+  "scheduled-overview", "programmed-workout", "off-program-builder", "off-program-workout",
+];
+
 function loadAppUiSnapshot(userId: string): AppUiSnapshot {
   try {
     const raw = localStorage.getItem(appUiSnapshotKey(userId));
     if (!raw) return { todaySelectedDayId: null };
     const parsed = JSON.parse(raw) as Partial<AppUiSnapshot>;
+    const todayWorkspaceMode = VALID_TODAY_WORKSPACE_MODES.includes(parsed.todayWorkspaceMode as TodayWorkspaceMode)
+      ? (parsed.todayWorkspaceMode as TodayWorkspaceMode)
+      : undefined;
     return {
       todaySelectedDayId: typeof parsed.todaySelectedDayId === "string" ? parsed.todaySelectedDayId : null,
       lastActiveLoggerSessionId: typeof parsed.lastActiveLoggerSessionId === "string" ? parsed.lastActiveLoggerSessionId : undefined,
+      todayWorkspaceMode,
     };
   } catch {
     return { todaySelectedDayId: null };
@@ -1390,6 +1432,11 @@ function App() {
   // null = show the current block day (default). Persists across screen changes so Today retains
   // context when returning from the logger or completed-review.
   const [todaySelectedDayId, setTodaySelectedDayId] = useState<string | null>(null);
+  // Tracks what Today was last showing so refresh/navigation restores the right workspace.
+  const [todayWorkspaceMode, setTodayWorkspaceMode] = useState<TodayWorkspaceMode>("scheduled-overview");
+  // Off-program builder state lives in App (not TodayScreen) so it survives tab navigation.
+  // TodayScreen unmounts/remounts on tab switches; App persists across the entire session.
+  const [offProgramBuilder, setOffProgramBuilder] = useState<OffProgramBuilderState>({ active: false, exercises: [] });
   const [hydratedUiUserId, setHydratedUiUserId] = useState<string | undefined>();
   const currentUserId = currentUser?.id;
   const persistedActiveSession = db && currentUserId
@@ -1406,13 +1453,39 @@ function App() {
     if (hydratedUiUserId === currentUserId) return;
     const snapshot = loadAppUiSnapshot(currentUserId);
     setTodaySelectedDayId(snapshot.todaySelectedDayId);
-    if (snapshot.lastActiveLoggerSessionId && activeSession?.id === snapshot.lastActiveLoggerSessionId) {
+    if (snapshot.todayWorkspaceMode) {
+      setTodayWorkspaceMode(snapshot.todayWorkspaceMode);
+    }
+    // Restore off-program builder draft from localStorage on app boot.
+    if (snapshot.todayWorkspaceMode === "off-program-builder") {
+      const persisted = loadOffProgramBuilderDraft(currentUserId);
+      setOffProgramBuilder({ active: true, exercises: persisted ?? [] });
+    }
+    // Only auto-restore the logger on refresh if the last Today workspace was actually
+    // an active workout session (not a builder draft or scheduled overview).
+    const wasActiveLogger =
+      snapshot.todayWorkspaceMode === "programmed-workout" ||
+      snapshot.todayWorkspaceMode === "off-program-workout" ||
+      // Legacy snapshots without todayWorkspaceMode: only restore non-off-program sessions
+      // to avoid surfacing stale off-program sessions for users upgrading.
+      (!snapshot.todayWorkspaceMode && !persistedActiveSession?.offProgram);
+    if (wasActiveLogger && snapshot.lastActiveLoggerSessionId && activeSession?.id === snapshot.lastActiveLoggerSessionId) {
       setLoggerNavigation({ previousScreen: "today", loggerMode: "active-logger" });
       setActiveSessionId(activeSession.id);
       setScreen("logger");
     }
     setHydratedUiUserId(currentUserId);
-  }, [activeSession?.id, currentUserId, db, hydratedUiUserId]);
+  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, persistedActiveSession?.offProgram]);
+
+  // Persist off-program builder draft whenever exercises change.
+  useEffect(() => {
+    if (!currentUserId) return;
+    if (offProgramBuilder.active && offProgramBuilder.exercises.length > 0) {
+      saveOffProgramBuilderDraft(currentUserId, offProgramBuilder.exercises);
+    } else if (!offProgramBuilder.active) {
+      clearOffProgramBuilderDraft(currentUserId);
+    }
+  }, [currentUserId, offProgramBuilder.active, offProgramBuilder.exercises]);
 
   useEffect(() => {
     if (!db || !currentUserId) return;
@@ -1420,8 +1493,9 @@ function App() {
     saveAppUiSnapshot(currentUserId, {
       todaySelectedDayId,
       lastActiveLoggerSessionId: activeSession?.id,
+      todayWorkspaceMode,
     });
-  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, todaySelectedDayId]);
+  }, [activeSession?.id, currentUserId, db, hydratedUiUserId, todaySelectedDayId, todayWorkspaceMode]);
 
   if (loading) {
     return (
@@ -1521,20 +1595,34 @@ function App() {
     });
     setResumeMessage(undefined);
     setActiveSessionId(sessionId);
+    // Track workspace mode so refresh knows whether to restore the logger.
+    const session = appDb?.sessions.find((s) => s.id === sessionId);
+    setTodayWorkspaceMode(session?.offProgram ? "off-program-workout" : "programmed-workout");
     setScreen("logger");
   }
 
   function navigateToScreen(nextScreen: Screen) {
     if (nextScreen === "today" && activeSession?.id) {
-      setResumeMessage(undefined);
-      setLoggerNavigation((current) => ({
-        previousScreen: "today",
-        completedReviewState: current.completedReviewState,
-        loggerMode: current.loggerMode || "active-logger",
-      }));
-      setActiveSessionId(activeSession.id);
-      setScreen("logger");
-      return;
+      // Only auto-restore the logger if the workspace mode explicitly says it was
+      // an active logger session. This prevents stale off-program sessions (or any
+      // session the user never explicitly started this visit) from hijacking Today.
+      const sessionIsActiveLogger =
+        todayWorkspaceMode === "programmed-workout" ||
+        todayWorkspaceMode === "off-program-workout" ||
+        // For programmed (non-off-program) sessions with no workspace mode set yet
+        // (e.g., first visit after upgrade), preserve the old restoration behavior.
+        (todayWorkspaceMode === "scheduled-overview" && !activeSession.offProgram && activeSessionId != null);
+      if (sessionIsActiveLogger) {
+        setResumeMessage(undefined);
+        setLoggerNavigation((current) => ({
+          previousScreen: "today",
+          completedReviewState: current.completedReviewState,
+          loggerMode: current.loggerMode || "active-logger",
+        }));
+        setActiveSessionId(activeSession.id);
+        setScreen("logger");
+        return;
+      }
     }
     setScreen(nextScreen);
   }
@@ -1560,6 +1648,7 @@ function App() {
     if (requestedSession?.status === "completed") {
       setResumeMessage(undefined);
       setActiveSessionId(requestedSession.id);
+      setTodayWorkspaceMode(requestedSession.offProgram ? "off-program-workout" : "programmed-workout");
       setScreen("logger");
       return;
     }
@@ -1568,6 +1657,7 @@ function App() {
     if (resumeState.kind === "ready" || resumeState.kind === "no-exercises") {
       setResumeMessage(undefined);
       setActiveSessionId(resumeState.session.id);
+      setTodayWorkspaceMode(resumeState.session.offProgram ? "off-program-workout" : "programmed-workout");
       setScreen("logger");
       return;
     }
@@ -1676,6 +1766,10 @@ function App() {
               clearResumeMessage={() => setResumeMessage(undefined)}
               todaySelectedDayId={todaySelectedDayId}
               setTodaySelectedDayId={setTodaySelectedDayId}
+              todayWorkspaceMode={todayWorkspaceMode}
+              onTodayWorkspaceModeChange={setTodayWorkspaceMode}
+              offProgramBuilder={offProgramBuilder}
+              setOffProgramBuilder={setOffProgramBuilder}
             />
           )}
           {screen === "logger" && (
@@ -1806,6 +1900,10 @@ function TodayScreen({
   clearResumeMessage,
   todaySelectedDayId,
   setTodaySelectedDayId,
+  todayWorkspaceMode,
+  onTodayWorkspaceModeChange,
+  offProgramBuilder,
+  setOffProgramBuilder,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -1835,6 +1933,10 @@ function TodayScreen({
   clearResumeMessage: () => void;
   todaySelectedDayId: string | null;
   setTodaySelectedDayId: (id: string | null) => void;
+  todayWorkspaceMode: TodayWorkspaceMode;
+  onTodayWorkspaceModeChange: (mode: TodayWorkspaceMode) => void;
+  offProgramBuilder: OffProgramBuilderState;
+  setOffProgramBuilder: React.Dispatch<React.SetStateAction<OffProgramBuilderState>>;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const todayPlan = getCurrentWorkoutForUser(db, user.id);
@@ -2025,8 +2127,8 @@ function TodayScreen({
     }
   }
 
-  type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number; plannedWeight?: number };
-  const [offProgramBuilder, setOffProgramBuilder] = useState<{ active: boolean; exercises: OffProgramExerciseDraft[] }>({ active: false, exercises: [] });
+  // offProgramBuilder and setOffProgramBuilder come from App props — state lives in App
+  // so it persists across TodayScreen unmount/remount on tab navigation.
   const [showOffProgramPicker, setShowOffProgramPicker] = useState(false);
 
   function startWorkout(day?: WorkoutDay) {
@@ -2122,8 +2224,10 @@ function TodayScreen({
   }
 
   function goOffProgram() {
-    setOffProgramBuilder({ active: true, exercises: [] });
+    // App-level state already holds any previous exercises; just activate the builder.
+    setOffProgramBuilder((prev) => ({ ...prev, active: true }));
     setShowOffProgramPicker(false);
+    onTodayWorkspaceModeChange("off-program-builder");
   }
 
   function finishActiveBlock() {
@@ -2292,7 +2396,7 @@ function TodayScreen({
               <p className="text-xs font-semibold text-volt">Selected exercises</p>
               <p className="text-xs text-iron-400">Tap an exercise below to add it. Weight targets come from your training history.</p>
             </div>
-            <button className="btn-ghost" onClick={() => setOffProgramBuilder({ active: false, exercises: [] })}>Cancel</button>
+            <button className="btn-ghost" onClick={() => { setOffProgramBuilder({ active: false, exercises: [] }); onTodayWorkspaceModeChange("scheduled-overview"); }}>Cancel</button>
           </div>
           {offProgramBuilder.exercises.length > 0 ? (
             <div className="mb-4 space-y-3">
@@ -2300,13 +2404,14 @@ function TodayScreen({
                 const ex = db.exercises.find((e) => e.id === item.exerciseId);
                 const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise: ex, targetReps: item.targetReps, targetRpe: item.targetRpe });
                 const lastLog = getLatestExercisePerformanceLog(db, user.id, item.exerciseId);
+                const exDisplayUnit = getExerciseDisplayUnit(ex, user);
                 return (
                   <div key={item.exerciseId} className="rounded-lg border border-white/10 bg-white/[0.06] p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="font-black">{idx + 1}. {ex?.name}</p>
-                        {lastLog && <p className="text-xs text-iron-400">Last logged: {lastLog.weight} {user.unit} × {lastLog.reps}</p>}
-                        {suggestedWeight ? <p className="text-xs text-volt">Starting weight: {suggestedWeight} {user.unit}</p> : <p className="text-xs text-iron-500">No saved starting weight yet.</p>}
+                        {lastLog && <p className="text-xs text-iron-400">Last logged: {lastLog.weight} {lastLog.unit ?? exDisplayUnit} × {lastLog.reps}</p>}
+                        {suggestedWeight ? <p className="text-xs text-volt">Starting weight: {suggestedWeight} {exDisplayUnit}</p> : <p className="text-xs text-iron-500">No saved starting weight yet.</p>}
                       </div>
                       <button className="btn-ghost text-orange-200 text-xs" onClick={() => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.filter((_, i) => i !== idx) }))}>Remove</button>
                     </div>
@@ -4291,19 +4396,21 @@ function LiveLogger({
   const activeLineupItem = clampedActiveLineupIndex >= 0 ? lineupItems[clampedActiveLineupIndex] : undefined;
   const hasNextSetInExercise = clampedActiveLineupIndex >= 0 && clampedActiveLineupIndex < lineupItems.length - 1;
   const dirtySetIsValid = draftDirty && hasDraftValidValues;
-  const derivedPrimaryAction: "save-changes" | "save-set" | "next-set" | "finish-exercise" = isEditingLoggedSet
+  // State machine: only editing a completed set shows Save Changes; pending/current sets always show
+  // Next Set / Finish Exercise / Finish Workout regardless of whether the user has changed values.
+  const derivedPrimaryAction: "save-changes" | "next-set" | "finish-exercise" | "finish-workout" = isEditingLoggedSet
     ? "save-changes"
-    : dirtySetIsValid
-      ? "save-set"
-      : hasNextSetInExercise
-        ? "next-set"
+    : hasNextSetInExercise
+      ? "next-set"
+      : currentSetWouldCompleteWorkout
+        ? "finish-workout"
         : "finish-exercise";
   const primaryActionLabel = derivedPrimaryAction === "save-changes"
     ? selectedActualSet?.skipped && (Number(setDraft.actualWeight) > 0 || Number(setDraft.actualReps) > 0) ? "Log Set" : "Save Changes"
-    : derivedPrimaryAction === "save-set"
-      ? "Save Set"
-      : derivedPrimaryAction === "next-set"
-        ? "Next Set"
+    : derivedPrimaryAction === "next-set"
+      ? "Next Set"
+      : derivedPrimaryAction === "finish-workout"
+        ? "Finish Workout"
         : "Finish Exercise";
   const plannedLineupItems = lineupItems.filter((item) => !item.isExtra);
   const completedPlannedCount = plannedLineupItems.filter((item) => !!item.actualSet).length;
@@ -6076,10 +6183,6 @@ function LiveLogger({
                       logSet(setDraft.setRating, "stay");
                       return;
                     }
-                    if (derivedPrimaryAction === "save-set") {
-                      logSet(setDraft.setRating, "stay");
-                      return;
-                    }
                     if (derivedPrimaryAction === "next-set") {
                       loggerDebug("NEXT_SET_START", { fromLineupIndex: clampedActiveLineupIndex });
                       if (hasDraftValidValues && currentPendingSetIsUncovered && !isPastLastPlannedSet) {
@@ -6091,6 +6194,8 @@ function LiveLogger({
                       loggerDebug("NEXT_SET_END", { mode: "advance-only", toLineupIndex: clampedActiveLineupIndex + 1 });
                       return;
                     }
+                    // "finish-exercise" and "finish-workout" both go through finishExercise(),
+                    // which saves the active dirty set first and then navigates accordingly.
                     finishExercise();
                   }}
                 >

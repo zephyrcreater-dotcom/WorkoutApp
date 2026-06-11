@@ -1,5 +1,36 @@
 # HANDOFF.md
 
+## Current Handoff — Tab Navigation Workspace Restoration (Session 71)
+
+- Top-level tab navigation must restore the last workspace inside each tab instead of resetting to the tab's default screen. Today has its own `todayWorkspaceMode` state, separate from `activeTab`/`screen`, so returning to Today can restore off-program builder, programmed logger, off-program logger, plan wall, review, or scheduled overview. Clicking Today should not reset to default unless the saved workspace is invalid or the user explicitly chooses Current Day/Back to Today.
+- Root cause: `offProgramBuilder` state was local to `TodayScreen`, which unmounts every time the user switches tabs (conditional rendering via `{screen === "today" && <TodayScreen />}`). On remount, the lazy `useState` initializer tried to restore from localStorage, but this failed when exercises hadn't been flushed to storage yet (async `useEffect` timing) or when the builder was active with 0 exercises.
+- Fix: `offProgramBuilder` state (`OffProgramBuilderState`) is now owned by `App`, not `TodayScreen`. `App` never unmounts during a session, so the builder state survives all tab switches without any localStorage round-trips.
+- `TodayScreen` receives `offProgramBuilder` and `setOffProgramBuilder` as props (React.Dispatch). All existing setter calls inside `TodayScreen` work unchanged.
+- `goOffProgram()` now just sets `active: true` on the existing App-level state (preserving any existing exercises) instead of re-loading from localStorage.
+- localStorage persistence for builder draft still runs in `App` via `useEffect` and is used only for page-refresh restoration (boot hydration).
+- `OffProgramExerciseDraft` type is now declared at module scope (as an alias for `PersistedOffProgramBuilderItem`). `OffProgramBuilderState = { active: boolean; exercises: OffProgramExerciseDraft[] }` is also module-scope.
+
+## Current Handoff — Per-Tab Workspace Persistence Architecture (Session 70)
+
+- App navigation must persist per-tab workspace state. Today can restore: scheduled overview, programmed live workout, off-program builder draft, off-program active workout, or review — depending on the explicit last `todayWorkspaceMode`. Off-program builder drafts are not active workout sessions and must not auto-open as live workouts unless Start Workout was pressed. Refresh and tab navigation restore the last valid workspace; stale/missing/completed/abandoned drafts fall back safely.
+- `TodayWorkspaceMode = "scheduled-overview" | "programmed-workout" | "off-program-builder" | "off-program-workout"` is now persisted in `AppUiSnapshot` and tracked in `App` state.
+- Boot hydration only restores the logger if `todayWorkspaceMode` is `"programmed-workout"` or `"off-program-workout"`. Legacy snapshots without the field skip off-program session restoration to avoid surfacing stale sessions for users upgrading.
+- Off-program builder draft (selected exercises + sets/reps/RPE) is now persisted to localStorage under `iron_orbit_off_program_builder_draft_{userId}`. It is saved whenever the builder is active and restored when `goOffProgram()` is called or `TodayScreen` mounts with `todayWorkspaceMode === "off-program-builder"`.
+- `openLoggerSession()` and `resumeWorkoutSession()` both set `todayWorkspaceMode` based on `session.offProgram`. `navigateToScreen("today")` only routes to the logger if `todayWorkspaceMode` explicitly indicates an active logger session.
+- `goOffProgram()` sets workspace mode to `"off-program-builder"`. Cancel resets it to `"scheduled-overview"`. Starting a workout is handled by `openLoggerSession` setting `"off-program-workout"`.
+
+## Current Handoff — Off-Program Draft Routing + Unit Fix (Session 69)
+
+- Off-program builder drafts and active workout sessions must be separate states. A builder draft should persist but must not auto-open as an active workout when navigating Settings → Today; only a started active session should restore into the logger. Off-program starting weight/history units must resolve from logged history unit, exercise loading profile, machine stack, user default, then lb fallback, and must not relabel lb values as kg.
+- `navigateToScreen("today")` now only auto-routes to the logger for off-program sessions if `activeSessionId` is explicitly set (meaning the user was actively in the logger this browser session). Stale off-program sessions from a previous visit do not hijack Today navigation. Regular (non-off-program) planned block sessions still always restore as before.
+- Off-program builder "Last logged" display now uses `lastLog.unit` (the unit stored in the performance log) instead of `user.unit`. "Starting weight" display now uses `getExerciseDisplayUnit(ex, user)` which resolves: exercise defaultUnit → user.unit → lb fallback. This ensures Cable Triceps Kickback and similar exercises show lb when their history/profile is lb.
+
+## Current Handoff — Logger Action Button State Machine (Session 68)
+
+- Logger primary action button is now state-machine driven. Current/pending sets show Next Set, final set of a non-final exercise shows Finish Exercise, final set of the final exercise shows Finish Workout, and only editing an already completed set shows Save Changes. All finish/advance actions save the active dirty set first via the existing `finishExercise()` save-first guard.
+- Changing values on the current pending set must NOT switch the primary button to Save Set. It is still a current/pending set, so the button remains Next Set (or Finish Exercise/Finish Workout if it is the final set). Only clicking into an already-completed set triggers Save Changes.
+- `derivedPrimaryAction` type is now `"save-changes" | "next-set" | "finish-exercise" | "finish-workout"`. The old `"save-set"` branch is removed.
+
 ## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
 
 - App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.
