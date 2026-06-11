@@ -2025,7 +2025,7 @@ function TodayScreen({
     }
   }
 
-  type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number; plannedWeight?: number };
+  type OffProgramExerciseDraft = { exerciseId: string; targetSets: number; targetReps: number; targetRpe: number; plannedWeight?: number; setsInput?: string; repsInput?: string; rpeInput?: string };
   const [offProgramBuilder, setOffProgramBuilder] = useState<{ active: boolean; exercises: OffProgramExerciseDraft[] }>({ active: false, exercises: [] });
   const [showOffProgramPicker, setShowOffProgramPicker] = useState(false);
 
@@ -2298,30 +2298,72 @@ function TodayScreen({
             <div className="mb-4 space-y-3">
               {offProgramBuilder.exercises.map((item, idx) => {
                 const ex = db.exercises.find((e) => e.id === item.exerciseId);
+                const displayUnit = getExerciseDisplayUnit(ex, user);
                 const suggestedWeight = getOffProgramStartingWeight({ db, user, exercise: ex, targetReps: item.targetReps, targetRpe: item.targetRpe });
                 const lastLog = getLatestExercisePerformanceLog(db, user.id, item.exerciseId);
+                const setsDisplayValue = item.setsInput ?? String(item.targetSets);
+                const repsDisplayValue = item.repsInput ?? String(item.targetReps);
+                const rpeDisplayValue = item.rpeInput ?? String(item.targetRpe);
                 return (
                   <div key={item.exerciseId} className="rounded-lg border border-white/10 bg-white/[0.06] p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
                         <p className="font-black">{idx + 1}. {ex?.name}</p>
-                        {lastLog && <p className="text-xs text-iron-400">Last logged: {lastLog.weight} {user.unit} × {lastLog.reps}</p>}
-                        {suggestedWeight ? <p className="text-xs text-volt">Starting weight: {suggestedWeight} {user.unit}</p> : <p className="text-xs text-iron-500">No saved starting weight yet.</p>}
+                        {lastLog && <p className="text-xs text-iron-400">Last logged: {lastLog.weight} {displayUnit} × {lastLog.reps}</p>}
+                        {suggestedWeight ? <p className="text-xs text-volt">Starting weight: {suggestedWeight} {displayUnit}</p> : <p className="text-xs text-iron-500">No saved starting weight yet.</p>}
                       </div>
                       <button className="btn-ghost text-orange-200 text-xs" onClick={() => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.filter((_, i) => i !== idx) }))}>Remove</button>
                     </div>
                     <div className="mt-3 grid grid-cols-3 gap-2">
                       <div>
                         <p className="text-[0.65rem] font-medium text-iron-500">Sets</p>
-                        <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} value={item.targetSets} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetSets: Math.max(1, Number(e.target.value) || 1) } : ex2) }))} />
+                        <input
+                          className="field mt-1 py-1 text-center text-sm"
+                          type="number" min={1}
+                          value={setsDisplayValue}
+                          onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) =>
+                            i === idx ? { ...ex2, setsInput: e.target.value } : ex2
+                          ) }))}
+                          onBlur={() => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => {
+                            if (i !== idx) return ex2;
+                            const v = Math.max(1, Math.min(20, parseInt(ex2.setsInput ?? "", 10) || ex2.targetSets));
+                            return { ...ex2, setsInput: undefined, targetSets: v };
+                          }) }))}
+                        />
                       </div>
                       <div>
                         <p className="text-[0.65rem] font-medium text-iron-500">Reps</p>
-                        <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} value={item.targetReps} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetReps: Math.max(1, Number(e.target.value) || 1) } : ex2) }))} />
+                        <input
+                          className="field mt-1 py-1 text-center text-sm"
+                          type="number" min={1}
+                          value={repsDisplayValue}
+                          onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) =>
+                            i === idx ? { ...ex2, repsInput: e.target.value } : ex2
+                          ) }))}
+                          onBlur={() => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => {
+                            if (i !== idx) return ex2;
+                            const v = Math.max(1, Math.min(100, parseInt(ex2.repsInput ?? "", 10) || ex2.targetReps));
+                            return { ...ex2, repsInput: undefined, targetReps: v };
+                          }) }))}
+                        />
                       </div>
                       <div>
                         <p className="text-[0.65rem] font-medium text-iron-500">RPE</p>
-                        <input className="field mt-1 py-1 text-center text-sm" type="number" min={1} max={10} step={0.5} value={item.targetRpe} onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => i === idx ? { ...ex2, targetRpe: Math.min(10, Math.max(1, Number(e.target.value) || 7)) } : ex2) }))} />
+                        <input
+                          className="field mt-1 py-1 text-center text-sm"
+                          type="number" min={0} max={10} step={0.5}
+                          value={rpeDisplayValue}
+                          onChange={(e) => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) =>
+                            i === idx ? { ...ex2, rpeInput: e.target.value } : ex2
+                          ) }))}
+                          onBlur={() => setOffProgramBuilder((b) => ({ ...b, exercises: b.exercises.map((ex2, i) => {
+                            if (i !== idx) return ex2;
+                            const parsed = parseFloat(ex2.rpeInput ?? "");
+                            const raw = Number.isFinite(parsed) ? parsed : ex2.targetRpe;
+                            const clamped = Math.max(0, Math.min(10, Math.round(raw * 2) / 2));
+                            return { ...ex2, rpeInput: undefined, targetRpe: clamped };
+                          }) }))}
+                        />
                       </div>
                     </div>
                   </div>

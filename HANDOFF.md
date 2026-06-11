@@ -1,5 +1,16 @@
 # HANDOFF.md
 
+## Current Handoff — Off-Program Builder Committed vs Input State (Session 69)
+
+- Off-program builder derived values such as starting weight should be calculated from committed valid prescription values, not temporary input text. Invalid or in-progress edits like blank fields or RPE 14 should not drive starting-weight recalculation until blur/commit normalizes the value.
+- `onChange` updates only the raw input string (`setsInput`/`repsInput`/`rpeInput`). Committed numeric values (`targetSets`/`targetReps`/`targetRpe`) are updated only on `onBlur`, where they are parsed, clamped, and normalized. `suggestedWeight` reads committed values only, so it never reacts to invalid mid-type input.
+
+## Current Handoff — Off-Program Builder Input Editing + Unit Fix (Session 68)
+
+- Off-program builder selected exercise inputs must be fully editable. Sets/reps/RPE should allow temporary blank editing and clamp only on blur/commit. Off-program starting weight units should resolve from exercise/loading profile/user defaults and should not globally default to kg; lb is the fallback when no unit is known.
+- Root cause of kg default: off-program builder displayed `user.unit` directly instead of calling `getExerciseDisplayUnit(ex, user)`, which ignores the exercise's own `defaultUnit`.
+- Root cause of input clamping: `onChange` used `Number(e.target.value) || 1` which converts blank to 0, then 0 || 1 = 1, clamping immediately. Fixed by storing raw string in `setsInput`/`repsInput`/`rpeInput` draft fields, updating the committed numeric value only when the parsed result is valid, and normalizing on blur.
+
 ## Current Handoff — Today Shell Stability + Logger Immediate Draft Persistence (Session 67)
 
 - App shell/sidebar layout must be stable across tabs; Today should not use a wrapper that shifts the sidebar/menu.
