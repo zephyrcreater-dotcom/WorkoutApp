@@ -720,6 +720,11 @@ export interface ReadinessCheckIn {
   timeOfDay: string;
   limitations?: string;
   readinessScore: number;
+  // Pre-workout triple prompt fields
+  mentalScore?: number;
+  physicalScore?: number;
+  recoveryScore?: number;
+  sessionId?: ID;
 }
 
 export interface PR {

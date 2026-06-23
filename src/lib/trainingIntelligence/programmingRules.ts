@@ -11,6 +11,20 @@ import type {
 } from "../../types/domain";
 import { getTrainingTargets } from "./trainingRules";
 
+// When false, generated rep targets snap to common training values.
+// When true, any whole-number rep target is allowed.
+export const useExactRepTargets = false;
+
+const COMMON_REP_TARGETS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
+
+export function normalizeRepTarget(reps: number, exact = useExactRepTargets): number {
+  const whole = Math.max(1, Math.round(reps));
+  if (exact) return whole;
+  return COMMON_REP_TARGETS.reduce((best, candidate) =>
+    Math.abs(candidate - whole) < Math.abs(best - whole) ? candidate : best
+  );
+}
+
 export interface RequirementSlotPlan {
   role: ExerciseRole;
   preferredPatterns: MovementPattern[];
@@ -350,7 +364,7 @@ function getHypertrophyBasePrescription(input: {
     if (isPull) {
       return {
         sets: pullStyleCompound && isMainSlot ? 4 : 3,
-        reps: isMachine || isCable ? 10 : 9,
+        reps: isMachine || isCable ? 10 : 10,
         targetRpe: 8,
         restSeconds: 120,
         repRange: { min: 8, max: 12 },
@@ -396,7 +410,7 @@ function getHypertrophyBasePrescription(input: {
     if (hitsSideDelts || hitsRearDelts) {
       return {
         sets: 4,
-        reps: 16,
+        reps: 15,
         targetRpe: 8.5,
         restSeconds: 60,
         repRange: { min: 12, max: 20 },
@@ -423,7 +437,7 @@ function getHypertrophyBasePrescription(input: {
     if (isLegExtension || isLegCurl) {
       return {
         sets: 4,
-        reps: isLegCurl ? 12 : 14,
+        reps: isLegCurl ? 12 : 12,
         targetRpe: 8.5,
         restSeconds: 75,
         repRange: { min: 10, max: 20 },
@@ -441,7 +455,7 @@ function getHypertrophyBasePrescription(input: {
   if (exerciseRole === "delt_accessory" || exerciseRole === "rear_delt_accessory") {
     return {
       sets: 4,
-      reps: 16,
+      reps: 15,
       targetRpe: 8.5,
       restSeconds: 60,
       repRange: { min: 12, max: 20 },
@@ -1266,11 +1280,15 @@ export function getPrescriptionForExerciseSlot(input: PrescriptionInput): Exerci
     max: clamp(Math.max(repRange.max, reps), 1, 30),
   };
 
+  const normalizedReps = normalizeRepTarget(reps);
   return {
     sets,
-    reps,
+    reps: normalizedReps,
     targetRpe: roundedRpe,
-    repRange,
+    repRange: {
+      min: clamp(Math.min(repRange.min, normalizedReps), 1, 30),
+      max: clamp(Math.max(repRange.max, normalizedReps), 1, 30),
+    },
     rpeRange: normalizedRole === "main_strength_lift" ? targets.mainLiftRpeRange : targets.accessoryRpeRange,
     restSeconds,
     required: ["main_strength_lift", "main_hypertrophy_compound", "secondary_compound", "machine_compound", "heavy_hinge"].includes(normalizedRole),

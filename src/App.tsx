@@ -15,6 +15,7 @@ import {
   FileUp,
   Gauge,
   GitBranch,
+  GripVertical,
   Home,
   EyeOff,
   Library,
@@ -24,6 +25,7 @@ import {
   Pencil,
   Plus,
   RefreshCcw,
+  RefreshCw,
   RotateCcw,
   Save,
   Settings,
@@ -1073,6 +1075,8 @@ type LoggerSetDraftState = {
   painRating: string;
   sorenessRating: string;
   notes: string;
+  // true once the user has explicitly changed the weight field; suppresses automatic weight recalculation
+  weightUserEdited?: boolean;
 };
 
 type ReadinessFormDraft = Omit<ReadinessCheckIn, "id" | "userId" | "date" | "readinessScore">;
@@ -1145,6 +1149,18 @@ function clearOffProgramBuilderDraft(userId: string): void {
   } catch {
     // Ignore localStorage cleanup errors.
   }
+}
+
+const READINESS_SCORE_MAP: Record<number, number> = { 1: 20, 2: 40, 3: 70, 4: 85, 5: 100 };
+
+function calculateTripleReadinessScore(mental: number, physical: number, recovery: number): number {
+  const toScore = (v: number) => READINESS_SCORE_MAP[Math.max(1, Math.min(5, Math.round(v)))] ?? 70;
+  return Math.round((toScore(mental) + toScore(physical) + toScore(recovery)) / 3);
+}
+
+function todaysReadiness(db: TrainingDatabase, userId: string): ReadinessCheckIn | undefined {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  return db.readiness.find((r) => r.userId === userId && r.date.startsWith(todayIso));
 }
 
 function createDefaultReadinessDraft(): ReadinessFormDraft {
@@ -1964,6 +1980,9 @@ function TodayScreen({
   const [showInlineAddExercise, setShowInlineAddExercise] = useState(false);
   const [activeEditExerciseId, setActiveEditExerciseId] = useState<string | null>(null);
   const [exerciseDetail, setExerciseDetail] = useState<TodayExerciseDetailState | null>(null);
+  const [pendingStartDay, setPendingStartDay] = useState<WorkoutDay | null>(null);
+  const [showReadinessPrompt, setShowReadinessPrompt] = useState(false);
+  const [showUpdateCheckin, setShowUpdateCheckin] = useState(false);
   const todayPageClassName = "mx-auto max-w-[54rem] space-y-5 xl:mx-0";
 
   useEffect(() => {
@@ -2134,8 +2153,7 @@ function TodayScreen({
   const [offProgramActiveEditIdx, setOffProgramActiveEditIdx] = useState<number | null>(null);
   const [offProgramBuilderStep, setOffProgramBuilderStep] = useState<"build" | "review">("build");
 
-  function startWorkout(day?: WorkoutDay) {
-    if (!day) return;
+  function doStartWorkout(day: WorkoutDay, readiness?: ReadinessCheckIn) {
     const sameDaySession = db.sessions.find((session) => session.userId === user.id && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === day.id);
     if (sameDaySession) {
       void onResumeWorkout(sameDaySession.id);
@@ -2176,13 +2194,82 @@ function TodayScreen({
         sets: [],
         weakPointTags: []
       })),
-      recommendations: []
+      recommendations: [],
+      readiness,
     };
     void updateDb((draft) => {
       draft.sessions.unshift(session);
+      if (readiness) draft.readiness.unshift(readiness);
       return draft;
     });
     onOpenLoggerSession(session.id, { previousScreen: "today" });
+  }
+
+  function saveCheckinAndStart(day: WorkoutDay, mental: number, physical: number, recovery: number) {
+    const readiness: ReadinessCheckIn = {
+      id: createId("readiness"),
+      userId: user.id,
+      date: nowIso(),
+      sleepQuality: recovery,
+      stress: 3,
+      soreness: physical <= 2 ? 6 - physical : 3,
+      motivation: mental,
+      energy: physical,
+      jointPain: 1,
+      nutritionQuality: recovery,
+      caffeine: false,
+      timeOfDay: "pre-workout",
+      mentalScore: mental,
+      physicalScore: physical,
+      recoveryScore: recovery,
+      readinessScore: calculateTripleReadinessScore(mental, physical, recovery),
+    };
+    setShowReadinessPrompt(false);
+    setPendingStartDay(null);
+    doStartWorkout(day, readiness);
+  }
+
+  function startWorkout(day?: WorkoutDay) {
+    if (!day) return;
+    // If already resuming (same day in-progress), skip the check-in prompt
+    const sameDaySession = db.sessions.find((s) => s.userId === user.id && (s.status === "in-progress" || s.status === "review") && s.workoutDayId === day.id);
+    if (sameDaySession) {
+      void onResumeWorkout(sameDaySession.id);
+      return;
+    }
+    // Show check-in prompt if not already checked in today
+    if (!todaysReadiness(db, user.id)) {
+      setPendingStartDay(day);
+      setShowReadinessPrompt(true);
+      return;
+    }
+    doStartWorkout(day);
+  }
+
+  function handleUpdateCheckin(mental: number, physical: number, recovery: number) {
+    const readiness: ReadinessCheckIn = {
+      id: createId("readiness"),
+      userId: user.id,
+      date: nowIso(),
+      sleepQuality: recovery,
+      stress: 3,
+      soreness: physical <= 2 ? 6 - physical : 3,
+      motivation: mental,
+      energy: physical,
+      jointPain: 1,
+      nutritionQuality: recovery,
+      caffeine: false,
+      timeOfDay: "pre-workout",
+      mentalScore: mental,
+      physicalScore: physical,
+      recoveryScore: recovery,
+      readinessScore: calculateTripleReadinessScore(mental, physical, recovery),
+    };
+    void updateDb((draft) => {
+      draft.readiness.unshift(readiness);
+      return draft;
+    });
+    setShowUpdateCheckin(false);
   }
 
   function updateActiveBlockProgress(action: "skip" | "rest-complete" | "next" | "previous") {
@@ -2735,6 +2822,34 @@ function TodayScreen({
 
   return (
     <div className={todayPageClassName}>
+      {showReadinessPrompt && pendingStartDay && (
+        <PreWorkoutReadinessModal
+          mode="start-workout"
+          onSubmit={(mental, physical, recovery) => saveCheckinAndStart(pendingStartDay, mental, physical, recovery)}
+          onSkip={() => {
+            setShowReadinessPrompt(false);
+            const day = pendingStartDay;
+            setPendingStartDay(null);
+            doStartWorkout(day, {
+              id: createId("readiness"),
+              userId: user.id,
+              date: nowIso(),
+              sleepQuality: 3, stress: 3, soreness: 3, motivation: 3, energy: 3, jointPain: 1,
+              nutritionQuality: 3, caffeine: false, timeOfDay: "pre-workout",
+              mentalScore: 3, physicalScore: 3, recoveryScore: 3,
+              readinessScore: 70,
+            });
+          }}
+          onClose={() => { setShowReadinessPrompt(false); setPendingStartDay(null); }}
+        />
+      )}
+      {showUpdateCheckin && (
+        <PreWorkoutReadinessModal
+          mode="update-readiness"
+          onSubmit={handleUpdateCheckin}
+          onClose={() => setShowUpdateCheckin(false)}
+        />
+      )}
       {resumeMessage && (
         <section className="rounded-lg border border-ember/40 bg-ember/10 p-4">
           <div className="flex items-start justify-between gap-3">
@@ -2933,10 +3048,7 @@ function TodayScreen({
       {/* Week ready: show normal workout card */}
       {activeProgram && selectedDay && !weekLocked && !todaySelectedDayId && (
         (() => {
-          const latestReadiness = [...db.readiness]
-            .filter((item) => item.userId === user.id)
-            .sort((a, b) => (b.date || "").localeCompare(a.date || ""))[0];
-          const readiness = resumableSelectedDaySession?.readiness ?? latestReadiness;
+          const readiness = resumableSelectedDaySession?.readiness ?? todaysReadiness(db, user.id);
           const dayNumber = selectedDay.dayIndex || (todayPlan ? todayPlan.dayIndex + 1 : 1);
           const plannedExerciseCount = selectedDay.exercises.length;
           const activeExerciseIndex = resumableSelectedDaySession?.currentExerciseIndex ?? 0;
@@ -2946,33 +3058,6 @@ function TodayScreen({
             selectedDay.focus,
             plannedExerciseCount ? `~${estimateWorkoutDuration(selectedDay)} min` : null,
           ].filter(Boolean).join(" · ");
-          const readinessMetrics = [
-            {
-              key: "sleep",
-              label: "Sleep",
-              state: readiness ? ["Poor", "Fair", "Good", "Great", "Excellent"][Math.max(0, Math.min(4, readiness.sleepQuality - 1))] : "No check-in",
-              value: readiness ? `${readiness.sleepQuality}/5` : "—",
-            },
-            {
-              key: "stress",
-              label: "Stress",
-              state: readiness ? ["Low", "Steady", "Medium", "High", "Very high"][Math.max(0, Math.min(4, readiness.stress - 1))] : "No check-in",
-              value: readiness ? `${readiness.stress}/5` : "—",
-            },
-            {
-              key: "soreness",
-              label: "Soreness",
-              state: readiness ? ["None", "Mild", "Moderate", "High", "Severe"][Math.max(0, Math.min(4, readiness.soreness - 1))] : "No check-in",
-              value: readiness ? `${readiness.soreness}/5` : "—",
-            },
-            {
-              key: "motivation",
-              label: "Motivation",
-              state: readiness ? ["Low", "Steady", "Good", "High", "All in"][Math.max(0, Math.min(4, readiness.motivation - 1))] : "No check-in",
-              value: readiness ? `${readiness.motivation}/5` : "—",
-            },
-          ];
-          const readinessStatus = readiness ? "baseline" : "awaiting check-in";
           const showInlineEditActions = selectedDay.status !== "rest" && selectedDay.exercises.length > 0;
           const displayDay = showEditDay && editDraft ? editDraft : selectedDay;
           const displayExerciseCount = displayDay.exercises.length;
@@ -3350,28 +3435,20 @@ function TodayScreen({
                 </>
               )}
 
-              <section className="space-y-2.5">
-                <div className="space-y-1">
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-600">Readiness</p>
-                  <p className="text-base font-semibold text-iron-100">
-                    {readiness ? `${readiness.readinessScore}/100` : "No check-in"}
-                    <span className="ml-2 text-sm font-medium text-iron-500">· {readinessStatus}</span>
+              {readiness && (
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs text-iron-600">
+                    Readiness <span className="font-semibold text-iron-400">{readiness.readinessScore}/100</span>
+                    {" · "}{readinessAdjustment(readiness).explanation}
                   </p>
+                  <button
+                    className="tap-highlight shrink-0 text-xs text-iron-600 transition hover:text-iron-400 active:scale-[0.97]"
+                    onClick={() => setShowUpdateCheckin(true)}
+                  >
+                    Update
+                  </button>
                 </div>
-                <div className="grid grid-cols-2 overflow-hidden border border-white/[0.07] bg-[#0a1018] sm:grid-cols-4">
-                  {readinessMetrics.map((metric, index) => (
-                    <div
-                      key={metric.key}
-                      className={`px-4 py-3 ${index >= 2 ? "border-t border-white/[0.06] sm:border-t-0" : ""} ${index % 2 === 1 ? "border-l border-white/[0.06] sm:border-l-0" : ""} ${index > 0 ? "sm:border-l sm:border-white/[0.06]" : ""}`}
-                    >
-                      <p className="text-[0.68rem] font-semibold uppercase tracking-[0.1em] text-iron-600">{metric.label}</p>
-                      <p className="mt-2 text-sm font-medium text-iron-100">{metric.state}</p>
-                      <p className="mt-1 text-xs text-iron-500">{metric.value}</p>
-                    </div>
-                  ))}
-                </div>
-                {!readiness && <p className="text-xs text-iron-600">Readiness will appear here after your next check-in.</p>}
-              </section>
+              )}
 
               {recentCompletedSessions.length > 0 && (
                 <section className="rounded-sm border border-white/[0.06] bg-white/[0.03] p-4">
@@ -3862,6 +3939,7 @@ function LiveLogger({
   const [showCompletionSummary, setShowCompletionSummary] = useState(false);
   const [completionSummary, setCompletionSummary] = useState<{ score: number; status: string; hardSets: number; skippedSets: number; completedSets: number; suggestions: string[] } | null>(null);
   const [pendingRemoveExerciseLogId, setPendingRemoveExerciseLogId] = useState<string | null>(null);
+  const [pendingReplaceLogId, setPendingReplaceLogId] = useState<string | null>(null);
   const [pendingDeleteTarget, setPendingDeleteTarget] = useState<{ actualSetId?: string; plannedSetId?: string; lineupKey: string } | null>(null);
   const [openSwipeSetId, setOpenSwipeSetId] = useState<string | undefined>();
   const [isSwipeEnabled, setIsSwipeEnabled] = useState(() => {
@@ -3891,6 +3969,18 @@ function LiveLogger({
   const [setContextMenuId, setSetContextMenuId] = useState<string | null>(null);
   const [exerciseContextMenuId, setExerciseContextMenuId] = useState<string | null>(null);
   const exerciseLongPressTimerRef = useRef<number | null>(null);
+  // Drag-to-reorder for exercise tab strip
+  const [dragExerciseId, setDragExerciseId] = useState<string | null>(null);
+  const [dragInsertBeforeId, setDragInsertBeforeId] = useState<string | null>(null); // null = insert at end
+  const dragTabStripRef = useRef<HTMLDivElement | null>(null);
+  // Mutable per-gesture tracking for tab drag-to-reorder — never drives renders
+  const dragGestureRef = useRef<{
+    exerciseId: string;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    isDragging: boolean;
+  } | null>(null);
   const pendingUiDraftHydrationRef = useRef<string | null>(sessionId || null);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
@@ -4486,7 +4576,8 @@ function LiveLogger({
                     void updateDb((draft) => {
                       const target = draft.sessions.find((item) => item.id === session.id);
                       if (!target) return draft;
-                      const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise: ex, targetReps: 8, targetRpe: 7 });
+                      const histDefaults = getLastPerformedExerciseDefaults(draft, user.id, ex.id);
+                      const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise: ex, targetReps: histDefaults.reps, targetRpe: histDefaults.rpe });
                       const newLog: LoggedExercise = {
                         id: createId("logex"),
                         exerciseId: ex.id,
@@ -4494,7 +4585,7 @@ function LiveLogger({
                         sets: [],
                         weakPointTags: [],
                         offProgram: true,
-                        offProgramPlannedSets: buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
+                        offProgramPlannedSets: buildOffProgramPlannedSets(histDefaults.sets, histDefaults.reps, histDefaults.rpe, plannedWeight),
                       };
                       target.loggedExercises.push(newLog);
                       target.currentExerciseIndex = target.loggedExercises.length - 1;
@@ -5212,14 +5303,154 @@ function LiveLogger({
   }
 
 
+  // Derives a suggested weight for any pending set (programmed or off-program) given new reps/RPE.
+  // Hierarchy:
+  //   1. Same-exercise baseline from completed session history (getSameExerciseBaseline via getExerciseRecommendation)
+  //   2. exercisePerformanceLogs weight fallback (inside getOffProgramStartingWeight)
+  //   3. Current planned set's plannedWeight rescaled to new reps/RPE via e1RM math
+  //   4. Draft anchor: derive e1RM from current draft weight/reps/RPE, prescribe for new target.
+  //      This handles exercises with no completed history (e.g., first session, or in-progress only).
+  // Returns undefined when the exercise doesn't use load or no usable anchor exists.
+  function recalcSuggestedWeight(
+    targetReps: number,
+    targetRpe: number,
+    seedAnchor?: { anchorWeight: number; anchorReps: number; anchorRpe: number },
+  ): string | undefined {
+    if (isEditingLoggedSet) return undefined;
+    if (!liveExercise || liveExercise.category === "bodyweight") return undefined;
+    const inc = exerciseIncrement || 1;
+
+    // Path 1: e1RM-adjusted weight from completed session history.
+    // Call getExerciseRecommendation directly (not getOffProgramStartingWeight) to skip
+    // the unadjusted getLatestExercisePerformanceLog fallback inside that helper, which
+    // would return the raw historical weight unchanged and short-circuit Paths 2 and 3.
+    const recommendation = getExerciseRecommendation({
+      db, user, exercise: liveExercise,
+      plannedSet: { id: "recalc-anchor", kind: "working", targetReps, targetRpe },
+      goal: user.goal,
+      gymId: user.activeGymId,
+    });
+    if (recommendation?.recommendedWeight && recommendation.recommendedWeight > 0) {
+      return String(Math.round(recommendation.recommendedWeight / inc) * inc);
+    }
+
+    // Path 2: planned prescription baseline — use plannedWeight at original targetReps/targetRpe
+    // to derive e1RM, then reverse-prescribe for the new target. Covers programmed exercises
+    // where history is absent but the plan encodes a specific weight anchor.
+    const planAnchor = currentPlannedSet?.plannedWeight;
+    const planAnchorReps = currentPlannedSet?.targetReps;
+    const planAnchorRpe = currentPlannedSet?.targetRpe;
+    if (planAnchor && planAnchor > 0 && planAnchorReps && planAnchorReps > 0 && planAnchorRpe && planAnchorRpe > 0) {
+      const e1rmResult = calculateObservedE1RMResult({ weight: planAnchor, reps: planAnchorReps, rpe: planAnchorRpe });
+      if (e1rmResult?.e1rm && e1rmResult.e1rm > 0) {
+        const prescription = prescribeLoadFromObservedE1RM({
+          observedE1RM: e1rmResult.e1rm,
+          targetReps,
+          targetRpe,
+          exercise: liveExercise,
+          unit: exerciseUnit as "lb" | "kg",
+          recentActualWeight: planAnchor,
+          increment: inc,
+        });
+        if (prescription.roundedWeight > 0) {
+          return String(prescription.roundedWeight);
+        }
+      }
+    }
+
+    // Path 3: use the seed (pre-edit) weight as an e1RM anchor. The seed is the clean planned
+    // state before any user interaction — anchoring here avoids the cascade rounding trap
+    // where each press re-derives from the previous rounded result, keeping weight stuck.
+    // The caller captures selectionDraftSeed before the updater so the anchor is stable.
+    if (
+      seedAnchor &&
+      seedAnchor.anchorWeight > 0 &&
+      seedAnchor.anchorReps > 0 &&
+      seedAnchor.anchorRpe > 0 &&
+      !(seedAnchor.anchorReps === targetReps && seedAnchor.anchorRpe === targetRpe)
+    ) {
+      const e1rmResult = calculateObservedE1RMResult({
+        weight: seedAnchor.anchorWeight,
+        reps: seedAnchor.anchorReps,
+        rpe: seedAnchor.anchorRpe,
+      });
+      if (e1rmResult?.e1rm && e1rmResult.e1rm > 0) {
+        const prescription = prescribeLoadFromObservedE1RM({
+          observedE1RM: e1rmResult.e1rm,
+          targetReps,
+          targetRpe,
+          exercise: liveExercise,
+          unit: exerciseUnit as "lb" | "kg",
+          recentActualWeight: seedAnchor.anchorWeight,
+          increment: inc,
+        });
+        if (prescription.roundedWeight > 0) {
+          return String(prescription.roundedWeight);
+        }
+      }
+    }
+
+    return undefined;
+  }
+
   function adjustWeight(delta: number) {
-    updateSetDraftImmediately((d) => ({ ...d, actualWeight: String(Math.max(0, Math.round(((Number(d.actualWeight) || 0) + delta) * 1000) / 1000)) }));
+    // Marking weightUserEdited so automatic recalculation won't overwrite the user's explicit choice
+    updateSetDraftImmediately((d) => ({ ...d, actualWeight: String(Math.max(0, Math.round(((Number(d.actualWeight) || 0) + delta) * 1000) / 1000)), weightUserEdited: true }));
   }
   function adjustReps(delta: number) {
-    updateSetDraftImmediately((d) => ({ ...d, actualReps: String(Math.max(0, (Number(d.actualReps) || 0) + delta)) }));
+    // Capture seed outside the updater — it's the clean planned state before any user edits.
+    // Using it as the e1RM anchor avoids the cascade rounding trap (see recalcSuggestedWeight).
+    const seedW = Number(selectionDraftSeed.actualWeight) || 0;
+    const seedR = Number(selectionDraftSeed.actualReps) || 0;
+    const seedRpe = Number(selectionDraftSeed.actualRpe) || 0;
+    const seedAnchor = seedW > 0 && seedR > 0 && seedRpe > 0
+      ? { anchorWeight: seedW, anchorReps: seedR, anchorRpe: seedRpe }
+      : undefined;
+    updateSetDraftImmediately((d) => {
+      const newReps = Math.max(0, (Number(d.actualReps) || 0) + delta);
+      const rpe = Number(d.actualRpe) || 7;
+      const newWeight = !d.weightUserEdited && newReps > 0 && rpe > 0
+        ? recalcSuggestedWeight(newReps, rpe, seedAnchor) ?? d.actualWeight
+        : d.actualWeight;
+      return { ...d, actualReps: String(newReps), actualWeight: newWeight };
+    });
   }
   function adjustRpe(delta: number) {
-    updateSetDraftImmediately((d) => ({ ...d, actualRpe: String(Math.max(0, Math.min(10, Number(((Number(d.actualRpe) || 0) + delta).toFixed(1))))) }));
+    const seedW = Number(selectionDraftSeed.actualWeight) || 0;
+    const seedR = Number(selectionDraftSeed.actualReps) || 0;
+    const seedRpe = Number(selectionDraftSeed.actualRpe) || 0;
+    const seedAnchor = seedW > 0 && seedR > 0 && seedRpe > 0
+      ? { anchorWeight: seedW, anchorReps: seedR, anchorRpe: seedRpe }
+      : undefined;
+    updateSetDraftImmediately((d) => {
+      const newRpe = Math.max(0, Math.min(10, Number(((Number(d.actualRpe) || 0) + delta).toFixed(1))));
+      const reps = Number(d.actualReps) || 0;
+      const newWeight = !d.weightUserEdited && reps > 0 && newRpe > 0
+        ? recalcSuggestedWeight(reps, newRpe, seedAnchor) ?? d.actualWeight
+        : d.actualWeight;
+      return { ...d, actualRpe: String(newRpe), actualWeight: newWeight };
+    });
+  }
+
+  function handleRepsOrRpeBlur() {
+    if (isEditingLoggedSet) return;
+    // For text input blur, use the seed (pre-edit) values as the anchor so the e1RM
+    // reflects what the set looked like before the user started typing.
+    const seedWeight = Number(selectionDraftSeed.actualWeight) || 0;
+    const seedReps = Number(selectionDraftSeed.actualReps) || 0;
+    const seedRpe = Number(selectionDraftSeed.actualRpe) || 0;
+    const blurAnchor = seedWeight > 0 && seedReps > 0 && seedRpe > 0
+      ? { anchorWeight: seedWeight, anchorReps: seedReps, anchorRpe: seedRpe }
+      : undefined;
+    updateSetDraftImmediately((d) => {
+      if (d.weightUserEdited) return d;
+      const reps = Number(d.actualReps) || 0;
+      const rpe = Number(d.actualRpe) || 0;
+      if (reps <= 0 || rpe <= 0) return d;
+      const newWeight = recalcSuggestedWeight(reps, rpe, blurAnchor);
+      if (!newWeight) return d;
+      return { ...d, actualWeight: newWeight };
+    });
   }
 
   function navigateToNextExercise() {
@@ -5449,6 +5680,99 @@ function LiveLogger({
     loggerDebug("FINISH_EXERCISE_END", { result: hasMoreExercises ? "next-exercise" : "finish-workout" });
   }
 
+  function replaceExerciseInSession(logId: string, newExercise: Exercise) {
+    void updateDb((draft) => {
+      const target = draft.sessions.find((s) => s.id === liveSession.id);
+      if (!target) return draft;
+      const logIndex = target.loggedExercises.findIndex((l) => l.id === logId);
+      if (logIndex < 0) return draft;
+      const log = target.loggedExercises[logIndex];
+
+      // Prescription recovery priority:
+      // 1. A prior slot in this same session for the new exercise (swap-back case)
+      // 2. Completed session history
+      // 3. Generic defaults (3/8/7) via getLastPerformedExerciseDefaults fallback
+
+      // Check if the new exercise already appeared in another slot of the current session (not the slot being replaced)
+      const priorSlotInSession = target.loggedExercises.find(
+        (l) => l.id !== logId && l.exerciseId === newExercise.id,
+      );
+
+      let plannedSets: ReturnType<typeof buildOffProgramPlannedSets>;
+      if (priorSlotInSession?.offProgramPlannedSets?.length) {
+        // Restore the prescription from the prior slot in this session
+        plannedSets = priorSlotInSession.offProgramPlannedSets.map((s) => ({ ...s, id: createId("pset") }));
+      } else {
+        // Derive from completed history (getLastPerformedExerciseDefaults reads completed sessions only)
+        const histDefaults = getLastPerformedExerciseDefaults(draft, user.id, newExercise.id);
+        const newWeight = getOffProgramStartingWeight({ db: draft, user, exercise: newExercise, targetReps: histDefaults.reps, targetRpe: histDefaults.rpe });
+        // Use existing set count when available (preserve the slot's volume intent), fall back to history
+        const existingCount = log.offProgramPlannedSets?.length || log.sets.filter((s) => !s.skipped).length || histDefaults.sets;
+        plannedSets = buildOffProgramPlannedSets(existingCount, histDefaults.reps, histDefaults.rpe, newWeight);
+      }
+
+      // Swap the exercise identity; preserve all sets, order, completed data
+      log.exerciseId = newExercise.id;
+      log.plannedExerciseId = undefined;
+      log.plannedExerciseSnapshot = undefined;
+      log.offProgramPlannedSets = plannedSets;
+      log.offProgram = true;
+      target.updatedAt = nowIso();
+      return draft;
+    });
+    setPendingReplaceLogId(null);
+    setExerciseContextMenuId(null);
+  }
+
+  function reorderExercisesInSession(draggedId: string, insertBeforeId: string | null) {
+    void updateDb((draft) => {
+      const target = draft.sessions.find((s) => s.id === liveSession.id);
+      if (!target) return draft;
+      const logs = target.loggedExercises;
+      const fromIdx = logs.findIndex((l) => l.id === draggedId);
+      if (fromIdx < 0) return draft;
+      const [removed] = logs.splice(fromIdx, 1);
+      if (insertBeforeId === null) {
+        logs.push(removed);
+      } else {
+        const toIdx = logs.findIndex((l) => l.id === insertBeforeId);
+        if (toIdx < 0) { logs.push(removed); }
+        else { logs.splice(toIdx, 0, removed); }
+      }
+      logs.forEach((l, i) => { l.order = i + 1; });
+      target.updatedAt = nowIso();
+      return draft;
+    });
+  }
+
+  function duplicateExerciseInSession(logId: string) {
+    const sourceLog = liveSession.loggedExercises.find((l) => l.id === logId);
+    if (!sourceLog) return;
+    const newLogId = createId("logex");
+    void updateDb((draft) => {
+      const target = draft.sessions.find((s) => s.id === liveSession.id);
+      if (!target) return draft;
+      const srcIdx = target.loggedExercises.findIndex((l) => l.id === logId);
+      if (srcIdx < 0) return draft;
+      const src = target.loggedExercises[srcIdx];
+      const dupe: typeof src = {
+        ...structuredClone(src),
+        id: newLogId,
+        sets: [], // start fresh — no completed sets carried over
+        order: srcIdx + 2,
+        offProgramPlannedSets: src.offProgramPlannedSets
+          ? src.offProgramPlannedSets.map((s) => ({ ...s, id: createId("pset") }))
+          : undefined,
+      };
+      target.loggedExercises.splice(srcIdx + 1, 0, dupe);
+      target.loggedExercises.forEach((l, i) => { l.order = i + 1; });
+      target.updatedAt = nowIso();
+      return draft;
+    });
+    setExerciseContextMenuId(null);
+    setActiveExerciseId(newLogId);
+  }
+
   function removeExerciseFromSession(logId: string) {
     const removalIndex = liveSession.loggedExercises.findIndex((logged) => logged.id === logId);
     if (removalIndex < 0) return;
@@ -5573,12 +5897,13 @@ function LiveLogger({
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       if (!target) return draft;
-      const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise, targetReps: 8, targetRpe: 7 });
+      const histDefaults = getLastPerformedExerciseDefaults(draft, user.id, exercise.id);
+      const plannedWeight = getOffProgramStartingWeight({ db: draft, user, exercise, targetReps: histDefaults.reps, targetRpe: histDefaults.rpe });
       const runtimePlannedSets = normalizeLoggerRuntimePlannedSets(
-        buildOffProgramPlannedSets(3, 8, 7, plannedWeight),
-        3,
-        8,
-        7,
+        buildOffProgramPlannedSets(histDefaults.sets, histDefaults.reps, histDefaults.rpe, plannedWeight),
+        histDefaults.sets,
+        histDefaults.reps,
+        histDefaults.rpe,
         plannedWeight
       );
       target.loggedExercises.push({
@@ -5632,6 +5957,18 @@ function LiveLogger({
             </div>
           </div>
         </div>
+      )}
+      {pendingReplaceLogId && (
+        <ExercisePicker
+          db={db}
+          user={user}
+          updateDb={updateDb}
+          variant="week-sheet"
+          title="Replace with…"
+          alreadyAddedIds={[]}
+          onClose={() => setPendingReplaceLogId(null)}
+          onPick={(newExercise) => replaceExerciseInSession(pendingReplaceLogId, newExercise)}
+        />
       )}
       {pendingRemoveExerciseLogId && (() => {
         const targetLog = session.loggedExercises.find((logged) => logged.id === pendingRemoveExerciseLogId);
@@ -5738,6 +6075,15 @@ function LiveLogger({
             onDismiss={() => setExerciseContextMenuId(null)}
             items={[
               {
+                label: "Replace Exercise",
+                icon: <RefreshCw className="h-4 w-4" />,
+                onClick: () => {
+                  if (!menuLog) return;
+                  setExerciseContextMenuId(null);
+                  setPendingReplaceLogId(menuLog.id);
+                },
+              },
+              {
                 label: "Add Set",
                 icon: <Plus className="h-4 w-4" />,
                 onClick: () => {
@@ -5752,6 +6098,11 @@ function LiveLogger({
                   }
                   addSet();
                 },
+              },
+              {
+                label: "Duplicate",
+                icon: <Copy className="h-4 w-4" />,
+                onClick: () => { if (menuLog) duplicateExerciseInSession(menuLog.id); },
               },
               {
                 label: "Skip Entire Exercise",
@@ -5944,57 +6295,137 @@ function LiveLogger({
           </div>
         </div>
       )}
-      {!session.readiness && (
-        <ReadinessCard
-          draft={readinessDraft}
-          onDraftChange={updateReadinessDraftImmediately}
-          onSubmit={addReadiness}
-          user={user}
-        />
-      )}
-
       {/* Exercise tab strip — all screen sizes */}
       {session.loggedExercises.length > 1 && (
-        <div className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4">
+        <div
+          ref={dragTabStripRef}
+          className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4"
+        >
           {session.loggedExercises.map((logged) => {
             const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
             const isActive = activeExerciseLog.id === logged.id;
             const hardSets = logged.sets.filter(isHardSet).length;
             const totalSets = logged.sets.length;
+            const isDragging = dragExerciseId === logged.id;
+            const isDropTarget = dragExerciseId !== null && dragInsertBeforeId === logged.id;
+            const isLastTab = logged.id === session.loggedExercises.at(-1)?.id;
+
+            function computeInsertBefore(clientX: number): string | null {
+              const strip = dragTabStripRef.current;
+              if (!strip) return null;
+              const tabs = Array.from(strip.querySelectorAll<HTMLElement>("[data-logid]"));
+              for (const tab of tabs) {
+                const rect = tab.getBoundingClientRect();
+                if (clientX < rect.left + rect.width / 2) return tab.dataset.logid ?? null;
+              }
+              return null;
+            }
+
             return (
-              <button
+              <div
                 key={logged.id}
-                className={`logger-tab ${isActive ? "logger-tab-active" : "logger-tab-inactive"}`}
-                onClick={() => {
-                  setActiveExerciseId(logged.id);
-                  setSelectedLoggingIndex(null);
-                  setEditingSetId(null);
-                  setOpenSwipeSetId(undefined);
-                  swipeGestureRef.current = null;
-                  setSwipeDrag(null);
-                  setPendingDeleteTarget(null);
-                  persistActiveWorkoutDraftImmediately({
-                    activeExerciseId: logged.id,
-                    activeSetActualId: null,
-                    activeSetPlannedId: null,
-                    activeSetPlannedIndex: 0,
-                    selectionMode: "planned",
-                  });
-                }}
-                onPointerDown={() => {
-                  if (exerciseLongPressTimerRef.current) clearTimeout(exerciseLongPressTimerRef.current);
+                data-logid={logged.id}
+                className={`relative shrink-0 transition-opacity ${isDragging ? "opacity-30" : "opacity-100"}`}
+                style={{ touchAction: "pan-y" }} // allow vertical scroll; horizontal drag handled by gesture logic
+                onPointerDown={(e) => {
+                  // Cancel any previous gesture
+                  if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+                  dragGestureRef.current = {
+                    exerciseId: logged.id,
+                    pointerId: e.pointerId,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    isDragging: false,
+                  };
+                  // Start long-press timer for context menu (cancelled if drag starts)
                   exerciseLongPressTimerRef.current = window.setTimeout(() => {
                     exerciseLongPressTimerRef.current = null;
-                    setExerciseContextMenuId(logged.id);
+                    if (dragGestureRef.current && !dragGestureRef.current.isDragging) {
+                      dragGestureRef.current = null;
+                      setExerciseContextMenuId(logged.id);
+                    }
                   }, 500);
                 }}
-                onPointerUp={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
-                onPointerLeave={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
-                onPointerCancel={() => { if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; } }}
+                onPointerMove={(e) => {
+                  const g = dragGestureRef.current;
+                  if (!g || g.exerciseId !== logged.id || g.pointerId !== e.pointerId) return;
+                  const dx = Math.abs(e.clientX - g.startX);
+                  const dy = Math.abs(e.clientY - g.startY);
+                  if (!g.isDragging) {
+                    // Threshold: 6px horizontal, and horizontal must dominate to avoid fighting scroll
+                    if (dx < 6 || dy > dx * 1.5) return;
+                    g.isDragging = true;
+                    // Cancel long-press — this is now a drag gesture
+                    if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+                    // Capture pointer so events keep coming even if pointer leaves element
+                    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+                    setDragExerciseId(logged.id);
+                    setDragInsertBeforeId(computeInsertBefore(e.clientX));
+                  } else {
+                    setDragInsertBeforeId(computeInsertBefore(e.clientX));
+                  }
+                }}
+                onPointerUp={(e) => {
+                  if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+                  const g = dragGestureRef.current;
+                  dragGestureRef.current = null;
+                  if (!g || g.exerciseId !== logged.id) return;
+
+                  if (g.isDragging) {
+                    // Commit reorder
+                    const insertBefore = computeInsertBefore(e.clientX);
+                    const logs = session.loggedExercises;
+                    const fromIdx = logs.findIndex((l) => l.id === g.exerciseId);
+                    const toIdx = insertBefore === null ? logs.length : logs.findIndex((l) => l.id === insertBefore);
+                    if (fromIdx !== toIdx && fromIdx + 1 !== toIdx) {
+                      reorderExercisesInSession(g.exerciseId, insertBefore);
+                    }
+                    setDragExerciseId(null);
+                    setDragInsertBeforeId(null);
+                  } else {
+                    // Clean tap — select exercise
+                    setDragExerciseId(null);
+                    setDragInsertBeforeId(null);
+                    setActiveExerciseId(logged.id);
+                    setSelectedLoggingIndex(null);
+                    setEditingSetId(null);
+                    setOpenSwipeSetId(undefined);
+                    swipeGestureRef.current = null;
+                    setSwipeDrag(null);
+                    setPendingDeleteTarget(null);
+                    persistActiveWorkoutDraftImmediately({
+                      activeExerciseId: logged.id,
+                      activeSetActualId: null,
+                      activeSetPlannedId: null,
+                      activeSetPlannedIndex: 0,
+                      selectionMode: "planned",
+                    });
+                  }
+                }}
+                onPointerCancel={() => {
+                  if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+                  dragGestureRef.current = null;
+                  setDragExerciseId(null);
+                  setDragInsertBeforeId(null);
+                }}
               >
-                <span className={`block min-h-[2.2rem] max-w-[7rem] line-clamp-2 text-xs font-medium leading-snug ${isActive ? "text-white" : "text-iron-300"}`}>{item?.name}</span>
-                <span className={`text-[0.65rem] ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets}/{totalSets}</span>
-              </button>
+                {/* Drop indicator — left edge */}
+                {isDropTarget && (
+                  <div className="pointer-events-none absolute left-0 top-0 h-full w-0.5 bg-[#0a84ff] z-10" />
+                )}
+                {/* Drop indicator — right edge of last tab when inserting at end */}
+                {isLastTab && dragExerciseId !== null && dragInsertBeforeId === null && (
+                  <div className="pointer-events-none absolute right-0 top-0 h-full w-0.5 bg-[#0a84ff] z-10" />
+                )}
+                {/* Tab content — not a button so pointer events stay on the parent div */}
+                <div className={`logger-tab select-none ${isActive ? "logger-tab-active" : "logger-tab-inactive"}`}>
+                  <div className="flex items-start gap-1">
+                    <GripVertical className="mt-0.5 h-2.5 w-2.5 shrink-0 text-iron-700" aria-hidden="true" />
+                    <span className={`block min-h-[2.2rem] max-w-[6rem] line-clamp-2 text-xs font-medium leading-snug ${isActive ? "text-white" : "text-iron-300"}`}>{item?.name}</span>
+                  </div>
+                  <span className={`text-[0.65rem] ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets}/{totalSets}</span>
+                </div>
+              </div>
             );
           })}
         </div>
@@ -6257,7 +6688,7 @@ function LiveLogger({
                       step="1"
                       value={setDraft.actualWeight}
                       placeholder={bodyweightMovement ? "BW" : undefined}
-                      onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualWeight: e.target.value }))}
+                      onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualWeight: e.target.value, weightUserEdited: true }))}
                     />
                     <span className="logger-input-unit">{exerciseUnit}</span>
                   </div>
@@ -6278,6 +6709,7 @@ function LiveLogger({
                       step="1"
                       value={setDraft.actualReps}
                       onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualReps: e.target.value }))}
+                      onBlur={handleRepsOrRpeBlur}
                     />
                   </div>
                   <button className="logger-step-btn" onClick={() => adjustReps(1)}><Plus className="h-3.5 w-3.5" /></button>
@@ -6297,6 +6729,7 @@ function LiveLogger({
                       step="0.5"
                       value={setDraft.actualRpe}
                       onChange={(e) => updateSetDraftImmediately((draft) => ({ ...draft, actualRpe: e.target.value }))}
+                      onBlur={handleRepsOrRpeBlur}
                     />
                   </div>
                   <button className="logger-step-btn" onClick={() => adjustRpe(0.5)}><Plus className="h-3.5 w-3.5" /></button>
@@ -13165,6 +13598,140 @@ function SettingsScreen({
   );
 }
 
+const READINESS_EMOJIS = ["😵", "😕", "😐", "🙂", "🔥"] as const;
+const READINESS_ROW_INFO: { key: "mental" | "physical" | "recovery"; label: string; info: string }[] = [
+  { key: "mental", label: "Mental", info: "Stress, motivation, focus, and confidence." },
+  { key: "physical", label: "Physical", info: "Soreness, pain, fatigue, and overall body readiness." },
+  { key: "recovery", label: "Recovery (Sleep & Nutrition)", info: "Sleep quality, food intake, hydration, and general recovery." },
+];
+
+function ReadinessInfoTooltip({ info, label }: { info: string; label: string }) {
+  const [visible, setVisible] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function show() {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    setVisible(true);
+  }
+  function hide() {
+    timerRef.current = setTimeout(() => setVisible(false), 80);
+  }
+  function toggle() {
+    if (visible) {
+      setVisible(false);
+    } else {
+      show();
+      timerRef.current = setTimeout(() => setVisible(false), 3000);
+    }
+  }
+
+  return (
+    <span className="relative inline-flex items-center">
+      <button
+        type="button"
+        className="tap-highlight rounded-full p-0.5 text-iron-600 transition hover:text-iron-400 active:scale-[0.95]"
+        aria-label={`Info about ${label}`}
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={toggle}
+      >
+        <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <circle cx="8" cy="8" r="7" />
+          <line x1="8" y1="7" x2="8" y2="11" strokeLinecap="round" />
+          <circle cx="8" cy="5" r="0.5" fill="currentColor" stroke="none" />
+        </svg>
+      </button>
+      {visible && (
+        <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1.5 w-44 -translate-x-1/2 rounded-md border border-white/[0.1] bg-iron-800 px-2.5 py-1.5 text-xs leading-snug text-iron-300 shadow-xl">
+          {info}
+          <span className="absolute left-1/2 top-full -translate-x-1/2 border-4 border-transparent border-t-iron-800" />
+        </span>
+      )}
+    </span>
+  );
+}
+
+function PreWorkoutReadinessModal({
+  mode,
+  onSubmit,
+  onSkip,
+  onClose,
+}: {
+  mode: "start-workout" | "update-readiness";
+  onSubmit: (mental: number, physical: number, recovery: number) => void;
+  onSkip?: () => void;
+  onClose: () => void;
+}) {
+  const [values, setValues] = useState<Record<"mental" | "physical" | "recovery", number>>({ mental: 3, physical: 3, recovery: 3 });
+
+  const score = calculateTripleReadinessScore(values.mental, values.physical, values.recovery);
+  const isStartMode = mode === "start-workout";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center bg-iron-950/80">
+      <div className="w-full max-w-sm rounded-t-2xl sm:rounded-2xl bg-iron-900 border border-white/[0.08] pb-safe p-5 space-y-5">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h2 className="text-lg font-black text-white">How are you feeling today?</h2>
+            <p className="mt-0.5 text-xs text-iron-500">Readiness score: <span className="font-semibold text-iron-300">{score}/100</span></p>
+          </div>
+          <button
+            type="button"
+            className="tap-highlight -mr-1 -mt-1 rounded-md p-1.5 text-iron-600 transition hover:bg-white/[0.06] hover:text-iron-400 active:scale-[0.95]"
+            onClick={onClose}
+            aria-label="Close"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {READINESS_ROW_INFO.map(({ key, label, info }) => (
+            <div key={key}>
+              <div className="mb-2 flex items-center gap-1.5">
+                <span className="text-sm font-semibold text-iron-200">{label}</span>
+                <ReadinessInfoTooltip info={info} label={label} />
+              </div>
+              <div className="flex gap-2">
+                {READINESS_EMOJIS.map((emoji, i) => {
+                  const val = i + 1;
+                  const selected = values[key] === val;
+                  return (
+                    <button
+                      key={val}
+                      className={`tap-highlight flex-1 rounded-lg py-2.5 text-xl transition active:scale-[0.93] ${selected ? "bg-[#0a84ff]/20 ring-1 ring-[#0a84ff]/60" : "bg-white/[0.04] hover:bg-white/[0.08]"}`}
+                      onClick={() => setValues((v) => ({ ...v, [key]: val }))}
+                      aria-label={`${label} ${val}`}
+                    >
+                      {emoji}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="space-y-2 pt-1">
+          <button
+            className="apollo-primary-btn w-full"
+            onClick={() => onSubmit(values.mental, values.physical, values.recovery)}
+          >
+            {isStartMode ? "Start Workout" : "Update Readiness"}
+          </button>
+          {isStartMode && onSkip && (
+            <button className="btn-ghost w-full text-iron-500" onClick={onSkip}>
+              Skip for now
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ReadinessCard({
   draft,
   onDraftChange,
@@ -13641,6 +14208,32 @@ function normalizeLoggerRuntimePlannedSets(
     targetRpe: sanitizeRpe(set.targetRpe || fallbackRpe),
     plannedWeight: typeof set.plannedWeight === "number" ? set.plannedWeight : (index === 0 ? fallbackWeight : undefined),
   }));
+}
+
+function getLastPerformedExerciseDefaults(
+  db: TrainingDatabase,
+  userId: string,
+  exerciseId: string,
+): { sets: number; reps: number; rpe: number } {
+  const fallback = { sets: 3, reps: 8, rpe: 7 };
+  const mostRecentLogged = db.sessions
+    .filter((session) => session.userId === userId && session.status === "completed")
+    .sort((a, b) => (b.completedAt || b.updatedAt || b.startedAt).localeCompare(a.completedAt || a.updatedAt || a.startedAt))
+    .flatMap((session) =>
+      session.loggedExercises
+        .filter((logged) => logged.exerciseId === exerciseId)
+        .map((logged) => logged)
+    )
+    .at(0);
+  if (!mostRecentLogged) return fallback;
+  const completedSets = mostRecentLogged.sets.filter(isCompletedValidSet);
+  if (!completedSets.length) return fallback;
+  const lastSet = completedSets.at(-1)!;
+  return {
+    sets: completedSets.length,
+    reps: lastSet.actualReps || fallback.reps,
+    rpe: lastSet.actualRpe || fallback.rpe,
+  };
 }
 
 function getLatestExercisePerformanceLog(db: TrainingDatabase, userId: string, exerciseId: string) {
