@@ -524,6 +524,7 @@ export interface WorkoutDay {
   movementPatterns?: MovementPattern[];
   status?: "planned" | "completed" | "skipped" | "rest";
   exercises: PlannedExercise[];
+  skippedRequirementIds?: string[]; // per-day override: requirement IDs the user chose to skip
   notes?: string;
 }
 

@@ -117,7 +117,8 @@ import {
   safeAverageRpe,
   isBlockWeekComplete,
   isTrainingWeekComplete,
-  generateWeekReview
+  generateWeekReview,
+  roundToIncrement,
 } from "./lib/trainingMath";
 import { parseCSVText, buildImportReviewSummary, applyImportGroups, applyMatchOverride } from "./lib/importers/csvWorkoutImport";
 import { CUSTOM_INCREMENT_LOADING_PROFILE_ID, EQUIPMENT_DEFAULT_PROFILE_IDS, getEffectiveLoading } from "./lib/loadingProfiles";
@@ -819,12 +820,16 @@ function allocateExercisesToRequirements(
 
 function findNextUnmetRequirementIndex(
   requirements: SplitDayRequirement[],
-  allocation: RequirementAllocationResult
+  allocation: RequirementAllocationResult,
+  skipIds?: Set<string>
 ): number {
   const sortedBySpecificity = requirements
     .map((req, index) => ({ req, index }))
     .sort((a, b) => compareRequirementsBySpecificity(a.req, b.req));
-  const next = sortedBySpecificity.find(({ req }) => (allocation.fulfilledByRequirementId.get(req.id) ?? 0) < req.requiredExerciseCount);
+  const next = sortedBySpecificity.find(({ req }) =>
+    !skipIds?.has(req.id) &&
+    (allocation.fulfilledByRequirementId.get(req.id) ?? 0) < req.requiredExerciseCount
+  );
   return next ? next.index : -1;
 }
 
@@ -3981,6 +3986,10 @@ function LiveLogger({
     startY: number;
     isDragging: boolean;
   } | null>(null);
+  // True when the user is on a touch/coarse-pointer device — grip-only drag on mobile
+  const isTouchDevice = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+  // Prevents tab onClick from firing a selection after a grip-drag reorder on mobile
+  const gripDragCompletedRef = useRef(false);
   const pendingUiDraftHydrationRef = useRef<string | null>(sessionId || null);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
@@ -6300,6 +6309,7 @@ function LiveLogger({
         <div
           ref={dragTabStripRef}
           className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4"
+          style={isTouchDevice ? { touchAction: "pan-x" } : undefined}
         >
           {session.loggedExercises.map((logged) => {
             const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
@@ -6321,93 +6331,122 @@ function LiveLogger({
               return null;
             }
 
+            // Shared drag pointer handlers (used on whole tab for desktop, on grip handle for mobile)
+            const dragPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+              if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+              dragGestureRef.current = {
+                exerciseId: logged.id,
+                pointerId: e.pointerId,
+                startX: e.clientX,
+                startY: e.clientY,
+                isDragging: false,
+              };
+              if (!isTouchDevice) {
+                // Long-press for context menu — desktop only (mobile uses MoreHorizontal button)
+                exerciseLongPressTimerRef.current = window.setTimeout(() => {
+                  exerciseLongPressTimerRef.current = null;
+                  if (dragGestureRef.current && !dragGestureRef.current.isDragging) {
+                    dragGestureRef.current = null;
+                    setExerciseContextMenuId(logged.id);
+                  }
+                }, 500);
+              }
+            };
+
+            const dragPointerMove = (e: React.PointerEvent<HTMLElement>) => {
+              const g = dragGestureRef.current;
+              if (!g || g.exerciseId !== logged.id || g.pointerId !== e.pointerId) return;
+              const dx = Math.abs(e.clientX - g.startX);
+              const dy = Math.abs(e.clientY - g.startY);
+              if (!g.isDragging) {
+                if (dx < 6 || dy > dx * 1.5) return;
+                g.isDragging = true;
+                if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+                try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+                setDragExerciseId(logged.id);
+                setDragInsertBeforeId(computeInsertBefore(e.clientX));
+              } else {
+                setDragInsertBeforeId(computeInsertBefore(e.clientX));
+              }
+            };
+
+            const dragPointerUp = (e: React.PointerEvent<HTMLElement>) => {
+              if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+              const g = dragGestureRef.current;
+              dragGestureRef.current = null;
+              if (!g || g.exerciseId !== logged.id) return;
+
+              if (g.isDragging) {
+                const insertBefore = computeInsertBefore(e.clientX);
+                const logs = session.loggedExercises;
+                const fromIdx = logs.findIndex((l) => l.id === g.exerciseId);
+                const toIdx = insertBefore === null ? logs.length : logs.findIndex((l) => l.id === insertBefore);
+                if (fromIdx !== toIdx && fromIdx + 1 !== toIdx) {
+                  reorderExercisesInSession(g.exerciseId, insertBefore);
+                }
+                setDragExerciseId(null);
+                setDragInsertBeforeId(null);
+                // Prevent the tab onClick from firing a selection after a grip-drag on mobile
+                gripDragCompletedRef.current = true;
+                setTimeout(() => { gripDragCompletedRef.current = false; }, 150);
+              } else if (!isTouchDevice) {
+                // Desktop non-drag tap → select (mobile uses onClick on the tab)
+                setDragExerciseId(null);
+                setDragInsertBeforeId(null);
+                setActiveExerciseId(logged.id);
+                setSelectedLoggingIndex(null);
+                setEditingSetId(null);
+                setOpenSwipeSetId(undefined);
+                swipeGestureRef.current = null;
+                setSwipeDrag(null);
+                setPendingDeleteTarget(null);
+                persistActiveWorkoutDraftImmediately({
+                  activeExerciseId: logged.id,
+                  activeSetActualId: null,
+                  activeSetPlannedId: null,
+                  activeSetPlannedIndex: 0,
+                  selectionMode: "planned",
+                });
+              }
+            };
+
+            const dragPointerCancel = () => {
+              if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
+              dragGestureRef.current = null;
+              setDragExerciseId(null);
+              setDragInsertBeforeId(null);
+            };
+
             return (
               <div
                 key={logged.id}
                 data-logid={logged.id}
                 className={`relative shrink-0 transition-opacity ${isDragging ? "opacity-30" : "opacity-100"}`}
-                style={{ touchAction: "pan-y" }} // allow vertical scroll; horizontal drag handled by gesture logic
-                onPointerDown={(e) => {
-                  // Cancel any previous gesture
-                  if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                  dragGestureRef.current = {
-                    exerciseId: logged.id,
-                    pointerId: e.pointerId,
-                    startX: e.clientX,
-                    startY: e.clientY,
-                    isDragging: false,
-                  };
-                  // Start long-press timer for context menu (cancelled if drag starts)
-                  exerciseLongPressTimerRef.current = window.setTimeout(() => {
-                    exerciseLongPressTimerRef.current = null;
-                    if (dragGestureRef.current && !dragGestureRef.current.isDragging) {
-                      dragGestureRef.current = null;
-                      setExerciseContextMenuId(logged.id);
-                    }
-                  }, 500);
-                }}
-                onPointerMove={(e) => {
-                  const g = dragGestureRef.current;
-                  if (!g || g.exerciseId !== logged.id || g.pointerId !== e.pointerId) return;
-                  const dx = Math.abs(e.clientX - g.startX);
-                  const dy = Math.abs(e.clientY - g.startY);
-                  if (!g.isDragging) {
-                    // Threshold: 6px horizontal, and horizontal must dominate to avoid fighting scroll
-                    if (dx < 6 || dy > dx * 1.5) return;
-                    g.isDragging = true;
-                    // Cancel long-press — this is now a drag gesture
-                    if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                    // Capture pointer so events keep coming even if pointer leaves element
-                    try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-                    setDragExerciseId(logged.id);
-                    setDragInsertBeforeId(computeInsertBefore(e.clientX));
-                  } else {
-                    setDragInsertBeforeId(computeInsertBefore(e.clientX));
-                  }
-                }}
-                onPointerUp={(e) => {
-                  if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                  const g = dragGestureRef.current;
-                  dragGestureRef.current = null;
-                  if (!g || g.exerciseId !== logged.id) return;
-
-                  if (g.isDragging) {
-                    // Commit reorder
-                    const insertBefore = computeInsertBefore(e.clientX);
-                    const logs = session.loggedExercises;
-                    const fromIdx = logs.findIndex((l) => l.id === g.exerciseId);
-                    const toIdx = insertBefore === null ? logs.length : logs.findIndex((l) => l.id === insertBefore);
-                    if (fromIdx !== toIdx && fromIdx + 1 !== toIdx) {
-                      reorderExercisesInSession(g.exerciseId, insertBefore);
-                    }
-                    setDragExerciseId(null);
-                    setDragInsertBeforeId(null);
-                  } else {
-                    // Clean tap — select exercise
-                    setDragExerciseId(null);
-                    setDragInsertBeforeId(null);
-                    setActiveExerciseId(logged.id);
-                    setSelectedLoggingIndex(null);
-                    setEditingSetId(null);
-                    setOpenSwipeSetId(undefined);
-                    swipeGestureRef.current = null;
-                    setSwipeDrag(null);
-                    setPendingDeleteTarget(null);
-                    persistActiveWorkoutDraftImmediately({
-                      activeExerciseId: logged.id,
-                      activeSetActualId: null,
-                      activeSetPlannedId: null,
-                      activeSetPlannedIndex: 0,
-                      selectionMode: "planned",
-                    });
-                  }
-                }}
-                onPointerCancel={() => {
-                  if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                  dragGestureRef.current = null;
-                  setDragExerciseId(null);
-                  setDragInsertBeforeId(null);
-                }}
+                // Desktop: allow vertical scroll while horizontal drag is handled by gesture logic
+                // Mobile: pan-x is inherited from the strip container; no drag listeners here
+                style={isTouchDevice ? undefined : { touchAction: "pan-y" }}
+                onPointerDown={isTouchDevice ? undefined : dragPointerDown}
+                onPointerMove={isTouchDevice ? undefined : dragPointerMove}
+                onPointerUp={isTouchDevice ? undefined : dragPointerUp}
+                onPointerCancel={isTouchDevice ? undefined : dragPointerCancel}
+                // Mobile tap-to-select (safe because gripDragCompletedRef guards against post-drag fires)
+                onClick={isTouchDevice ? () => {
+                  if (gripDragCompletedRef.current) return;
+                  setActiveExerciseId(logged.id);
+                  setSelectedLoggingIndex(null);
+                  setEditingSetId(null);
+                  setOpenSwipeSetId(undefined);
+                  swipeGestureRef.current = null;
+                  setSwipeDrag(null);
+                  setPendingDeleteTarget(null);
+                  persistActiveWorkoutDraftImmediately({
+                    activeExerciseId: logged.id,
+                    activeSetActualId: null,
+                    activeSetPlannedId: null,
+                    activeSetPlannedIndex: 0,
+                    selectionMode: "planned",
+                  });
+                } : undefined}
               >
                 {/* Drop indicator — left edge */}
                 {isDropTarget && (
@@ -6420,7 +6459,17 @@ function LiveLogger({
                 {/* Tab content — not a button so pointer events stay on the parent div */}
                 <div className={`logger-tab select-none ${isActive ? "logger-tab-active" : "logger-tab-inactive"}`}>
                   <div className="flex items-start gap-1">
-                    <GripVertical className="mt-0.5 h-2.5 w-2.5 shrink-0 text-iron-700" aria-hidden="true" />
+                    {/* Grip handle — on mobile this is the ONLY draggable surface */}
+                    <span
+                      className="mt-0.5 shrink-0 leading-none"
+                      style={isTouchDevice ? { touchAction: "none" } : undefined}
+                      onPointerDown={isTouchDevice ? dragPointerDown : undefined}
+                      onPointerMove={isTouchDevice ? dragPointerMove : undefined}
+                      onPointerUp={isTouchDevice ? dragPointerUp : undefined}
+                      onPointerCancel={isTouchDevice ? dragPointerCancel : undefined}
+                    >
+                      <GripVertical className="h-2.5 w-2.5 text-iron-700" aria-hidden="true" />
+                    </span>
                     <span className={`block min-h-[2.2rem] max-w-[6rem] line-clamp-2 text-xs font-medium leading-snug ${isActive ? "text-white" : "text-iron-300"}`}>{item?.name}</span>
                   </div>
                   <span className={`text-[0.65rem] ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets}/{totalSets}</span>
@@ -6997,7 +7046,7 @@ function BuilderScreen({
     const splitDays = selectedSplit?.days.length ? selectedSplit.days : [];
     return splitDays.length ? splitDays : generateSplitFromText({ daysPerWeek: request.daysPerWeek, goal: request.goal, text: request.notes });
   }, [request.daysPerWeek, request.goal, request.notes, selectedSplit]);
-  const [blocksView, setBlocksView] = useState<"home" | "builder">("home");
+  const [blocksView, setBlocksView] = useState<"home" | "builder" | "split-library">("home");
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const draftProgram = db.programs.find((program) => program.userId === user.id && program.status === "draft");
   const workingProgram = draftProgram || activeProgram;
@@ -7467,6 +7516,15 @@ function BuilderScreen({
               Start blank
             </button>
           </div>
+          <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] py-3">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-white">Edit Split Templates</p>
+              <p className="mt-0.5 text-xs text-iron-500">Permanently change which muscles are required in a split. Affects future generated weeks.</p>
+            </div>
+            <button className="shrink-0 text-sm font-semibold text-[#0a84ff] transition hover:text-[#8fb9ff]" onClick={() => setBlocksView("split-library")}>
+              Manage splits
+            </button>
+          </div>
         </section>
 
         {/* Archived */}
@@ -7498,6 +7556,28 @@ function BuilderScreen({
             </div>
           </section>
         )}
+      </div>
+    );
+  }
+
+  if (blocksView === "split-library") {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <button className="btn-compact -ml-2" onClick={() => setBlocksView("home")}>
+            <ChevronLeft className="h-3.5 w-3.5" />
+            Blocks
+          </button>
+        </div>
+        <div>
+          <h2 className="text-lg font-bold text-white">Split Templates</h2>
+          <p className="mt-0.5 text-xs text-iron-500">
+            Edit a split to permanently change which muscles are required in future generated weeks.
+            Changes here affect all programs that use this split going forward — already-placed
+            exercises are not removed.
+          </p>
+        </div>
+        <SplitLibraryManager db={db} user={user} updateDb={updateDb} authMode={"local"} cloudStatus={"disabled"} />
       </div>
     );
   }
@@ -7618,27 +7698,36 @@ function BuilderScreen({
               {/* Template */}
               <div className="flex items-center justify-between gap-4 py-2.5">
                 <span className="text-sm text-iron-300">Template</span>
-                <div className="apollo-inline-select-wrap">
-                  <select
-                    className="apollo-inline-select"
-                    value={selectedSplitId}
-                    onChange={(e) => {
-                      const newId = e.target.value;
-                      blockBuilderDebug("TEMPLATE_SELECTED", {
-                        selectedSplitId: newId,
-                        blockNameInput: request.name,
-                        suggestedBlockName: `${db.splitTemplates.find((split) => split.id === newId)?.name || "Custom"} Block`,
-                        hasCustomBlockName: request.name.trim().length > 0,
-                      });
-                      void startNewBlock(newId);
-                    }}
-                    aria-label="Block template"
+                <div className="flex items-center gap-2">
+                  <div className="apollo-inline-select-wrap">
+                    <select
+                      className="apollo-inline-select"
+                      value={selectedSplitId}
+                      onChange={(e) => {
+                        const newId = e.target.value;
+                        blockBuilderDebug("TEMPLATE_SELECTED", {
+                          selectedSplitId: newId,
+                          blockNameInput: request.name,
+                          suggestedBlockName: `${db.splitTemplates.find((split) => split.id === newId)?.name || "Custom"} Block`,
+                          hasCustomBlockName: request.name.trim().length > 0,
+                        });
+                        void startNewBlock(newId);
+                      }}
+                      aria-label="Block template"
+                    >
+                      {db.splitTemplates.map((split) => (
+                        <option key={split.id} value={split.id} className="bg-iron-900">{split.name}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="apollo-inline-select-chevron" />
+                  </div>
+                  <button
+                    className="text-xs text-iron-500 transition hover:text-iron-300"
+                    onClick={() => setBlocksView("split-library")}
+                    title="Edit split template"
                   >
-                    {db.splitTemplates.map((split) => (
-                      <option key={split.id} value={split.id} className="bg-iron-900">{split.name}</option>
-                    ))}
-                  </select>
-                  <ChevronDown className="apollo-inline-select-chevron" />
+                    Edit
+                  </button>
                 </div>
               </div>
             </div>
@@ -8291,17 +8380,23 @@ function WorkoutDayEditor({
     () => allocateExercisesToRequirements(day.exercises, requirements, exerciseById),
     [day.exercises, requirements, exerciseById]
   );
+  const skippedReqIds = useMemo(() => new Set(day.skippedRequirementIds ?? []), [day.skippedRequirementIds]);
 
   const reqProgress = useMemo(
     () => requirements.map((req) => ({
       req,
       fulfilled: Math.min(requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0, req.requiredExerciseCount),
       needed: req.requiredExerciseCount,
+      skipped: skippedReqIds.has(req.id),
     })),
-    [requirementAllocation.fulfilledByRequirementId, requirements]
+    [requirementAllocation.fulfilledByRequirementId, requirements, skippedReqIds]
   );
-  const allReqsMet = requirementAllocation.allRequirementsMet;
-  const firstUnmetIndex = findNextUnmetRequirementIndex(requirements, requirementAllocation);
+  // Skipped requirements count as met for "all requirements filled" purposes.
+  const allReqsMet = requirements.every(req =>
+    skippedReqIds.has(req.id) ||
+    (requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0) >= req.requiredExerciseCount
+  );
+  const firstUnmetIndex = findNextUnmetRequirementIndex(requirements, requirementAllocation, skippedReqIds);
 
   const [currentReqIndex, setCurrentReqIndex] = useState<number>(firstUnmetIndex >= 0 ? firstUnmetIndex : 0);
   const [showAllExercises, setShowAllExercises] = useState(false);
@@ -8313,20 +8408,37 @@ function WorkoutDayEditor({
   const [editingExerciseId, setEditingExerciseId] = useState<string | undefined>(day.exercises[0]?.id);
   const [swappingExerciseId, setSwappingExerciseId] = useState<string | undefined>();
   const [inlineReqPickerOpen, setInlineReqPickerOpen] = useState(false);
+  // When set, the inline requirement picker is in swap/replace mode for this plannedExercise id.
+  const [inlinePickerReplacingExerciseId, setInlinePickerReplacingExerciseId] = useState<string | undefined>();
   const [daySettingsOpen, setDaySettingsOpen] = useState(false);
+  // Requirement chip context menu: which req id has its action menu open.
+  const [chipMenuReqId, setChipMenuReqId] = useState<string | undefined>();
+  const chipMenuRef = useRef<HTMLDivElement | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAutoOpenedRequirementKeyRef = useRef<string | null>(null);
+  // Set to true when the user explicitly presses Cancel on the picker. Suppresses one
+  // auto-open cycle so Cancel actually closes the picker rather than re-opening it for
+  // the next unmet slot.
+  const pickerCancelledRef = useRef(false);
 
   useEffect(() => {
     if (showAllExercises) return;
     if (firstUnmetIndex < 0) return;
     if (firstUnmetIndex === currentReqIndex) return;
+    // Don't auto-advance while the picker is open — the user may have deliberately
+    // clicked a non-first-unmet chip, and overriding them here causes the glitch where
+    // the picker snaps back to a different requirement immediately after chip click.
+    if (inlineReqPickerOpen) return;
+    // Don't auto-advance immediately after the user pressed Cancel — let the picker stay
+    // closed so Cancel actually works.
+    if (pickerCancelledRef.current) { pickerCancelledRef.current = false; return; }
     blockBuilderDebug("REQUIREMENT_AUTO_SELECTED", {
       selectedDayId: day.id,
       selectedRequirement: requirements[firstUnmetIndex]?.id,
       requirementsCount: requirements.length,
     });
     setCurrentReqIndex(firstUnmetIndex);
-  }, [currentReqIndex, day.id, firstUnmetIndex, requirements, showAllExercises]);
+  }, [currentReqIndex, day.id, firstUnmetIndex, inlineReqPickerOpen, requirements, showAllExercises]);
 
   useEffect(() => {
     if (!weekVariant || showAllExercises || firstUnmetIndex < 0) return;
@@ -8334,6 +8446,8 @@ function WorkoutDayEditor({
     if (!currentRequirement) return;
     const nextAutoOpenKey = `${day.id}:${currentRequirement.id}:${day.exercises.length}`;
     if (lastAutoOpenedRequirementKeyRef.current === nextAutoOpenKey || inlineReqPickerOpen) return;
+    // Don't auto-open immediately after the user pressed Cancel.
+    if (pickerCancelledRef.current) { pickerCancelledRef.current = false; return; }
     lastAutoOpenedRequirementKeyRef.current = nextAutoOpenKey;
     blockBuilderDebug("INLINE_PICKER_OPENED", {
       selectedDayId: day.id,
@@ -8342,6 +8456,7 @@ function WorkoutDayEditor({
       pickerMode: "week-inline",
     });
     setCurrentReqIndex((current) => current === firstUnmetIndex ? current : firstUnmetIndex);
+    setInlinePickerReplacingExerciseId(undefined); // auto-open is always "add" mode, never swap
     setInlineReqPickerOpen(true);
   }, [day.exercises.length, day.id, firstUnmetIndex, inlineReqPickerOpen, requirements, showAllExercises, weekVariant]);
 
@@ -8367,12 +8482,12 @@ function WorkoutDayEditor({
     .filter((item): item is Exercise => Boolean(item));
   const findNextUnmetForExercises = (exercises: { exerciseId: string; fulfillsRequirementId?: string; isExtra?: boolean }[]) => {
     const allocation = allocateExercisesToRequirements(exercises as typeof day.exercises, requirements, exerciseById);
-    return findNextUnmetRequirementIndex(requirements, allocation);
+    return findNextUnmetRequirementIndex(requirements, allocation, skippedReqIds);
   };
   const isUserEditedPrescription = (planned: PlannedExercise) => planned.userEditedPrescription === true;
   const isUserEditedOrder = (exercises: PlannedExercise[]) => exercises.some((planned) => planned.userEditedOrder);
   const missingRequirementSummary = reqProgress
-    .filter((item) => item.fulfilled < item.needed)
+    .filter((item) => !item.skipped && item.fulfilled < item.needed)
     .map((item) => `${item.req.targetMuscle} ${item.fulfilled}/${item.needed}`)
     .join(", ");
   const requirementWarningText = showRequirementWarning && missingRequirementSummary
@@ -8685,6 +8800,7 @@ function WorkoutDayEditor({
       const orderedRequirements = dayReqs.slice().sort(compareRequirementsBySpecificity);
       // Fill each requirement slot — exactly requiredExerciseCount exercises per slot, no more
       for (const req of orderedRequirements) {
+        if (skippedReqIds.has(req.id)) continue; // user skipped this muscle for this day
         const currentFulfilled = Math.min(requirementAllocation.fulfilledByRequirementId.get(req.id) ?? 0, req.requiredExerciseCount);
         let filled = currentFulfilled;
         for (let slot = currentFulfilled; slot < req.requiredExerciseCount; slot += 1) {
@@ -8888,30 +9004,105 @@ function WorkoutDayEditor({
 
         {requirements.length > 0 && (
           <section className="border-b border-white/[0.06] pb-4">
-            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Requirements</p>
-            <div className="mt-3 flex flex-wrap gap-2">
+            {/* Header row: label + Add Exercise aligned right */}
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Requirements</p>
+              {/* Add Exercise: adds outside any requirement slot (isExtra = true) */}
+              <button className="btn-compact text-[#8fb9ff]" onClick={() => { setSwappingExerciseId(undefined); setInlineReqPickerOpen(false); setInlinePickerReplacingExerciseId(undefined); setShowPicker((value) => !value); }}>
+                <Plus className="h-3.5 w-3.5" />
+                Add Exercise
+              </button>
+            </div>
+            {/* Requirement chips */}
+            <div className="relative mt-3 flex flex-wrap gap-2">
               {reqProgress.map((item, idx) => {
                 const done = item.fulfilled >= item.needed;
                 const active = idx === currentReqIndex && !showAllExercises;
+                const skipped = item.skipped;
+                const menuOpen = chipMenuReqId === item.req.id;
                 return (
-                  <button
-                    key={item.req.id}
-                    className={`rounded-sm border px-2.5 py-1 text-xs font-medium transition ${
-                      active
-                        ? "border-[#0a84ff]/40 bg-[#0a84ff]/10 text-[#8fb9ff]"
-                        : done
-                          ? "border-white/[0.08] bg-white/[0.04] text-iron-300"
-                          : "border-white/[0.08] bg-transparent text-iron-500"
-                    }`}
-                    onClick={() => { setCurrentReqIndex(idx); setShowAllExercises(false); setInlineReqPickerOpen((open) => idx === currentReqIndex ? !open : true); setShowPicker(false); }}
-                  >
-                    {titleCaseLabel(item.req.targetMuscle)} {item.fulfilled}/{item.needed}
-                  </button>
+                  <div key={item.req.id} className="relative">
+                    <button
+                      className={`rounded-sm border px-2.5 py-1 text-xs font-medium transition ${
+                        skipped
+                          ? "border-white/[0.05] bg-transparent text-iron-600 line-through opacity-50"
+                          : active
+                            ? "border-[#0a84ff]/40 bg-[#0a84ff]/10 text-[#8fb9ff]"
+                            : done
+                              ? "border-white/[0.08] bg-white/[0.04] text-iron-300"
+                              : "border-white/[0.08] bg-transparent text-iron-500"
+                      }`}
+                      onClick={() => {
+                        if (skipped) { setChipMenuReqId(menuOpen ? undefined : item.req.id); return; }
+                        const assignedPlanned = day.exercises.find((p) =>
+                          requirementAllocation.assignmentByPlannedExerciseId.get(p.id)?.assignedRequirementId === item.req.id
+                        );
+                        pickerCancelledRef.current = false;
+                        setCurrentReqIndex(idx);
+                        setShowAllExercises(false);
+                        setShowPicker(false);
+                        if (done && assignedPlanned) {
+                          setInlinePickerReplacingExerciseId(assignedPlanned.id);
+                          setInlineReqPickerOpen(true);
+                        } else {
+                          setInlinePickerReplacingExerciseId(undefined);
+                          setInlineReqPickerOpen((open) => idx === currentReqIndex && !done ? !open : true);
+                        }
+                      }}
+                      onContextMenu={(e) => { e.preventDefault(); setChipMenuReqId(menuOpen ? undefined : item.req.id); }}
+                      onPointerDown={() => {
+                        longPressTimerRef.current = setTimeout(() => {
+                          setChipMenuReqId(item.req.id);
+                          longPressTimerRef.current = null;
+                        }, 500);
+                      }}
+                      onPointerUp={() => { if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; } }}
+                      onPointerLeave={() => { if (longPressTimerRef.current) { clearTimeout(longPressTimerRef.current); longPressTimerRef.current = null; } }}
+                    >
+                      {skipped ? `${titleCaseLabel(item.req.targetMuscle)} (Skipped)` : `${titleCaseLabel(item.req.targetMuscle)} ${item.fulfilled}/${item.needed}`}
+                    </button>
+                    {menuOpen && (
+                      <div
+                        ref={chipMenuRef}
+                        className="absolute left-0 top-full z-50 mt-1 min-w-[10rem] rounded-sm border border-white/[0.12] bg-iron-900 shadow-xl"
+                        onPointerDown={(e) => e.stopPropagation()}
+                      >
+                        {skipped ? (
+                          <button
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-iron-300 hover:bg-white/[0.06]"
+                            onClick={() => {
+                              updateDay((target) => { target.skippedRequirementIds = (target.skippedRequirementIds ?? []).filter((id) => id !== item.req.id); });
+                              setChipMenuReqId(undefined);
+                            }}
+                          >
+                            Unskip this muscle
+                          </button>
+                        ) : (
+                          <button
+                            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-iron-300 hover:bg-white/[0.06]"
+                            onClick={() => {
+                              updateDay((target) => { target.skippedRequirementIds = [...(target.skippedRequirementIds ?? []), item.req.id]; });
+                              setChipMenuReqId(undefined);
+                              // Close picker if it was open for this requirement
+                              if (currentReqIndex === idx) setInlineReqPickerOpen(false);
+                            }}
+                          >
+                            Skip this muscle
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
+              {/* Close chip menu on outside click */}
+              {chipMenuReqId && (
+                <div className="fixed inset-0 z-40" onClick={() => setChipMenuReqId(undefined)} />
+              )}
             </div>
+            {/* Slot actions */}
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <button className="btn-compact" onClick={chooseForCurrentRequirement} disabled={!currentReq}>
+              <button className="btn-compact" onClick={chooseForCurrentRequirement} disabled={!currentReq || skippedReqIds.has(currentReq.id)}>
                 <Wand2 className="h-3.5 w-3.5" />
                 Choose for this slot
               </button>
@@ -8923,62 +9114,119 @@ function WorkoutDayEditor({
             {requirementWarningText && <p className="mt-3 text-sm text-orange-300">{requirementWarningText}</p>}
             {chooserWarning && <p className="mt-3 text-sm text-orange-300">{chooserWarning}</p>}
             {allReqsMet && requirements.length > 0 && !inlineReqPickerOpen && !requirementWarningText && !chooserWarning && (
-              <p className="mt-2 text-xs font-semibold text-emerald-400">All requirements filled</p>
+              <p className="mt-2 text-xs font-semibold text-emerald-400">
+                All requirements filled{skippedReqIds.size > 0 ? ` (${skippedReqIds.size} skipped)` : ""}
+              </p>
             )}
-            {inlineReqPickerOpen && currentReq && (
-              <ExercisePicker
-                db={db}
-                user={user}
-                updateDb={updateDb}
-                onPick={(exercise) => {
-                  const reqId = currentReq.id;
-                  addExercise(exercise, false, reqId);
-                  // Simulate post-add state to keep chip/title/filter/results in sync immediately.
-                  const simulated = [...day.exercises, { exerciseId: exercise.id, fulfillsRequirementId: reqId, isExtra: false } as typeof day.exercises[number]];
-                  const nextUnmet = findNextUnmetForExercises(simulated);
-                  if (nextUnmet >= 0) {
-                    setCurrentReqIndex(nextUnmet);
-                    setInlineReqPickerOpen(true);
-                  } else {
-                    setInlineReqPickerOpen(false);
-                  }
-                }}
-                alreadyAddedIds={alreadyAddedIds}
-                targetMuscles={[currentReq.targetMuscle]}
-                grouped
-                variant="week-inline"
-                title={`Add ${currentReq.targetMuscle} exercise`}
-                requirementStatusLabel={`${titleCaseLabel(currentReq.targetMuscle)} ${reqProgress.find((item) => item.req.id === currentReq.id)?.fulfilled ?? 0}/${currentReq.requiredExerciseCount}`}
-                onClose={() => setInlineReqPickerOpen(false)}
-              />
-            )}
+            {inlineReqPickerOpen && currentReq && (() => {
+              // Derive swap context once so both props and onPick share the same value.
+              const replacingId = inlinePickerReplacingExerciseId;
+              const replacingPlanned = replacingId
+                ? day.exercises.find((p) => p.id === replacingId)
+                : undefined;
+              const isSwapMode = Boolean(replacingPlanned);
+              const reqProgress_item = reqProgress.find((item) => item.req.id === currentReq.id);
+              return (
+                <ExercisePicker
+                  db={db}
+                  user={user}
+                  updateDb={updateDb}
+                  onPick={(exercise) => {
+                    if (isSwapMode && replacingId) {
+                      // Edit mode: swap the assigned exercise and close the picker.
+                      swapExercise(replacingId, exercise);
+                      setInlineReqPickerOpen(false);
+                      setInlinePickerReplacingExerciseId(undefined);
+                    } else {
+                      const reqId = currentReq.id;
+                      // Capture fill-mode BEFORE assignment so we don't misread it as an
+                      // already-filled (edit) slot after addExercise updates the allocation.
+                      const wasFillMode = (reqProgress_item?.fulfilled ?? 0) < currentReq.requiredExerciseCount;
+
+                      addExercise(exercise, false, reqId);
+                      setInlinePickerReplacingExerciseId(undefined);
+
+                      if (wasFillMode) {
+                        // Fill mode: auto-advance to next unmet requirement.
+                        // IMPORTANT: give the fake entry a truthy id so allocateExercisesToRequirements
+                        // counts slot.plannedExerciseId as fulfilled (it is falsy when id=undefined,
+                        // which made the slot appear still-unmet and the picker get stuck).
+                        const simulated = [...day.exercises, {
+                          id: "__sim_pick__",
+                          exerciseId: exercise.id,
+                          fulfillsRequirementId: reqId,
+                          isExtra: false,
+                        } as typeof day.exercises[number]];
+                        const nextUnmet = findNextUnmetForExercises(simulated);
+                        if (nextUnmet >= 0) {
+                          setCurrentReqIndex(nextUnmet);
+                          setInlineReqPickerOpen(true);
+                          // Pre-stamp the auto-open ref key so Cancel on the next slot
+                          // doesn't immediately trigger the auto-open effect again.
+                          const nextReq = requirements[nextUnmet];
+                          if (nextReq) {
+                            lastAutoOpenedRequirementKeyRef.current = `${day.id}:${nextReq.id}:${simulated.length}`;
+                          }
+                        } else {
+                          setInlineReqPickerOpen(false);
+                        }
+                      } else {
+                        // Already-filled slot selection with no swap mode — close picker.
+                        setInlineReqPickerOpen(false);
+                      }
+                    }
+                  }}
+                  alreadyAddedIds={isSwapMode && replacingPlanned
+                    ? day.exercises.filter((p) => p.id !== replacingId).map((p) => p.exerciseId)
+                    : alreadyAddedIds}
+                  selectedIds={isSwapMode && replacingPlanned ? [replacingPlanned.exerciseId] : undefined}
+                  targetMuscles={[currentReq.targetMuscle]}
+                  grouped
+                  variant="week-inline"
+                  title={isSwapMode
+                    ? `Edit ${currentReq.targetMuscle} exercise`
+                    : `Add ${currentReq.targetMuscle} exercise`}
+                  requirementStatusLabel={`${titleCaseLabel(currentReq.targetMuscle)} ${reqProgress_item?.fulfilled ?? 0}/${currentReq.requiredExerciseCount}`}
+                  onClose={() => { pickerCancelledRef.current = true; setInlineReqPickerOpen(false); setInlinePickerReplacingExerciseId(undefined); }}
+                />
+              );
+            })()}
           </section>
         )}
 
         <section className="border-b border-white/[0.06] pb-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Exercises</p>
-            <div className="flex flex-wrap items-center gap-2">
-              <button className="btn-compact" onClick={chooseForMe}>
-                <Wand2 className="h-3.5 w-3.5" />
-                Auto-fill remaining
-              </button>
-              <button className="btn-compact text-[#8fb9ff]" onClick={() => { setSwappingExerciseId(undefined); setShowPicker((value) => !value); }}>
-                <Plus className="h-3.5 w-3.5" />
-                Add Exercise
-              </button>
-            </div>
-          </div>
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Exercises</p>
 
-          <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
-            {day.exercises.map((planned, index) => {
+          {(() => {
+            const reqExercises = day.exercises.filter((p) => !p.isExtra);
+            const extraExercises = day.exercises.filter((p) => p.isExtra);
+
+            function renderExerciseRow(planned: PlannedExercise, displayIndex: number) {
               const exercise = db.exercises.find((item) => item.id === planned.exerciseId);
               const displayUnit = exercise ? getExerciseDisplayUnit(exercise, user) : user.unit;
+              // Round displayed weight to equipment increment — catches stale stored floats
+              // (e.g. a kg→lb conversion saved before rounding was added).
+              const rawPlannedWeight = planned.plannedSets[0]?.plannedWeight;
+              const displayIncrement = exercise
+                ? getEffectiveLoading(exercise, db.loadingProfiles, displayUnit).increment
+                : 5;
+              const displayPlannedWeight = rawPlannedWeight != null && rawPlannedWeight > 0
+                ? roundToIncrement(rawPlannedWeight, displayIncrement)
+                : undefined;
               const plannedWeightText = getPlannedExerciseBadgeText({
                 exercise,
                 displayUnit,
-                plannedWeight: planned.plannedSets[0]?.plannedWeight,
+                plannedWeight: displayPlannedWeight,
               }) || "—";
+              // History hint shown beneath prescription line
+              const historyHint = (() => {
+                if (!exercise) return undefined;
+                const hist = getLatestExercisePreviewHistory(db, user, exercise, displayUnit);
+                if (!hist || !hist.weight) return undefined;
+                // Show last-logged weight rounded to increment for readability
+                const histWeight = roundToIncrement(hist.weight, displayIncrement);
+                return `Last: ${formatWeight(histWeight, displayUnit)} ${displayUnit} × ${hist.reps}${hist.rpe ? ` @ RPE ${hist.rpe}` : ""}`;
+              })();
               const assignment = requirementAllocation.assignmentByPlannedExerciseId.get(planned.id);
               const reqBadge = assignment
                 ? requirements.find((req) => req.id === assignment.assignedRequirementId)
@@ -8987,17 +9235,19 @@ function WorkoutDayEditor({
 
               return (
                 <div key={planned.id} className="py-3">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-start gap-3">
                     <div className="flex h-7 w-7 shrink-0 items-center justify-center border border-white/[0.1] bg-white/[0.04] text-xs font-bold text-iron-400">
-                      {index + 1}
+                      {displayIndex + 1}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="text-sm font-semibold text-white leading-snug">{exercise?.name || "Unknown exercise"}</p>
                       <p className="mt-0.5 text-xs text-iron-500">
                         {planned.plannedSets.length} × {planned.plannedSets[0]?.targetReps || 8} · RPE {planned.plannedSets[0]?.targetRpe || 7}
                         {reqBadge && <> · <span className="text-[#8fb9ff]">{titleCaseLabel(reqBadge.targetMuscle)}</span></>}
-                        {planned.isExtra && <> · <span className="text-iron-600">extra</span></>}
                       </p>
+                      {historyHint && (
+                        <p className="mt-0.5 text-[0.65rem] text-iron-700">{historyHint}</p>
+                      )}
                     </div>
                     <span className="shrink-0 text-xs font-medium text-iron-400">{plannedWeightText}</span>
                   </div>
@@ -9058,8 +9308,23 @@ function WorkoutDayEditor({
                   </div>
                 </div>
               );
-            })}
-          </div>
+            }
+
+            return (
+              <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
+                {reqExercises.map((planned, i) => renderExerciseRow(planned, i))}
+                {extraExercises.length > 0 && (
+                  <>
+                    <div className="flex items-center gap-2.5 py-2.5">
+                      <p className="text-[0.63rem] font-semibold uppercase tracking-[0.12em] text-iron-600">Additional</p>
+                      <div className="flex-1 border-t border-white/[0.04]" />
+                    </div>
+                    {extraExercises.map((planned, i) => renderExerciseRow(planned, reqExercises.length + i))}
+                  </>
+                )}
+              </div>
+            );
+          })()}
         </section>
 
         {showPicker && (
@@ -9076,7 +9341,7 @@ function WorkoutDayEditor({
             targetPatterns={[]}
             grouped={false}
             variant="week-sheet"
-            title={allReqsMet ? "Add exercise" : "Add exercise"}
+            title="Add additional exercise"
             onClose={() => setShowPicker(false)}
           />
         )}
@@ -9212,7 +9477,7 @@ function WorkoutDayEditor({
                     {reqBadge && <span className="ml-2 rounded-full bg-volt/15 px-2 py-0.5 text-volt">{reqBadge.targetMuscle}</span>}
                     {planned.exerciseRole && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-300">{planned.exerciseRole.replaceAll("_", " ")}</span>}
                     {planned.fatigueTag === "high" && <span className="ml-2 rounded-full bg-ember/15 px-2 py-0.5 text-orange-100">high fatigue</span>}
-                    {planned.isExtra && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-400">extra</span>}
+                    {planned.isExtra && <span className="ml-2 rounded-full bg-white/10 px-2 py-0.5 text-iron-400">Additional</span>}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -15022,6 +15287,10 @@ function buildPlannedExerciseFromExercise({
     requirementSlotIndex,
     totalRequiredForMuscle,
   });
+  const exerciseDisplayUnit = getExerciseDisplayUnit(exercise, user);
+  // Resolve the equipment increment once so both rounding and display are aligned.
+  const effectiveIncrement = getEffectiveLoading(exercise, db.loadingProfiles, exerciseDisplayUnit).increment;
+
   const plannedSet = prescription.plannedSets[0] || { id: createId("pset"), kind: "working" as const, setNumber: 1, targetReps: 8, targetRpe: 7 };
   const suggested = getExerciseRecommendation({
     db,
@@ -15032,6 +15301,13 @@ function buildPlannedExerciseFromExercise({
     goal: goalUsed,
     gymId: user.activeGymId,
   });
+  // Round to equipment increment. recommendWeightForExercise already rounds internally, but the
+  // increment it used may differ (e.g. kg→lb unit mismatch, custom exercise settings). This
+  // guarantees the stored plannedWeight is always a clean multiple of the correct increment.
+  const recommendedWeight = suggested?.recommendedWeight && suggested.recommendedWeight > 0
+    ? roundToIncrement(suggested.recommendedWeight, effectiveIncrement)
+    : undefined;
+
   return {
     id: createId("planned"),
     exerciseId: exercise.id,
@@ -15051,7 +15327,7 @@ function buildPlannedExerciseFromExercise({
       ...set,
       id: createId("pset"),
       setNumber: index + 1,
-      plannedWeight: suggested?.recommendedWeight || undefined
+      plannedWeight: recommendedWeight,
     })),
     restSeconds: prescription.restSeconds,
     notes: [prescription.note, ...(suggested?.reasonParts || [])].filter(Boolean).join(" "),

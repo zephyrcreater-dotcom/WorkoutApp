@@ -1,5 +1,30 @@
 # HANDOFF.md
 
+## Current Handoff — Block Builder Additional Exercises (Session 71)
+
+- Block Builder now supports two distinct exercise types in every workout day: **Requirement Exercises** (fulfilling a muscle slot) and **Additional Exercises** (no slot, added freely).
+- The existing `isExtra: true` flag on `PlannedExercise` already excluded exercises from requirement allocation (`allocateExercisesToRequirements` skips entries where `planned.isExtra`). No data model change was needed.
+- The `WorkoutDayEditor` week-variant exercise section now splits the rendered list: requirement exercises first (numbered 1..N), then an "Additional" divider row, then additional exercises (numbered N+1..M).
+- The "Add Exercise" button in the Exercises section header already called `addExercise(exercise, false, null)` which sets `isExtraFlag = true`. Its picker title was updated to "Add additional exercise" to make the intent unambiguous.
+- The "extra" badge on exercises in both the week-variant and default-variant exercise lists was renamed to "Additional".
+- All requirement logic (autofill, slot assignment, progress chips, `chooseForMe`, `chooseForCurrentRequirement`) is unchanged — additional exercises are invisible to it.
+- Additional exercises receive full prescription (weight recommendations, history, progression) in the logger, exactly like requirement exercises.
+
+**Invariants to preserve:**
+- `addExercise(exercise, false, null)` is the path for additional exercises (third arg `null` forces `reqId = undefined` → `isExtraFlag = true`). Never pass a `reqId` for additional exercises.
+- `allocateExercisesToRequirements` must continue to skip entries where `planned.isExtra || !planned.fulfillsRequirementId`.
+- The "Add Exercise" picker in the week-variant calls `addExercise(exercise, false, null)` — do not change this to pass `currentReq?.id`.
+- Requirement exercises and additional exercises share the same `day.exercises` array; display order in the Block Builder splits them visually but does not reorder the underlying data.
+
+### Validation
+- `npm run build` ✓
+
+### Files changed
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Off-Program Builder Apollo Visual Redesign (Session 70)
 
 - Off-Program Builder and Review Workout screens were visually aligned to the Apollo-style mobile UI system: tighter spacing, flatter surfaces, compact borders (`rounded-sm`), thin dividers, and subdued dark backgrounds.
