@@ -67,6 +67,7 @@ import {
   getBlockExercisePrescription,
   isCompound,
   isSbdExercise,
+  muscleVolumeTargets,
   orderExercisesForDay,
   sessionFatigueScore
 } from "./lib/programmingLogic";
@@ -3974,22 +3975,8 @@ function LiveLogger({
   const [setContextMenuId, setSetContextMenuId] = useState<string | null>(null);
   const [exerciseContextMenuId, setExerciseContextMenuId] = useState<string | null>(null);
   const exerciseLongPressTimerRef = useRef<number | null>(null);
-  // Drag-to-reorder for exercise tab strip
-  const [dragExerciseId, setDragExerciseId] = useState<string | null>(null);
-  const [dragInsertBeforeId, setDragInsertBeforeId] = useState<string | null>(null); // null = insert at end
-  const dragTabStripRef = useRef<HTMLDivElement | null>(null);
-  // Mutable per-gesture tracking for tab drag-to-reorder — never drives renders
-  const dragGestureRef = useRef<{
-    exerciseId: string;
-    pointerId: number;
-    startX: number;
-    startY: number;
-    isDragging: boolean;
-  } | null>(null);
-  // True when the user is on a touch/coarse-pointer device — grip-only drag on mobile
-  const isTouchDevice = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
-  // Prevents tab onClick from firing a selection after a grip-drag reorder on mobile
-  const gripDragCompletedRef = useRef(false);
+  // Set to true when a long-press fires so the subsequent pointerUp doesn't also select the exercise.
+  const exerciseLongPressCompletedRef = useRef(false);
   const pendingUiDraftHydrationRef = useRef<string | null>(sessionId || null);
   const activeGym = db.gyms.find((gym) => gym.id === session?.gymId && gym.userId === user.id);
   const compatibleMachines = activeGym?.machines.filter((machine) => machine.exerciseIds.includes(activeExerciseLog?.exerciseId || "") || !machine.exerciseIds.length) || [];
@@ -5247,41 +5234,54 @@ function LiveLogger({
       const targetProgram = draft.programs.find((program) => program.id === liveSession.programId);
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       const log = target?.loggedExercises.find((item) => item.id === targetExerciseLogId);
-      const targetPlanned = targetProgram?.blocks
-        .flatMap((block) => block.weeks)
-        .flatMap((week) => week.workouts)
-        .flatMap((day) => day.exercises)
-        .find((item) => item.id === log?.plannedExerciseId);
-      if (targetPlanned) {
-        const base = targetPlanned.plannedSets.at(-1) || targetPlanned.plannedSets[0] || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 };
-        const extra: PlannedSet = {
+      if (log?.plannedExerciseSnapshot) {
+        // Logger reads from the snapshot, not the live program, so add the set there.
+        const snap = log.plannedExerciseSnapshot;
+        const base = snap.plannedSets.at(-1) ?? snap.plannedSets[0] ?? { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 };
+        snap.plannedSets.push({
           ...base,
           id: createId("pset"),
           kind: "working",
-          setNumber: targetPlanned.plannedSets.length + 1,
-          percentageOfTopSet: base.percentageOfTopSet,
-          notes: "Added set."
-        };
-        targetPlanned.plannedSets.push(extra);
-      }
-      if (log && !targetPlanned) {
-        const exerciseDef = draft.exercises.find((ex) => ex.id === log.exerciseId);
-        const baseSet = normalizeLoggerRuntimePlannedSets(log.offProgramPlannedSets, 1, 8, 7)[0];
-        const runtimeExtra: PlannedSet = {
-          ...baseSet,
-          id: createId("pset"),
-          setNumber: Math.max(1, (log.offProgramPlannedSets?.length || 0) + 1),
+          setNumber: snap.plannedSets.length + 1,
+          percentageOfTopSet: (base as PlannedSet).percentageOfTopSet,
           notes: "Added set.",
-          plannedWeight: baseSet.plannedWeight ?? getOffProgramStartingWeight({
-            db: draft,
-            user,
-            exercise: exerciseDef,
-            targetReps: baseSet.targetReps || 8,
-            targetRpe: baseSet.targetRpe || 7,
-          }),
-        };
-        log.offProgramPlannedSets = normalizeLoggerRuntimePlannedSets([...(log.offProgramPlannedSets || []), runtimeExtra], 1, 8, 7);
-        log.offProgram = true;
+        });
+      } else {
+        const targetPlanned = targetProgram?.blocks
+          .flatMap((block) => block.weeks)
+          .flatMap((week) => week.workouts)
+          .flatMap((day) => day.exercises)
+          .find((item) => item.id === log?.plannedExerciseId);
+        if (targetPlanned) {
+          const base = targetPlanned.plannedSets.at(-1) || targetPlanned.plannedSets[0] || { id: createId("pset"), kind: "working" as const, targetReps: 8, targetRpe: 7 };
+          const extra: PlannedSet = {
+            ...base,
+            id: createId("pset"),
+            kind: "working",
+            setNumber: targetPlanned.plannedSets.length + 1,
+            percentageOfTopSet: base.percentageOfTopSet,
+            notes: "Added set."
+          };
+          targetPlanned.plannedSets.push(extra);
+        } else if (log) {
+          const exerciseDef = draft.exercises.find((ex) => ex.id === log.exerciseId);
+          const baseSet = normalizeLoggerRuntimePlannedSets(log.offProgramPlannedSets, 1, 8, 7)[0];
+          const runtimeExtra: PlannedSet = {
+            ...baseSet,
+            id: createId("pset"),
+            setNumber: Math.max(1, (log.offProgramPlannedSets?.length || 0) + 1),
+            notes: "Added set.",
+            plannedWeight: baseSet.plannedWeight ?? getOffProgramStartingWeight({
+              db: draft,
+              user,
+              exercise: exerciseDef,
+              targetReps: baseSet.targetReps || 8,
+              targetRpe: baseSet.targetRpe || 7,
+            }),
+          };
+          log.offProgramPlannedSets = normalizeLoggerRuntimePlannedSets([...(log.offProgramPlannedSets || []), runtimeExtra], 1, 8, 7);
+          log.offProgram = true;
+        }
       }
       if (target) {
         if (editingCompletedWorkout && target.status === "completed") {
@@ -5733,26 +5733,6 @@ function LiveLogger({
     setExerciseContextMenuId(null);
   }
 
-  function reorderExercisesInSession(draggedId: string, insertBeforeId: string | null) {
-    void updateDb((draft) => {
-      const target = draft.sessions.find((s) => s.id === liveSession.id);
-      if (!target) return draft;
-      const logs = target.loggedExercises;
-      const fromIdx = logs.findIndex((l) => l.id === draggedId);
-      if (fromIdx < 0) return draft;
-      const [removed] = logs.splice(fromIdx, 1);
-      if (insertBeforeId === null) {
-        logs.push(removed);
-      } else {
-        const toIdx = logs.findIndex((l) => l.id === insertBeforeId);
-        if (toIdx < 0) { logs.push(removed); }
-        else { logs.splice(toIdx, 0, removed); }
-      }
-      logs.forEach((l, i) => { l.order = i + 1; });
-      target.updatedAt = nowIso();
-      return draft;
-    });
-  }
 
   function duplicateExerciseInSession(logId: string) {
     const sourceLog = liveSession.loggedExercises.find((l) => l.id === logId);
@@ -6029,7 +6009,9 @@ function LiveLogger({
                         const deletedIndex = log.sets.findIndex((set) => set.id === targetDelete.actualSetId);
                         const deletedSet = deletedIndex >= 0 ? log.sets[deletedIndex] : undefined;
                         if (deletedIndex >= 0) log.sets.splice(deletedIndex, 1);
-                        if (deletedSet?.plannedSetId && deletedSet.added) {
+                        // Always remove the linked planned slot so the row disappears entirely,
+                        // not just reverts to "Pending" (which looks like the delete did nothing).
+                        if (deletedSet?.plannedSetId) {
                           log.deletedPlannedSetIds = Array.from(new Set([...(log.deletedPlannedSetIds || []), deletedSet.plannedSetId]));
                         }
                       } else if (targetDelete.plannedSetId) {
@@ -6107,11 +6089,6 @@ function LiveLogger({
                   }
                   addSet();
                 },
-              },
-              {
-                label: "Duplicate",
-                icon: <Copy className="h-4 w-4" />,
-                onClick: () => { if (menuLog) duplicateExerciseInSession(menuLog.id); },
               },
               {
                 label: "Skip Entire Exercise",
@@ -6306,175 +6283,69 @@ function LiveLogger({
       )}
       {/* Exercise tab strip — all screen sizes */}
       {session.loggedExercises.length > 1 && (
-        <div
-          ref={dragTabStripRef}
-          className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4"
-          style={isTouchDevice ? { touchAction: "pan-x" } : undefined}
-        >
+        <div className="scrollbar-none -mx-3 flex overflow-x-auto border-b border-white/[0.06] sm:-mx-4">
           {session.loggedExercises.map((logged) => {
             const item = db.exercises.find((candidate) => candidate.id === logged.exerciseId);
             const isActive = activeExerciseLog.id === logged.id;
             const hardSets = logged.sets.filter(isHardSet).length;
             const totalSets = logged.sets.length;
-            const isDragging = dragExerciseId === logged.id;
-            const isDropTarget = dragExerciseId !== null && dragInsertBeforeId === logged.id;
-            const isLastTab = logged.id === session.loggedExercises.at(-1)?.id;
 
-            function computeInsertBefore(clientX: number): string | null {
-              const strip = dragTabStripRef.current;
-              if (!strip) return null;
-              const tabs = Array.from(strip.querySelectorAll<HTMLElement>("[data-logid]"));
-              for (const tab of tabs) {
-                const rect = tab.getBoundingClientRect();
-                if (clientX < rect.left + rect.width / 2) return tab.dataset.logid ?? null;
-              }
-              return null;
-            }
-
-            // Shared drag pointer handlers (used on whole tab for desktop, on grip handle for mobile)
-            const dragPointerDown = (e: React.PointerEvent<HTMLElement>) => {
-              if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-              dragGestureRef.current = {
-                exerciseId: logged.id,
-                pointerId: e.pointerId,
-                startX: e.clientX,
-                startY: e.clientY,
-                isDragging: false,
-              };
-              if (!isTouchDevice) {
-                // Long-press for context menu — desktop only (mobile uses MoreHorizontal button)
-                exerciseLongPressTimerRef.current = window.setTimeout(() => {
-                  exerciseLongPressTimerRef.current = null;
-                  if (dragGestureRef.current && !dragGestureRef.current.isDragging) {
-                    dragGestureRef.current = null;
-                    setExerciseContextMenuId(logged.id);
-                  }
-                }, 500);
-              }
-            };
-
-            const dragPointerMove = (e: React.PointerEvent<HTMLElement>) => {
-              const g = dragGestureRef.current;
-              if (!g || g.exerciseId !== logged.id || g.pointerId !== e.pointerId) return;
-              const dx = Math.abs(e.clientX - g.startX);
-              const dy = Math.abs(e.clientY - g.startY);
-              if (!g.isDragging) {
-                if (dx < 6 || dy > dx * 1.5) return;
-                g.isDragging = true;
-                if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-                try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
-                setDragExerciseId(logged.id);
-                setDragInsertBeforeId(computeInsertBefore(e.clientX));
-              } else {
-                setDragInsertBeforeId(computeInsertBefore(e.clientX));
-              }
-            };
-
-            const dragPointerUp = (e: React.PointerEvent<HTMLElement>) => {
-              if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-              const g = dragGestureRef.current;
-              dragGestureRef.current = null;
-              if (!g || g.exerciseId !== logged.id) return;
-
-              if (g.isDragging) {
-                const insertBefore = computeInsertBefore(e.clientX);
-                const logs = session.loggedExercises;
-                const fromIdx = logs.findIndex((l) => l.id === g.exerciseId);
-                const toIdx = insertBefore === null ? logs.length : logs.findIndex((l) => l.id === insertBefore);
-                if (fromIdx !== toIdx && fromIdx + 1 !== toIdx) {
-                  reorderExercisesInSession(g.exerciseId, insertBefore);
-                }
-                setDragExerciseId(null);
-                setDragInsertBeforeId(null);
-                // Prevent the tab onClick from firing a selection after a grip-drag on mobile
-                gripDragCompletedRef.current = true;
-                setTimeout(() => { gripDragCompletedRef.current = false; }, 150);
-              } else if (!isTouchDevice) {
-                // Desktop non-drag tap → select (mobile uses onClick on the tab)
-                setDragExerciseId(null);
-                setDragInsertBeforeId(null);
-                setActiveExerciseId(logged.id);
-                setSelectedLoggingIndex(null);
-                setEditingSetId(null);
-                setOpenSwipeSetId(undefined);
-                swipeGestureRef.current = null;
-                setSwipeDrag(null);
-                setPendingDeleteTarget(null);
-                persistActiveWorkoutDraftImmediately({
-                  activeExerciseId: logged.id,
-                  activeSetActualId: null,
-                  activeSetPlannedId: null,
-                  activeSetPlannedIndex: 0,
-                  selectionMode: "planned",
-                });
-              }
-            };
-
-            const dragPointerCancel = () => {
-              if (exerciseLongPressTimerRef.current) { clearTimeout(exerciseLongPressTimerRef.current); exerciseLongPressTimerRef.current = null; }
-              dragGestureRef.current = null;
-              setDragExerciseId(null);
-              setDragInsertBeforeId(null);
+            const selectExercise = () => {
+              setActiveExerciseId(logged.id);
+              setSelectedLoggingIndex(null);
+              setEditingSetId(null);
+              setOpenSwipeSetId(undefined);
+              swipeGestureRef.current = null;
+              setSwipeDrag(null);
+              setPendingDeleteTarget(null);
+              persistActiveWorkoutDraftImmediately({
+                activeExerciseId: logged.id,
+                activeSetActualId: null,
+                activeSetPlannedId: null,
+                activeSetPlannedIndex: 0,
+                selectionMode: "planned",
+              });
             };
 
             return (
-              <div
+              <button
                 key={logged.id}
-                data-logid={logged.id}
-                className={`relative shrink-0 transition-opacity ${isDragging ? "opacity-30" : "opacity-100"}`}
-                // Desktop: allow vertical scroll while horizontal drag is handled by gesture logic
-                // Mobile: pan-x is inherited from the strip container; no drag listeners here
-                style={isTouchDevice ? undefined : { touchAction: "pan-y" }}
-                onPointerDown={isTouchDevice ? undefined : dragPointerDown}
-                onPointerMove={isTouchDevice ? undefined : dragPointerMove}
-                onPointerUp={isTouchDevice ? undefined : dragPointerUp}
-                onPointerCancel={isTouchDevice ? undefined : dragPointerCancel}
-                // Mobile tap-to-select (safe because gripDragCompletedRef guards against post-drag fires)
-                onClick={isTouchDevice ? () => {
-                  if (gripDragCompletedRef.current) return;
-                  setActiveExerciseId(logged.id);
-                  setSelectedLoggingIndex(null);
-                  setEditingSetId(null);
-                  setOpenSwipeSetId(undefined);
-                  swipeGestureRef.current = null;
-                  setSwipeDrag(null);
-                  setPendingDeleteTarget(null);
-                  persistActiveWorkoutDraftImmediately({
-                    activeExerciseId: logged.id,
-                    activeSetActualId: null,
-                    activeSetPlannedId: null,
-                    activeSetPlannedIndex: 0,
-                    selectionMode: "planned",
-                  });
-                } : undefined}
+                className={`logger-tab select-none ${isActive ? "logger-tab-active" : "logger-tab-inactive"}`}
+                onPointerDown={() => {
+                  exerciseLongPressTimerRef.current = window.setTimeout(() => {
+                    exerciseLongPressTimerRef.current = null;
+                    exerciseLongPressCompletedRef.current = true;
+                    setExerciseContextMenuId(logged.id);
+                  }, 600);
+                }}
+                onPointerUp={() => {
+                  if (exerciseLongPressTimerRef.current) {
+                    // Short tap — timer hasn't fired yet: treat as select
+                    clearTimeout(exerciseLongPressTimerRef.current);
+                    exerciseLongPressTimerRef.current = null;
+                    selectExercise();
+                  } else if (exerciseLongPressCompletedRef.current) {
+                    // Long-press already opened the menu — don't also select
+                    exerciseLongPressCompletedRef.current = false;
+                  }
+                }}
+                onPointerLeave={() => {
+                  if (exerciseLongPressTimerRef.current) {
+                    clearTimeout(exerciseLongPressTimerRef.current);
+                    exerciseLongPressTimerRef.current = null;
+                  }
+                }}
+                onPointerCancel={() => {
+                  if (exerciseLongPressTimerRef.current) {
+                    clearTimeout(exerciseLongPressTimerRef.current);
+                    exerciseLongPressTimerRef.current = null;
+                  }
+                  exerciseLongPressCompletedRef.current = false;
+                }}
               >
-                {/* Drop indicator — left edge */}
-                {isDropTarget && (
-                  <div className="pointer-events-none absolute left-0 top-0 h-full w-0.5 bg-[#0a84ff] z-10" />
-                )}
-                {/* Drop indicator — right edge of last tab when inserting at end */}
-                {isLastTab && dragExerciseId !== null && dragInsertBeforeId === null && (
-                  <div className="pointer-events-none absolute right-0 top-0 h-full w-0.5 bg-[#0a84ff] z-10" />
-                )}
-                {/* Tab content — not a button so pointer events stay on the parent div */}
-                <div className={`logger-tab select-none ${isActive ? "logger-tab-active" : "logger-tab-inactive"}`}>
-                  <div className="flex items-start gap-1">
-                    {/* Grip handle — on mobile this is the ONLY draggable surface */}
-                    <span
-                      className="mt-0.5 shrink-0 leading-none"
-                      style={isTouchDevice ? { touchAction: "none" } : undefined}
-                      onPointerDown={isTouchDevice ? dragPointerDown : undefined}
-                      onPointerMove={isTouchDevice ? dragPointerMove : undefined}
-                      onPointerUp={isTouchDevice ? dragPointerUp : undefined}
-                      onPointerCancel={isTouchDevice ? dragPointerCancel : undefined}
-                    >
-                      <GripVertical className="h-2.5 w-2.5 text-iron-700" aria-hidden="true" />
-                    </span>
-                    <span className={`block min-h-[2.2rem] max-w-[6rem] line-clamp-2 text-xs font-medium leading-snug ${isActive ? "text-white" : "text-iron-300"}`}>{item?.name}</span>
-                  </div>
-                  <span className={`text-[0.65rem] ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets}/{totalSets}</span>
-                </div>
-              </div>
+                <span className={`block min-h-[2.2rem] max-w-[6rem] line-clamp-2 text-xs font-medium leading-snug ${isActive ? "text-white" : "text-iron-300"}`}>{item?.name}</span>
+                <span className={`text-[0.65rem] ${isActive ? "text-[#0a84ff]/70" : "text-iron-600"}`}>{hardSets}/{totalSets}</span>
+              </button>
             );
           })}
         </div>
@@ -13420,51 +13291,332 @@ function WeekReviewPanel({
 }
 
 function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: UserProfile; updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void> }) {
+  const now = Date.now();
+  const DAY = 86_400_000;
+  const WEEK = 7 * DAY;
+
+  const activeProgram = db.programs.find((p) => p.userId === user.id && p.status === "active");
+  const userSessions = db.sessions.filter((s) => s.userId === user.id && s.status === "completed");
+
+  // ── Section 1: Training Status ─────────────────────────────────────────────
   const metrics = powerliftingMetrics(db, user);
+  const week0Sessions = userSessions.filter((s) => now - new Date(s.startedAt).getTime() < WEEK);
+  const week1Sessions = userSessions.filter((s) => { const age = now - new Date(s.startedAt).getTime(); return age >= WEEK && age < 2 * WEEK; });
+  const week0HardSets = week0Sessions.flatMap((s) => s.loggedExercises).flatMap((l) => l.sets.filter((set) => !set.skipped && set.kind !== "warmup"));
+  const week0AvgRpe = safeAverageRpe(week0HardSets);
+  const week1HardSets = week1Sessions.flatMap((s) => s.loggedExercises).flatMap((l) => l.sets.filter((set) => !set.skipped && set.kind !== "warmup"));
+  const week1AvgRpe = safeAverageRpe(week1HardSets);
+  const readiness7 = db.readiness.filter((r) => r.userId === user.id && now - new Date(r.date).getTime() < WEEK);
+  const readiness14_7 = db.readiness.filter((r) => r.userId === user.id && now - new Date(r.date).getTime() >= WEEK && now - new Date(r.date).getTime() < 2 * WEEK);
+  const avgReadiness7 = readiness7.length ? Math.round(readiness7.reduce((s, r) => s + r.readinessScore, 0) / readiness7.length) : null;
+  const avgReadiness14_7 = readiness14_7.length ? Math.round(readiness14_7.reduce((s, r) => s + r.readinessScore, 0) / readiness14_7.length) : null;
+
+  // ── Section 2: Muscle Balance ──────────────────────────────────────────────
+  const muscleVol = calculateMuscleVolume(db.sessions, db.exercises, user.id);
+  const goal = activeProgram?.goal ?? user.goal ?? "powerbuilding";
+  const volTargets = muscleVolumeTargets[goal as keyof typeof muscleVolumeTargets] ?? muscleVolumeTargets.powerbuilding;
+  const muscleLastTrained: Partial<Record<MuscleGroup, string>> = {};
+  userSessions.slice().sort((a, b) => b.startedAt.localeCompare(a.startedAt)).forEach((s) => {
+    s.loggedExercises.forEach((l) => {
+      const ex = db.exercises.find((e) => e.id === l.exerciseId);
+      ex?.directVolumeMuscles.forEach((m) => { if (!muscleLastTrained[m]) muscleLastTrained[m] = s.startedAt; });
+    });
+  });
+  const muscleRows = Object.entries(volTargets).map(([muscle, range]) => {
+    const m = muscle as MuscleGroup;
+    const sets = muscleVol[m] ?? 0;
+    const last = muscleLastTrained[m];
+    const daysAgo = last ? Math.floor((now - new Date(last).getTime()) / DAY) : null;
+    let status: "under" | "productive" | "high" | "too-high";
+    if (sets === 0 || sets < range.min) status = "under";
+    else if (sets > range.max) status = "too-high";
+    else if (sets > range.target) status = "high";
+    else status = "productive";
+    return { muscle: m, sets, min: range.min, target: range.target, max: range.max, status, daysAgo };
+  }).sort((a, b) => {
+    const order = { under: 0, "too-high": 1, high: 2, productive: 3 };
+    return order[a.status] - order[b.status];
+  });
+
+  // ── Section 3: Exercise Progression ───────────────────────────────────────
+  const exerciseProgression = (() => {
+    const exerciseSets: Record<string, { set: LoggedSet; sessionAt: string }[]> = {};
+    userSessions.filter((s) => now - new Date(s.startedAt).getTime() < 28 * DAY).forEach((s) => {
+      s.loggedExercises.forEach((l) => {
+        if (!l.sets.some((set) => !set.skipped && set.kind !== "warmup")) return;
+        exerciseSets[l.exerciseId] ??= [];
+        l.sets.filter((set) => !set.skipped && set.kind !== "warmup").forEach((set) => {
+          exerciseSets[l.exerciseId].push({ set, sessionAt: s.startedAt });
+        });
+      });
+    });
+    return Object.entries(exerciseSets).map(([exerciseId, entries]) => {
+      const exercise = db.exercises.find((e) => e.id === exerciseId);
+      const sorted = entries.slice().sort((a, b) => b.sessionAt.localeCompare(a.sessionAt));
+      const lastSet = sorted[0]?.set;
+      const bestE1rm = Math.max(0, ...entries.map(({ set }) => calculateE1RMFromSet(set)));
+      const week0E1rm = Math.max(0, ...entries.filter(({ sessionAt }) => now - new Date(sessionAt).getTime() < WEEK).map(({ set }) => calculateE1RMFromSet(set)));
+      const week1E1rm = Math.max(0, ...entries.filter(({ sessionAt }) => { const age = now - new Date(sessionAt).getTime(); return age >= WEEK && age < 2 * WEEK; }).map(({ set }) => calculateE1RMFromSet(set)));
+      const week3E1rm = Math.max(0, ...entries.filter(({ sessionAt }) => { const age = now - new Date(sessionAt).getTime(); return age >= 3 * WEEK && age < 4 * WEEK; }).map(({ set }) => calculateE1RMFromSet(set)));
+      const trendVsLastWeek = week0E1rm && week1E1rm ? week0E1rm - week1E1rm : null;
+      const trendVs4Weeks = week0E1rm && week3E1rm ? week0E1rm - week3E1rm : null;
+      const sessionCount = new Set(entries.map((e) => e.sessionAt)).size;
+      let recommendation: string;
+      if (sessionCount < 2) recommendation = "Not enough data";
+      else if (trendVs4Weeks !== null && trendVs4Weeks > 5) recommendation = "Progress load";
+      else if (trendVsLastWeek !== null && trendVsLastWeek < -10) recommendation = "Reduce load";
+      else if (trendVsLastWeek !== null && Math.abs(trendVsLastWeek) < 5) recommendation = "Repeat";
+      else recommendation = "Repeat";
+      return { exerciseId, exercise, lastSet, bestE1rm, week0E1rm, trendVsLastWeek, trendVs4Weeks, sessionCount, recommendation };
+    }).filter((r) => r.lastSet).sort((a, b) => (b.week0E1rm || 0) - (a.week0E1rm || 0)).slice(0, 10);
+  })();
+
+  // ── Section 5: Readiness Analytics ────────────────────────────────────────
+  const readiness28 = db.readiness.filter((r) => r.userId === user.id && now - new Date(r.date).getTime() < 28 * DAY).sort((a, b) => a.date.localeCompare(b.date));
+  const withTriple = readiness28.filter((r) => r.mentalScore !== undefined && r.physicalScore !== undefined && r.recoveryScore !== undefined);
+  const avgMental = withTriple.length ? (withTriple.reduce((s, r) => s + (r.mentalScore ?? 0), 0) / withTriple.length).toFixed(1) : null;
+  const avgPhysical = withTriple.length ? (withTriple.reduce((s, r) => s + (r.physicalScore ?? 0), 0) / withTriple.length).toFixed(1) : null;
+  const avgRecovery = withTriple.length ? (withTriple.reduce((s, r) => s + (r.recoveryScore ?? 0), 0) / withTriple.length).toFixed(1) : null;
+  const readinessTrend = avgReadiness7 && avgReadiness14_7 ? avgReadiness7 - avgReadiness14_7 : null;
+
+  // ── Section 6: Weekly Review ───────────────────────────────────────────────
   const weekly = summarizeWeek(db, user);
-  const topSets = recentTopSets(db.sessions, user.id);
-  const sevenDaysAgo = Date.now() - 1000 * 60 * 60 * 24 * 7;
-  const recentSessions = db.sessions.filter((s) => s.userId === user.id && s.status === "completed" && new Date(s.startedAt).getTime() >= sevenDaysAgo);
-  const weeklyHardSets = recentSessions.flatMap((s) => s.loggedExercises).flatMap((log) => log.sets.filter((set) => !set.skipped && set.kind !== "warmup"));
-  const weeklyAvgRpe = safeAverageRpe(weeklyHardSets);
-  const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
+  const gaps = analyzeProgramGaps(activeProgram, db);
+
+  function muscleLabel(m: MuscleGroup) {
+    return m.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+
+  function confidenceLabel(count: number): { label: string; color: string } {
+    if (count >= 4) return { label: "high", color: "text-emerald-400" };
+    if (count >= 2) return { label: "medium", color: "text-amber-400" };
+    return { label: "low", color: "text-iron-500" };
+  }
+
+  function trendBadge(delta: number | null, unit?: string) {
+    if (delta === null) return <span className="text-xs text-iron-600">—</span>;
+    const sign = delta > 0 ? "+" : "";
+    const color = delta > 0 ? "text-emerald-400" : delta < 0 ? "text-ember" : "text-iron-500";
+    return <span className={`text-xs font-medium ${color}`}>{sign}{Math.round(delta)}{unit ? ` ${unit}` : ""}</span>;
+  }
 
   return (
-    <div className="space-y-5">
-      <PageTitle eyebrow="Progress" title="Strength, hypertrophy, recovery, and program gaps." />
-      <section className="grid gap-4 lg:grid-cols-4">
-        {metrics.map((metric) => <Metric key={metric.id} label={metric.label} value={metric.value} unit={metric.unit} />)}
+    <div className="space-y-6">
+      <PageTitle eyebrow="Analytics" title="Training decision dashboard." />
+
+      {/* ── Section 1: Training Status ── */}
+      <section>
+        <p className="label mb-3">Training Status</p>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+          {metrics.map((m) => {
+            const conf = confidenceLabel(week0Sessions.length);
+            const weekDelta = m.id === "pl_total" ? null : null;
+            return (
+              <div key={m.id} className="metric-card">
+                <p className="label">{m.label}</p>
+                <p className="mt-1.5 text-xl font-bold">{m.value}{m.unit ? <span className="ml-1 text-sm font-normal text-iron-500">{m.unit}</span> : null}</p>
+                <p className={`mt-1 text-[0.68rem] ${conf.color}`}>confidence: {conf.label}</p>
+                {weekDelta !== null && trendBadge(weekDelta, m.unit)}
+              </div>
+            );
+          })}
+          <div className="metric-card">
+            <p className="label">Avg Readiness</p>
+            <p className="mt-1.5 text-xl font-bold">{avgReadiness7 ?? "—"}{avgReadiness7 ? <span className="ml-1 text-sm font-normal text-iron-500">/ 100</span> : null}</p>
+            {readinessTrend !== null && <div className="mt-1">{trendBadge(readinessTrend, "pts")}</div>}
+            <p className="mt-1 text-[0.68rem] text-iron-500">vs prev 7 days</p>
+          </div>
+          <div className="metric-card">
+            <p className="label">Weekly Completion</p>
+            <p className="mt-1.5 text-xl font-bold">{week0Sessions.length}<span className="ml-1 text-sm font-normal text-iron-500">/ {user.availableDaysPerWeek} days</span></p>
+            <div className="mt-1.5 h-1.5 w-full rounded-full bg-white/[0.08]">
+              <div className="h-1.5 rounded-full bg-volt" style={{ width: `${Math.min(100, (week0Sessions.length / Math.max(1, user.availableDaysPerWeek)) * 100)}%` }} />
+            </div>
+          </div>
+        </div>
       </section>
-      <section className="grid gap-4 xl:grid-cols-[1fr_1fr]">
-        <Panel title="Bodybuilding Dashboard" icon={BarChart3}>
-          <BodybuildingDashboard db={db} user={user} program={activeProgram} />
-        </Panel>
-        <Panel title="Exercise History" icon={ClipboardList}>
-          <div className="space-y-2">
-            {topSets.map(({ exerciseId, set }) => {
-              const exercise = db.exercises.find((item) => item.id === exerciseId);
-              const loadText = formatExerciseLoadText({ exercise, user, weight: set.actualWeight, unit: set.unit || user.unit });
-              const e1rm = estimateOneRepMax(set.actualWeight, set.actualReps, set.actualRpe || 10);
+
+      {/* ── Section 2: Muscle Balance ── */}
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-semibold text-iron-100">Muscle Balance</p>
+          <Gauge className="h-4 w-4 text-iron-500" />
+        </div>
+        {muscleRows.length === 0 ? (
+          <p className="text-sm text-iron-400">No volume targets for this goal yet.</p>
+        ) : (
+          <div className="divide-y divide-white/[0.04]">
+            {muscleRows.map(({ muscle, sets, min, target, max, status, daysAgo }) => {
+              const barPct = Math.min(100, (sets / (max * 1.2)) * 100);
+              const statusCfg = {
+                under: { label: "Under target", color: "text-amber-400", bar: "bg-amber-500/60" },
+                productive: { label: "Productive", color: "text-emerald-400", bar: "bg-emerald-500/60" },
+                high: { label: "High", color: "text-volt", bar: "bg-volt/60" },
+                "too-high": { label: "Too high", color: "text-ember", bar: "bg-ember/60" },
+              }[status];
               return (
-                <div key={set.id} className="flex items-center justify-between gap-3 rounded-lg bg-white/[0.04] px-3 py-2.5">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{exercise?.name}</p>
-                    <p className="text-xs text-iron-500">{loadText} × {set.actualReps} @ RPE {set.actualRpe || "?"}</p>
+                <div key={muscle} className="flex items-center gap-3 py-2.5">
+                  <p className="w-24 shrink-0 text-xs text-iron-300">{muscleLabel(muscle)}</p>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between text-[0.65rem] text-iron-500 mb-1">
+                      <span>{sets.toFixed(sets % 1 === 0 ? 0 : 1)} sets</span>
+                      <span>target {target}</span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-white/[0.07]">
+                      <div className={`h-1.5 rounded-full ${statusCfg.bar}`} style={{ width: `${barPct}%` }} />
+                    </div>
                   </div>
-                  <p className="shrink-0 text-sm font-semibold text-volt/80">{e1rm > 0 ? `${e1rm} e1RM` : "BW"}</p>
+                  <p className={`w-20 shrink-0 text-right text-[0.65rem] font-medium ${statusCfg.color}`}>{statusCfg.label}</p>
+                  <p className="w-14 shrink-0 text-right text-[0.65rem] text-iron-600">{daysAgo === null ? "never" : daysAgo === 0 ? "today" : `${daysAgo}d ago`}</p>
                 </div>
               );
             })}
           </div>
-        </Panel>
+        )}
       </section>
-      <section className="grid gap-4 lg:grid-cols-3">
-        <Panel title="Weekly Review" icon={ClipboardList}>
-          <Metric label="Completed" value={weekly.completedWorkouts} unit="workouts" />
-          <Metric label="Sets logged" value={weeklyHardSets.length} />
-          <Metric label="Avg RPE" value={weeklyAvgRpe ? weeklyAvgRpe.toFixed(1) : "-"} />
-        </Panel>
-        <ProgramGapPanel db={db} user={user} program={activeProgram} updateDb={updateDb} />
+
+      {/* ── Section 3: Exercise Progression ── */}
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-semibold text-iron-100">Exercise Progression</p>
+          <Activity className="h-4 w-4 text-iron-500" />
+        </div>
+        {exerciseProgression.length === 0 ? (
+          <p className="text-sm text-iron-400">Log sessions to see exercise progression trends.</p>
+        ) : (
+          <div className="divide-y divide-white/[0.04]">
+            {exerciseProgression.map(({ exerciseId, exercise, lastSet, bestE1rm, week0E1rm, trendVsLastWeek, trendVs4Weeks, sessionCount, recommendation }) => {
+              const conf = confidenceLabel(sessionCount);
+              const recColor = recommendation === "Progress load" ? "text-emerald-400" : recommendation === "Reduce load" ? "text-ember" : recommendation === "Not enough data" ? "text-iron-600" : "text-iron-400";
+              return (
+                <div key={exerciseId} className="flex items-center gap-3 py-2.5">
+                  <div className="flex-1 min-w-0">
+                    <p className="truncate text-sm font-medium text-iron-100">{exercise?.name ?? exerciseId}</p>
+                    <p className="text-xs text-iron-500">
+                      {lastSet ? `${formatExerciseLoadText({ exercise, user, weight: lastSet.actualWeight, unit: lastSet.unit || user.unit })} × ${lastSet.actualReps}${lastSet.actualRpe ? ` @ ${lastSet.actualRpe}` : ""}` : "—"}
+                    </p>
+                  </div>
+                  <div className="text-right shrink-0 space-y-0.5">
+                    <p className="text-sm font-semibold text-iron-100">{week0E1rm ? `${Math.round(week0E1rm)} e1RM` : bestE1rm ? `${Math.round(bestE1rm)} best` : "—"}</p>
+                    <div className="flex items-center gap-1.5 justify-end">
+                      {trendBadge(trendVsLastWeek, "7d")}
+                      {trendVs4Weeks !== null && <span className="text-[0.6rem] text-iron-600">·</span>}
+                      {trendBadge(trendVs4Weeks, "4wk")}
+                    </div>
+                  </div>
+                  <div className="w-24 shrink-0 text-right">
+                    <p className={`text-xs font-medium ${recColor}`}>{recommendation}</p>
+                    <p className={`text-[0.65rem] ${conf.color}`}>{conf.label} conf.</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* ── Section 4: Program Gap Analysis ── */}
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-semibold text-iron-100">Program Gap Analysis</p>
+          <Zap className="h-4 w-4 text-iron-500" />
+        </div>
+        {!activeProgram ? (
+          <p className="text-sm text-iron-400">No active program. Activate a program to see gap analysis.</p>
+        ) : gaps.length === 0 ? (
+          <p className="text-sm text-emerald-400">No gaps detected. Volume, balance, frequency, and fatigue all look good.</p>
+        ) : (
+          <div className="space-y-2">
+            {gaps.slice(0, 8).map((gap) => (
+              <div key={gap.id} className={`rounded-lg px-3 py-2.5 ${gap.severity === "high" ? "bg-ember/[0.08] border border-ember/20" : gap.severity === "moderate" ? "bg-amber-500/[0.06] border border-amber-500/15" : "bg-white/[0.03] border border-white/[0.06]"}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-sm font-medium text-iron-100">{gap.issue}</p>
+                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide ${gap.severity === "high" ? "bg-ember/20 text-ember" : gap.severity === "moderate" ? "bg-amber-500/20 text-amber-300" : "bg-white/[0.06] text-iron-500"}`}>{gap.severity}</span>
+                </div>
+                <p className="mt-1 text-xs text-iron-400">{gap.suggestedFix}</p>
+              </div>
+            ))}
+            {gaps.length > 8 && <p className="text-xs text-iron-600">+{gaps.length - 8} more gaps</p>}
+          </div>
+        )}
+      </section>
+
+      {/* ── Section 5: Readiness Analytics ── */}
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-semibold text-iron-100">Readiness Analytics</p>
+          <BarChart3 className="h-4 w-4 text-iron-500" />
+        </div>
+        {readiness28.length === 0 ? (
+          <p className="text-sm text-iron-400">No readiness check-ins in the past 28 days. Check in before each workout to track trends.</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="metric-card">
+              <p className="label">Avg Readiness</p>
+              <p className="mt-1.5 text-xl font-bold">{avgReadiness7 ?? "—"}<span className="ml-1 text-sm font-normal text-iron-500">/100</span></p>
+              {readinessTrend !== null && <p className={`mt-1 text-xs ${readinessTrend >= 0 ? "text-emerald-400" : "text-ember"}`}>{readinessTrend > 0 ? "+" : ""}{readinessTrend} vs prev wk</p>}
+            </div>
+            {avgMental && (
+              <div className="metric-card">
+                <p className="label">Mental</p>
+                <p className="mt-1.5 text-xl font-bold">{avgMental}<span className="ml-1 text-sm font-normal text-iron-500">/10</span></p>
+                <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+              </div>
+            )}
+            {avgPhysical && (
+              <div className="metric-card">
+                <p className="label">Physical</p>
+                <p className="mt-1.5 text-xl font-bold">{avgPhysical}<span className="ml-1 text-sm font-normal text-iron-500">/10</span></p>
+                <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+              </div>
+            )}
+            {avgRecovery && (
+              <div className="metric-card">
+                <p className="label">Recovery</p>
+                <p className="mt-1.5 text-xl font-bold">{avgRecovery}<span className="ml-1 text-sm font-normal text-iron-500">/10</span></p>
+                <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+              </div>
+            )}
+            {!avgMental && !avgPhysical && !avgRecovery && (
+              <div className="col-span-3 flex items-center">
+                <p className="text-xs text-iron-500">Use the pre-workout mental / physical / recovery prompts to unlock deeper readiness insight.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {/* ── Section 6: Weekly Review ── */}
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-semibold text-iron-100">Weekly Review</p>
+          <CalendarDays className="h-4 w-4 text-iron-500" />
+        </div>
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="metric-card">
+            <p className="label">Completed</p>
+            <p className="mt-1.5 text-xl font-bold">{weekly.completedWorkouts}<span className="ml-1 text-sm font-normal text-iron-500">sessions</span></p>
+            {week1Sessions.length > 0 && trendBadge(week0Sessions.length - week1Sessions.length, "vs prev wk")}
+          </div>
+          <div className="metric-card">
+            <p className="label">Hard sets</p>
+            <p className="mt-1.5 text-xl font-bold">{week0HardSets.length}</p>
+            {week1HardSets.length > 0 && trendBadge(week0HardSets.length - week1HardSets.length)}
+          </div>
+          <div className="metric-card">
+            <p className="label">Avg RPE</p>
+            <p className="mt-1.5 text-xl font-bold">{week0AvgRpe ? week0AvgRpe.toFixed(1) : "—"}</p>
+            {week0AvgRpe && week1AvgRpe ? trendBadge(week0AvgRpe - week1AvgRpe) : null}
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          {weekly.recommendations.map((rec, i) => (
+            <div key={i} className="flex items-start gap-2 rounded-lg bg-white/[0.03] px-3 py-2">
+              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-volt/70" />
+              <p className="text-xs text-iron-300">{rec}</p>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );

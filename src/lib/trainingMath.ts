@@ -120,9 +120,10 @@ export function getExerciseLoadUnit(
 
 export function formatWeight(value?: number | null, unit?: ExerciseUnit | UnitPreference | null): string {
   if (value === undefined || value === null || Number.isNaN(value)) return "-";
-  const digits = unit === "kg" ? 1 : 0;
-  const rounded = digits === 0 ? Math.round(value) : Math.round(value * 10) / 10;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(digits).replace(/\.0$/, "");
+  // Round to 1 decimal to suppress floating-point noise (e.g. 162.50000001 → 162.5).
+  // Show the decimal only when it's actually non-zero so whole weights stay clean.
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
 export function estimateOneRepMax(weight: number, reps: number, rpe = 10): number {
@@ -529,15 +530,21 @@ export function powerliftingMetrics(db: TrainingDatabase, user: UserProfile): Da
   const squat = bestE1rmForExercise(db.sessions, user.id, "ex_squat_comp");
   const bench = bestE1rmForExercise(db.sessions, user.id, "ex_bench_comp");
   const deadlift = bestE1rmForExercise(db.sessions, user.id, "ex_deadlift_comp");
-  const fallback = (lift: string) => user.maxes.find((max) => max.liftName.toLowerCase().includes(lift))?.oneRepMax || 0;
+  const fallback = (lift: string) => {
+    const max = user.maxes.find((m) => m.liftName.toLowerCase().includes(lift));
+    if (!max) return 0;
+    // Convert stored max to user's display unit so the total isn't skewed by unit mismatch.
+    return convertWeight(max.oneRepMax, max.unit, user.unit) ?? 0;
+  };
   const s = squat || fallback("squat");
   const b = bench || fallback("bench");
   const d = deadlift || fallback("deadlift");
+  const total = s && b && d ? s + b + d : 0;
   return [
-    { id: "pl_squat", label: "Squat e1RM", value: s || "-", unit: user.unit, trend: "flat" },
-    { id: "pl_bench", label: "Bench e1RM", value: b || "-", unit: user.unit, trend: bench ? "up" : "flat" },
-    { id: "pl_deadlift", label: "Deadlift e1RM", value: d || "-", unit: user.unit, trend: "flat" },
-    { id: "pl_total", label: "Estimated total", value: s + b + d || "-", unit: user.unit, trend: "flat" }
+    { id: "pl_squat", label: "Squat e1RM", value: s ? Math.round(s) : "-", unit: s ? user.unit : undefined, trend: "flat" },
+    { id: "pl_bench", label: "Bench e1RM", value: b ? Math.round(b) : "-", unit: b ? user.unit : undefined, trend: bench ? "up" : "flat" },
+    { id: "pl_deadlift", label: "Deadlift e1RM", value: d ? Math.round(d) : "-", unit: d ? user.unit : undefined, trend: "flat" },
+    { id: "pl_total", label: "Estimated total", value: total ? Math.round(total) : "-", unit: total ? user.unit : undefined, trend: "flat" }
   ];
 }
 
