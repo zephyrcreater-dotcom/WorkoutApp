@@ -59,6 +59,16 @@ import {
   estimateWorkoutDuration,
   summarizePlannedVolume
 } from "./lib/programAnalysis";
+import {
+  buildCategorizedGaps,
+  computeBlockAnalytics,
+  computeExerciseProgressionEntries,
+  computePerformanceScore,
+  generateCoachNotebookInsights,
+  generateReadinessInsights,
+  type CoachInsight,
+  type ExerciseProgressionEntry,
+} from "./lib/coachingAnalytics";
 import { generateProgram, generateSplitFromText, type ProgramRequest } from "./lib/programGenerator";
 import {
   buildSplitSchedule,
@@ -13001,6 +13011,14 @@ function ExerciseAnalyticsView({
     .filter((item) => item.value > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
   const bestRecentE1rm = chartPoints.length ? Math.max(...chartPoints.map((point) => point.value)) : 0;
+  const progressionEntry = exerciseId ? computeExerciseProgressionEntries(db, user, { onlyExerciseId: exerciseId })[0] : undefined;
+  const recommendationCfg: Record<ExerciseProgressionEntry["status"], { label: string; color: string }> = {
+    increase: { label: "Increase", color: "text-emerald-400" },
+    repeat: { label: "Repeat", color: "text-iron-300" },
+    reduce: { label: "Reduce", color: "text-ember" },
+    swap: { label: "Swap exercise", color: "text-ember" },
+    insufficient: { label: "Not enough data", color: "text-iron-600" },
+  };
   const contextLogged = contextSession?.loggedExercises.find((logged) => matchesExercise(contextSession, logged));
   const plannedFromContext = contextDay?.exercises.find((planned) => {
     if (exerciseId && planned.exerciseId === exerciseId) return true;
@@ -13065,6 +13083,22 @@ function ExerciseAnalyticsView({
           <p className="mt-2 text-sm text-iron-500">No exercise history yet.</p>
         )}
       </section>
+
+      {progressionEntry && (
+        <section className="border-b border-white/[0.06] pb-4">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Coach recommendation</p>
+          <div className="mt-2 flex items-start justify-between gap-3">
+            <p className="text-sm text-iron-300">{progressionEntry.statusDetail}</p>
+            <span className={`shrink-0 text-sm font-semibold ${recommendationCfg[progressionEntry.status].color}`}>{recommendationCfg[progressionEntry.status].label}</span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-iron-500">
+            <span>Trend 7d {progressionEntry.trendVsLastWeek !== null ? `${progressionEntry.trendVsLastWeek > 0 ? "+" : ""}${Math.round(progressionEntry.trendVsLastWeek)}` : "—"}</span>
+            <span>Trend 4wk {progressionEntry.trendVs4Weeks !== null ? `${progressionEntry.trendVs4Weeks > 0 ? "+" : ""}${Math.round(progressionEntry.trendVs4Weeks)}` : "—"}</span>
+            <span>Same-weight streak {progressionEntry.sameWeightStreak}</span>
+            <span>{sessionCountNote(progressionEntry.sessionCount)}</span>
+          </div>
+        </section>
+      )}
 
       <section className="border-b border-white/[0.06] pb-4">
         <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Chart</p>
@@ -13354,9 +13388,20 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
 
   const activeProgram = db.programs.find((p) => p.userId === user.id && p.status === "active");
   const userSessions = db.sessions.filter((s) => s.userId === user.id && s.status === "completed");
+  const activeBlock = activeProgram?.blocks.find((b) => b.status === "active") ?? activeProgram?.blocks[0];
+  const isStrengthContext = user.goal === "powerlifting"
+    || activeProgram?.goal === "powerlifting"
+    || activeBlock?.goalOverride === "powerlifting"
+    || activeBlock?.type === "strength"
+    || activeBlock?.type === "peaking"
+    || activeBlock?.type === "intensification";
 
-  // ── Section 1: Training Status ─────────────────────────────────────────────
-  const metrics = powerliftingMetrics(db, user);
+  // ── Coach's Notebook + Performance Score ──────────────────────────────────
+  const progressionEntries = computeExerciseProgressionEntries(db, user, { limit: 14 });
+  const performanceSummary = computePerformanceScore(db, user);
+  const coachInsights = generateCoachNotebookInsights(db, user, progressionEntries, activeProgram);
+
+  // ── Weekly context (readiness trend, RPE trend, session counts) ──────────
   const week0Sessions = userSessions.filter((s) => now - new Date(s.startedAt).getTime() < WEEK);
   const week1Sessions = userSessions.filter((s) => { const age = now - new Date(s.startedAt).getTime(); return age >= WEEK && age < 2 * WEEK; });
   const week0HardSets = week0Sessions.flatMap((s) => s.loggedExercises).flatMap((l) => l.sets.filter((set) => !set.skipped && set.kind !== "warmup"));
@@ -13367,8 +13412,12 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
   const readiness14_7 = db.readiness.filter((r) => r.userId === user.id && now - new Date(r.date).getTime() >= WEEK && now - new Date(r.date).getTime() < 2 * WEEK);
   const avgReadiness7 = readiness7.length ? Math.round(readiness7.reduce((s, r) => s + r.readinessScore, 0) / readiness7.length) : null;
   const avgReadiness14_7 = readiness14_7.length ? Math.round(readiness14_7.reduce((s, r) => s + r.readinessScore, 0) / readiness14_7.length) : null;
+  const readinessTrend = avgReadiness7 && avgReadiness14_7 ? avgReadiness7 - avgReadiness14_7 : null;
 
-  // ── Section 2: Muscle Balance ──────────────────────────────────────────────
+  // ── Powerlifting metrics — only surfaced for strength/powerlifting contexts ──
+  const metrics = isStrengthContext ? powerliftingMetrics(db, user) : [];
+
+  // ── Muscle Balance ─────────────────────────────────────────────────────────
   const muscleVol = calculateMuscleVolume(db.sessions, db.exercises, user.id);
   const goal = activeProgram?.goal ?? user.goal ?? "powerbuilding";
   const volTargets = muscleVolumeTargets[goal as keyof typeof muscleVolumeTargets] ?? muscleVolumeTargets.powerbuilding;
@@ -13395,59 +13444,26 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
     return order[a.status] - order[b.status];
   });
 
-  // ── Section 3: Exercise Progression ───────────────────────────────────────
-  const exerciseProgression = (() => {
-    const exerciseSets: Record<string, { set: LoggedSet; sessionAt: string }[]> = {};
-    userSessions.filter((s) => now - new Date(s.startedAt).getTime() < 28 * DAY).forEach((s) => {
-      s.loggedExercises.forEach((l) => {
-        if (!l.sets.some((set) => !set.skipped && set.kind !== "warmup")) return;
-        exerciseSets[l.exerciseId] ??= [];
-        l.sets.filter((set) => !set.skipped && set.kind !== "warmup").forEach((set) => {
-          exerciseSets[l.exerciseId].push({ set, sessionAt: s.startedAt });
-        });
-      });
-    });
-    return Object.entries(exerciseSets).map(([exerciseId, entries]) => {
-      const exercise = db.exercises.find((e) => e.id === exerciseId);
-      const sorted = entries.slice().sort((a, b) => b.sessionAt.localeCompare(a.sessionAt));
-      const lastSet = sorted[0]?.set;
-      const bestE1rm = Math.max(0, ...entries.map(({ set }) => calculateE1RMFromSet(set)));
-      const week0E1rm = Math.max(0, ...entries.filter(({ sessionAt }) => now - new Date(sessionAt).getTime() < WEEK).map(({ set }) => calculateE1RMFromSet(set)));
-      const week1E1rm = Math.max(0, ...entries.filter(({ sessionAt }) => { const age = now - new Date(sessionAt).getTime(); return age >= WEEK && age < 2 * WEEK; }).map(({ set }) => calculateE1RMFromSet(set)));
-      const week3E1rm = Math.max(0, ...entries.filter(({ sessionAt }) => { const age = now - new Date(sessionAt).getTime(); return age >= 3 * WEEK && age < 4 * WEEK; }).map(({ set }) => calculateE1RMFromSet(set)));
-      const trendVsLastWeek = week0E1rm && week1E1rm ? week0E1rm - week1E1rm : null;
-      const trendVs4Weeks = week0E1rm && week3E1rm ? week0E1rm - week3E1rm : null;
-      const sessionCount = new Set(entries.map((e) => e.sessionAt)).size;
-      let recommendation: string;
-      if (sessionCount < 2) recommendation = "Not enough data";
-      else if (trendVs4Weeks !== null && trendVs4Weeks > 5) recommendation = "Progress load";
-      else if (trendVsLastWeek !== null && trendVsLastWeek < -10) recommendation = "Reduce load";
-      else if (trendVsLastWeek !== null && Math.abs(trendVsLastWeek) < 5) recommendation = "Repeat";
-      else recommendation = "Repeat";
-      return { exerciseId, exercise, lastSet, bestE1rm, week0E1rm, trendVsLastWeek, trendVs4Weeks, sessionCount, recommendation };
-    }).filter((r) => r.lastSet).sort((a, b) => (b.week0E1rm || 0) - (a.week0E1rm || 0)).slice(0, 10);
-  })();
+  // ── Program Gap Analysis (categorized) ────────────────────────────────────
+  const baseGaps = analyzeProgramGaps(activeProgram, db);
+  const categorizedGaps = buildCategorizedGaps({ db, user, activeProgram, baseGaps, progressionEntries });
 
-  // ── Section 5: Readiness Analytics ────────────────────────────────────────
+  // ── Readiness Analytics ────────────────────────────────────────────────────
   const readiness28 = db.readiness.filter((r) => r.userId === user.id && now - new Date(r.date).getTime() < 28 * DAY).sort((a, b) => a.date.localeCompare(b.date));
   const withTriple = readiness28.filter((r) => r.mentalScore !== undefined && r.physicalScore !== undefined && r.recoveryScore !== undefined);
   const avgMental = withTriple.length ? (withTriple.reduce((s, r) => s + (r.mentalScore ?? 0), 0) / withTriple.length).toFixed(1) : null;
   const avgPhysical = withTriple.length ? (withTriple.reduce((s, r) => s + (r.physicalScore ?? 0), 0) / withTriple.length).toFixed(1) : null;
   const avgRecovery = withTriple.length ? (withTriple.reduce((s, r) => s + (r.recoveryScore ?? 0), 0) / withTriple.length).toFixed(1) : null;
-  const readinessTrend = avgReadiness7 && avgReadiness14_7 ? avgReadiness7 - avgReadiness14_7 : null;
+  const readinessInsights = generateReadinessInsights(db, user);
 
-  // ── Section 6: Weekly Review ───────────────────────────────────────────────
+  // ── Block-level analytics ──────────────────────────────────────────────────
+  const blockAnalytics = computeBlockAnalytics(db, user, activeProgram);
+
+  // ── Weekly Review ───────────────────────────────────────────────────────────
   const weekly = summarizeWeek(db, user);
-  const gaps = analyzeProgramGaps(activeProgram, db);
 
-  function muscleLabel(m: MuscleGroup) {
+  function muscleLabel(m: MuscleGroup | string) {
     return m.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-
-  function confidenceLabel(count: number): { label: string; color: string } {
-    if (count >= 4) return { label: "high", color: "text-emerald-400" };
-    if (count >= 2) return { label: "medium", color: "text-amber-400" };
-    return { label: "low", color: "text-iron-500" };
   }
 
   function trendBadge(delta: number | null, unit?: string) {
@@ -13457,43 +13473,96 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
     return <span className={`text-xs font-medium ${color}`}>{sign}{Math.round(delta)}{unit ? ` ${unit}` : ""}</span>;
   }
 
+  const insightToneCfg: Record<CoachInsight["tone"], { border: string; bg: string; icon: ReactNode }> = {
+    positive: { border: "border-emerald-500/20", bg: "bg-emerald-500/[0.06]", icon: <Check className="h-3.5 w-3.5 text-emerald-400" /> },
+    warning: { border: "border-amber-500/20", bg: "bg-amber-500/[0.06]", icon: <Zap className="h-3.5 w-3.5 text-amber-400" /> },
+    info: { border: "border-white/[0.08]", bg: "bg-white/[0.03]", icon: <Activity className="h-3.5 w-3.5 text-iron-400" /> },
+  };
+
+  const recommendationCfg: Record<ExerciseProgressionEntry["status"], { label: string; color: string }> = {
+    increase: { label: "Increase", color: "text-emerald-400" },
+    repeat: { label: "Repeat", color: "text-iron-300" },
+    reduce: { label: "Reduce", color: "text-ember" },
+    swap: { label: "Swap exercise", color: "text-ember" },
+    insufficient: { label: "Not enough data", color: "text-iron-600" },
+  };
+
   return (
     <div className="space-y-6">
       <PageTitle eyebrow="Analytics" title="Training decision dashboard." />
 
-      {/* ── Section 1: Training Status ── */}
+      {/* ── Coach's Notebook ── */}
+      <section className="panel p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <p className="font-semibold text-iron-100">Coach's Notebook</p>
+          <ClipboardList className="h-4 w-4 text-iron-500" />
+        </div>
+        {coachInsights.length === 0 ? (
+          <p className="text-sm text-iron-400">Log a few more sessions and insights will start showing up here.</p>
+        ) : (
+          <div className="space-y-2">
+            {coachInsights.map((insight) => {
+              const cfg = insightToneCfg[insight.tone];
+              return (
+                <div key={insight.id} className={`flex items-start gap-2.5 rounded-lg border px-3 py-2.5 ${cfg.border} ${cfg.bg}`}>
+                  <span className="mt-0.5 shrink-0">{cfg.icon}</span>
+                  <p className="text-sm text-iron-200">{insight.text}</p>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {/* ── Performance Score ── */}
       <section>
-        <p className="label mb-3">Training Status</p>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {metrics.map((m) => {
-            const conf = confidenceLabel(week0Sessions.length);
-            const weekDelta = m.id === "pl_total" ? null : null;
-            return (
+        <p className="label mb-3">Performance</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+          <div className="metric-card sm:col-span-1">
+            <p className="label">Performance Score</p>
+            {performanceSummary.current.score !== null ? (
+              <>
+                <div className="mt-1.5 flex items-baseline gap-2">
+                  <p className="text-3xl font-bold">{performanceSummary.current.score}</p>
+                  <span className="text-sm font-normal text-iron-500">/ 100</span>
+                  {performanceSummary.deltaVsPreviousWeek !== null && trendBadge(performanceSummary.deltaVsPreviousWeek, "this wk")}
+                </div>
+                <p className="mt-1.5 text-xs text-iron-400">{performanceSummary.reason}</p>
+              </>
+            ) : (
+              <p className="mt-1.5 text-sm text-iron-400">{performanceSummary.current.sampleNote}</p>
+            )}
+          </div>
+          <div className="metric-card">
+            <p className="label">Progression</p>
+            <p className="mt-1.5 text-xl font-bold">{performanceSummary.current.subScores.progression ?? "—"}</p>
+            <p className="mt-1 text-[0.68rem] text-iron-500">40% of score</p>
+          </div>
+          <div className="metric-card">
+            <p className="label">Completion</p>
+            <p className="mt-1.5 text-xl font-bold">{performanceSummary.current.subScores.completion ?? "—"}</p>
+            <p className="mt-1 text-[0.68rem] text-iron-500">25% of score</p>
+          </div>
+          <div className="metric-card">
+            <p className="label">RPE Accuracy</p>
+            <p className="mt-1.5 text-xl font-bold">{performanceSummary.current.subScores.rpeAccuracy ?? "—"}</p>
+            <p className="mt-1 text-[0.68rem] text-iron-500">20% of score</p>
+          </div>
+        </div>
+        {isStrengthContext && metrics.length > 0 && (
+          <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {metrics.map((m) => (
               <div key={m.id} className="metric-card">
                 <p className="label">{m.label}</p>
                 <p className="mt-1.5 text-xl font-bold">{m.value}{m.unit ? <span className="ml-1 text-sm font-normal text-iron-500">{m.unit}</span> : null}</p>
-                <p className={`mt-1 text-[0.68rem] ${conf.color}`}>confidence: {conf.label}</p>
-                {weekDelta !== null && trendBadge(weekDelta, m.unit)}
+                <p className="mt-1 text-[0.68rem] text-iron-500">{sessionCountNote(week0Sessions.length)}</p>
               </div>
-            );
-          })}
-          <div className="metric-card">
-            <p className="label">Avg Readiness</p>
-            <p className="mt-1.5 text-xl font-bold">{avgReadiness7 ?? "—"}{avgReadiness7 ? <span className="ml-1 text-sm font-normal text-iron-500">/ 100</span> : null}</p>
-            {readinessTrend !== null && <div className="mt-1">{trendBadge(readinessTrend, "pts")}</div>}
-            <p className="mt-1 text-[0.68rem] text-iron-500">vs prev 7 days</p>
+            ))}
           </div>
-          <div className="metric-card">
-            <p className="label">Weekly Completion</p>
-            <p className="mt-1.5 text-xl font-bold">{week0Sessions.length}<span className="ml-1 text-sm font-normal text-iron-500">/ {user.availableDaysPerWeek} days</span></p>
-            <div className="mt-1.5 h-1.5 w-full rounded-full bg-white/[0.08]">
-              <div className="h-1.5 rounded-full bg-volt" style={{ width: `${Math.min(100, (week0Sessions.length / Math.max(1, user.availableDaysPerWeek)) * 100)}%` }} />
-            </div>
-          </div>
-        </div>
+        )}
       </section>
 
-      {/* ── Section 2: Muscle Balance ── */}
+      {/* ── Muscle Balance ── */}
       <section className="panel p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="font-semibold text-iron-100">Muscle Balance</p>
@@ -13503,7 +13572,7 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
           <p className="text-sm text-iron-400">No volume targets for this goal yet.</p>
         ) : (
           <div className="divide-y divide-white/[0.04]">
-            {muscleRows.map(({ muscle, sets, min, target, max, status, daysAgo }) => {
+            {muscleRows.map(({ muscle, sets, target, max, status, daysAgo }) => {
               const barPct = Math.min(100, (sets / (max * 1.2)) * 100);
               const statusCfg = {
                 under: { label: "Under target", color: "text-amber-400", bar: "bg-amber-500/60" },
@@ -13532,38 +13601,38 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
         )}
       </section>
 
-      {/* ── Section 3: Exercise Progression ── */}
+      {/* ── Exercise Progression ── */}
       <section className="panel p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="font-semibold text-iron-100">Exercise Progression</p>
           <Activity className="h-4 w-4 text-iron-500" />
         </div>
-        {exerciseProgression.length === 0 ? (
+        {progressionEntries.length === 0 ? (
           <p className="text-sm text-iron-400">Log sessions to see exercise progression trends.</p>
         ) : (
           <div className="divide-y divide-white/[0.04]">
-            {exerciseProgression.map(({ exerciseId, exercise, lastSet, bestE1rm, week0E1rm, trendVsLastWeek, trendVs4Weeks, sessionCount, recommendation }) => {
-              const conf = confidenceLabel(sessionCount);
-              const recColor = recommendation === "Progress load" ? "text-emerald-400" : recommendation === "Reduce load" ? "text-ember" : recommendation === "Not enough data" ? "text-iron-600" : "text-iron-400";
+            {progressionEntries.slice(0, 10).map((entry) => {
+              const rec = recommendationCfg[entry.status];
               return (
-                <div key={exerciseId} className="flex items-center gap-3 py-2.5">
+                <div key={entry.exerciseId} className="flex items-center gap-3 py-2.5">
                   <div className="flex-1 min-w-0">
-                    <p className="truncate text-sm font-medium text-iron-100">{exercise?.name ?? exerciseId}</p>
+                    <p className="truncate text-sm font-medium text-iron-100">{entry.exercise?.name ?? entry.exerciseId}</p>
                     <p className="text-xs text-iron-500">
-                      {lastSet ? `${formatExerciseLoadText({ exercise, user, weight: lastSet.actualWeight, unit: lastSet.unit || user.unit })} × ${lastSet.actualReps}${lastSet.actualRpe ? ` @ ${lastSet.actualRpe}` : ""}` : "—"}
+                      {entry.lastSet ? `${formatExerciseLoadText({ exercise: entry.exercise, user, weight: entry.lastSet.actualWeight, unit: entry.lastSet.unit || user.unit })} × ${entry.lastSet.actualReps}${entry.lastSet.actualRpe ? ` @ ${entry.lastSet.actualRpe}` : ""}` : "—"}
                     </p>
+                    <p className="mt-0.5 text-[0.68rem] text-iron-600">{entry.statusDetail}</p>
                   </div>
                   <div className="text-right shrink-0 space-y-0.5">
-                    <p className="text-sm font-semibold text-iron-100">{week0E1rm ? `${Math.round(week0E1rm)} e1RM` : bestE1rm ? `${Math.round(bestE1rm)} best` : "—"}</p>
+                    <p className="text-sm font-semibold text-iron-100">{entry.currentE1rm ? `${Math.round(entry.currentE1rm)} e1RM` : entry.bestE1rm ? `${Math.round(entry.bestE1rm)} best` : "—"}</p>
                     <div className="flex items-center gap-1.5 justify-end">
-                      {trendBadge(trendVsLastWeek, "7d")}
-                      {trendVs4Weeks !== null && <span className="text-[0.6rem] text-iron-600">·</span>}
-                      {trendBadge(trendVs4Weeks, "4wk")}
+                      {trendBadge(entry.trendVsLastWeek, "7d")}
+                      {entry.trendVs4Weeks !== null && <span className="text-[0.6rem] text-iron-600">·</span>}
+                      {trendBadge(entry.trendVs4Weeks, "4wk")}
                     </div>
                   </div>
-                  <div className="w-24 shrink-0 text-right">
-                    <p className={`text-xs font-medium ${recColor}`}>{recommendation}</p>
-                    <p className={`text-[0.65rem] ${conf.color}`}>{conf.label} conf.</p>
+                  <div className="w-28 shrink-0 text-right">
+                    <p className={`text-xs font-medium ${rec.color}`}>{rec.label}</p>
+                    <p className="text-[0.65rem] text-iron-600">{sessionCountNote(entry.sessionCount)}</p>
                   </div>
                 </div>
               );
@@ -13572,7 +13641,7 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
         )}
       </section>
 
-      {/* ── Section 4: Program Gap Analysis ── */}
+      {/* ── Program Gap Analysis (categorized) ── */}
       <section className="panel p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="font-semibold text-iron-100">Program Gap Analysis</p>
@@ -13580,25 +13649,31 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
         </div>
         {!activeProgram ? (
           <p className="text-sm text-iron-400">No active program. Activate a program to see gap analysis.</p>
-        ) : gaps.length === 0 ? (
-          <p className="text-sm text-emerald-400">No gaps detected. Volume, balance, frequency, and fatigue all look good.</p>
+        ) : categorizedGaps.length === 0 ? (
+          <p className="text-sm text-emerald-400">No gaps detected. Volume, balance, frequency, recovery, and adherence all look good.</p>
         ) : (
-          <div className="space-y-2">
-            {gaps.slice(0, 8).map((gap) => (
-              <div key={gap.id} className={`rounded-lg px-3 py-2.5 ${gap.severity === "high" ? "bg-ember/[0.08] border border-ember/20" : gap.severity === "moderate" ? "bg-amber-500/[0.06] border border-amber-500/15" : "bg-white/[0.03] border border-white/[0.06]"}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-sm font-medium text-iron-100">{gap.issue}</p>
-                  <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide ${gap.severity === "high" ? "bg-ember/20 text-ember" : gap.severity === "moderate" ? "bg-amber-500/20 text-amber-300" : "bg-white/[0.06] text-iron-500"}`}>{gap.severity}</span>
+          <div className="space-y-4">
+            {categorizedGaps.map(({ category, gaps }) => (
+              <div key={category}>
+                <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">{category}</p>
+                <div className="space-y-2">
+                  {gaps.map((gap) => (
+                    <div key={gap.id} className={`rounded-lg px-3 py-2.5 ${gap.severity === "high" ? "bg-ember/[0.08] border border-ember/20" : gap.severity === "moderate" ? "bg-amber-500/[0.06] border border-amber-500/15" : "bg-white/[0.03] border border-white/[0.06]"}`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="text-sm font-medium text-iron-100">{gap.issue}</p>
+                        <span className={`shrink-0 rounded px-1.5 py-0.5 text-[0.62rem] font-semibold uppercase tracking-wide ${gap.severity === "high" ? "bg-ember/20 text-ember" : gap.severity === "moderate" ? "bg-amber-500/20 text-amber-300" : "bg-white/[0.06] text-iron-500"}`}>{gap.severity}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-iron-400">{gap.suggestedFix}</p>
+                    </div>
+                  ))}
                 </div>
-                <p className="mt-1 text-xs text-iron-400">{gap.suggestedFix}</p>
               </div>
             ))}
-            {gaps.length > 8 && <p className="text-xs text-iron-600">+{gaps.length - 8} more gaps</p>}
           </div>
         )}
       </section>
 
-      {/* ── Section 5: Readiness Analytics ── */}
+      {/* ── Readiness Analytics ── */}
       <section className="panel p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="font-semibold text-iron-100">Readiness Analytics</p>
@@ -13607,43 +13682,116 @@ function ProgressScreen({ db, user, updateDb }: { db: TrainingDatabase; user: Us
         {readiness28.length === 0 ? (
           <p className="text-sm text-iron-400">No readiness check-ins in the past 28 days. Check in before each workout to track trends.</p>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <div className="metric-card">
-              <p className="label">Avg Readiness</p>
-              <p className="mt-1.5 text-xl font-bold">{avgReadiness7 ?? "—"}<span className="ml-1 text-sm font-normal text-iron-500">/100</span></p>
-              {readinessTrend !== null && <p className={`mt-1 text-xs ${readinessTrend >= 0 ? "text-emerald-400" : "text-ember"}`}>{readinessTrend > 0 ? "+" : ""}{readinessTrend} vs prev wk</p>}
+          <>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="metric-card">
+                <p className="label">Avg Readiness</p>
+                <p className="mt-1.5 text-xl font-bold">{avgReadiness7 ?? "—"}<span className="ml-1 text-sm font-normal text-iron-500">/100</span></p>
+                {readinessTrend !== null && <p className={`mt-1 text-xs ${readinessTrend >= 0 ? "text-emerald-400" : "text-ember"}`}>{readinessTrend > 0 ? "+" : ""}{readinessTrend} vs prev wk</p>}
+              </div>
+              {avgMental && (
+                <div className="metric-card">
+                  <p className="label">Mental</p>
+                  <p className="mt-1.5 text-xl font-bold">{avgMental}<span className="ml-1 text-sm font-normal text-iron-500">/5</span></p>
+                  <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+                </div>
+              )}
+              {avgPhysical && (
+                <div className="metric-card">
+                  <p className="label">Physical</p>
+                  <p className="mt-1.5 text-xl font-bold">{avgPhysical}<span className="ml-1 text-sm font-normal text-iron-500">/5</span></p>
+                  <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+                </div>
+              )}
+              {avgRecovery && (
+                <div className="metric-card">
+                  <p className="label">Recovery</p>
+                  <p className="mt-1.5 text-xl font-bold">{avgRecovery}<span className="ml-1 text-sm font-normal text-iron-500">/5</span></p>
+                  <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+                </div>
+              )}
+              {!avgMental && !avgPhysical && !avgRecovery && (
+                <div className="col-span-3 flex items-center">
+                  <p className="text-xs text-iron-500">Use the pre-workout mental / physical / recovery prompts to unlock deeper readiness insight.</p>
+                </div>
+              )}
             </div>
-            {avgMental && (
-              <div className="metric-card">
-                <p className="label">Mental</p>
-                <p className="mt-1.5 text-xl font-bold">{avgMental}<span className="ml-1 text-sm font-normal text-iron-500">/10</span></p>
-                <p className="mt-1 text-xs text-iron-500">28-day avg</p>
+            {readinessInsights.length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {readinessInsights.map((insight, i) => (
+                  <div key={i} className="flex items-start gap-2 rounded-lg bg-white/[0.03] px-3 py-2">
+                    <BarChart3 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-iron-500" />
+                    <p className="text-xs text-iron-300">{insight}</p>
+                  </div>
+                ))}
               </div>
             )}
-            {avgPhysical && (
-              <div className="metric-card">
-                <p className="label">Physical</p>
-                <p className="mt-1.5 text-xl font-bold">{avgPhysical}<span className="ml-1 text-sm font-normal text-iron-500">/10</span></p>
-                <p className="mt-1 text-xs text-iron-500">28-day avg</p>
-              </div>
-            )}
-            {avgRecovery && (
-              <div className="metric-card">
-                <p className="label">Recovery</p>
-                <p className="mt-1.5 text-xl font-bold">{avgRecovery}<span className="ml-1 text-sm font-normal text-iron-500">/10</span></p>
-                <p className="mt-1 text-xs text-iron-500">28-day avg</p>
-              </div>
-            )}
-            {!avgMental && !avgPhysical && !avgRecovery && (
-              <div className="col-span-3 flex items-center">
-                <p className="text-xs text-iron-500">Use the pre-workout mental / physical / recovery prompts to unlock deeper readiness insight.</p>
-              </div>
-            )}
-          </div>
+          </>
         )}
       </section>
 
-      {/* ── Section 6: Weekly Review ── */}
+      {/* ── Block-Level Analytics ── */}
+      {blockAnalytics && (
+        <section className="panel p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div>
+              <p className="font-semibold text-iron-100">Block Analytics</p>
+              <p className="text-xs text-iron-500">{blockAnalytics.blockName} · {blockAnalytics.weekLabel}</p>
+            </div>
+            <GitBranch className="h-4 w-4 text-iron-500" />
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="metric-card">
+              <p className="label">Block Progress</p>
+              <p className="mt-1.5 text-xl font-bold">{blockAnalytics.progressPct}<span className="ml-1 text-sm font-normal text-iron-500">%</span></p>
+            </div>
+            <div className="metric-card">
+              <p className="label">Adherence</p>
+              <p className="mt-1.5 text-xl font-bold">{blockAnalytics.adherencePct}<span className="ml-1 text-sm font-normal text-iron-500">%</span></p>
+            </div>
+            <div className="metric-card">
+              <p className="label">Added exercises</p>
+              <p className="mt-1.5 text-xl font-bold">{blockAnalytics.addedExercisesCount}</p>
+            </div>
+            <div className="metric-card">
+              <p className="label">Skipped workouts</p>
+              <p className="mt-1.5 text-xl font-bold">{blockAnalytics.skippedWorkoutCount}</p>
+            </div>
+          </div>
+          {(blockAnalytics.bestDayType || blockAnalytics.worstDayType) && (
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {blockAnalytics.bestDayType && (
+                <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.06] px-3 py-2.5">
+                  <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-emerald-400">Best day type</p>
+                  <p className="mt-1 text-sm text-iron-100">{blockAnalytics.bestDayType.name} — avg score {blockAnalytics.bestDayType.avgScore}</p>
+                  <p className="mt-0.5 text-[0.68rem] text-iron-500">{sessionCountNote(blockAnalytics.bestDayType.sessionCount)}</p>
+                </div>
+              )}
+              {blockAnalytics.worstDayType && (
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-3 py-2.5">
+                  <p className="text-[0.65rem] font-semibold uppercase tracking-wide text-amber-400">Needs attention</p>
+                  <p className="mt-1 text-sm text-iron-100">{blockAnalytics.worstDayType.name} — avg score {blockAnalytics.worstDayType.avgScore}</p>
+                  <p className="mt-0.5 text-[0.68rem] text-iron-500">{sessionCountNote(blockAnalytics.worstDayType.sessionCount)}</p>
+                </div>
+              )}
+            </div>
+          )}
+          {blockAnalytics.muscleFindings.length > 0 && (
+            <div className="mt-3">
+              <p className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Muscles over/under target this block</p>
+              <div className="flex flex-wrap gap-1.5">
+                {blockAnalytics.muscleFindings.map((f) => (
+                  <span key={f.muscle} className={`rounded px-2 py-1 text-[0.68rem] font-medium ${f.status === "under" ? "bg-amber-500/10 text-amber-300" : "bg-ember/10 text-ember"}`}>
+                    {muscleLabel(f.muscle)} · {f.status === "under" ? "under" : "over"} ({f.sets}/{f.target})
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ── Weekly Review ── */}
       <section className="panel p-4">
         <div className="mb-3 flex items-center justify-between">
           <p className="font-semibold text-iron-100">Weekly Review</p>
@@ -14581,6 +14729,13 @@ function isCompletedValidSet(set?: LoggedSet): set is LoggedSet {
 
 function isHardSet(set: LoggedSet): boolean {
   return !set.skipped && set.kind !== "warmup" && set.actualWeight > 0 && set.actualReps > 0;
+}
+
+/** Plain-language sample-size note instead of a "confidence: low/medium/high" label. */
+function sessionCountNote(count: number): string {
+  if (count === 0) return "no sessions yet";
+  if (count < 3) return `needs ${3 - count} more session${3 - count === 1 ? "" : "s"}`;
+  return `based on ${count} session${count === 1 ? "" : "s"}`;
 }
 
 function countSessionCompletedSets(session: WorkoutSession): number {

@@ -1,5 +1,34 @@
 # HANDOFF.md
 
+## Current Handoff — Analytics Coaching/Decision Dashboard Redesign (Session 73)
+
+- Analytics ("progress" screen) was redesigned around a new coaching-analytics data layer instead of a raw stats dump. New module `src/lib/coachingAnalytics.ts` is pure logic (no React) and exports:
+  - `computePerformanceScore(db, user)` — 0-100 Performance Score = 40% Progression + 25% Completion + 20% RPE Accuracy + 15% Feel/Readiness (weights auto-renormalize around whichever sub-scores have data; returns `null` score if there's truly nothing to compute). Also returns `deltaVsPreviousWeek` and a plain-language `reason` (e.g. "Progression improved and RPE accuracy was better.") built by diffing this week's sub-scores against last week's.
+  - `computeExerciseProgressionEntries(db, user, { limit?, onlyExerciseId? })` — per-exercise last performed / best e1RM / 7d & 4wk trend / same-weight streak / a 5-way recommendation (`increase | repeat | reduce | swap | insufficient`) with human `statusDetail` text. This is the single source of truth for both the Analytics "Exercise Progression" list and the per-exercise `ExerciseAnalyticsView` deep-dive — do not reimplement stale-weight detection in a second place.
+  - `generateCoachNotebookInsights(...)` — 3-5 top insights (ready-to-progress, RPE overshoot by workout name, recovery-vs-performance correlation, skipped-muscle pattern, exceeded-planned-reps streak).
+  - `generateReadinessInsights(...)`, `buildCategorizedGaps(...)` (groups gaps into Adherence/Progression/Volume/Recovery/Frequency/Exercise Selection — synthesizes Adherence/Progression gaps and maps existing `ProgramGap.type` values into the other four categories), and `computeBlockAnalytics(...)` (block progress/adherence, best/worst day type by avg workout score, added/skipped exercise counts, muscles over/under target).
+- `ProgressScreen` in `src/App.tsx` now renders, top to bottom: Coach's Notebook, Performance Score (+ sub-score cards; powerlifting e1RM/Estimated-Total cards only render when `isStrengthContext` — user/program goal is powerlifting or active block type is strength/peaking/intensification), Muscle Balance, Exercise Progression, categorized Program Gap Analysis, Readiness Analytics (+ generated insights, and the mental/physical/recovery cards now correctly read "/5" — they were mislabeled "/10" even though those fields are 1-5 scale), Block-Level Analytics (only when an active block exists), Weekly Review.
+- All "confidence: low/medium/high" labels were removed per the spec; replaced everywhere with `sessionCountNote(count)` (module-level in App.tsx) producing "based on N sessions" / "needs N more sessions" / "no sessions yet".
+- `ExerciseAnalyticsView` gained a "Coach recommendation" section (reusing `computeExerciseProgressionEntries` with `onlyExerciseId`) showing the same increase/repeat/reduce/swap/insufficient recommendation plus trend and same-weight-streak stats.
+
+**Invariants to preserve:**
+- Stale-weight / ready-to-progress and exercise-progression recommendation logic lives only in `computeExerciseProgressionEntries` in `src/lib/coachingAnalytics.ts`. Both the Analytics list and the per-exercise view must keep consuming that one function.
+- Do not reintroduce "confidence: low/medium/high" labels — use `sessionCountNote()`.
+- Powerlifting e1RM/Estimated Total cards stay gated behind `isStrengthContext`; don't show them unconditionally again.
+- `buildCategorizedGaps` takes already-computed `progressionEntries` as a parameter rather than recomputing them, to avoid duplicate work — keep that call-site pattern when touching Program Gap Analysis.
+- `PerformanceSubScores` values can legitimately be `null` (insufficient data for that sub-score) — the weighted-average helper renormalizes over whichever sub-scores are non-null; don't replace `null` with a fake default number.
+
+### Validation
+- `npm run build` ✓
+- Manually verified in browser preview: injected synthetic session/readiness history directly into IndexedDB (5 completed sessions across ~5 weeks, 9 readiness check-ins) and confirmed Coach's Notebook, Performance Score + sub-scores, Muscle Balance, Exercise Progression (including a real "increase" recommendation with a correct suggested weight range), Program Gap Analysis empty-state, and Readiness Analytics all render correctly with no console errors.
+
+### Files changed
+- `src/lib/coachingAnalytics.ts` (new)
+- `src/App.tsx`
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Logger Set Row Cleanup + Active Set Persistence Hardening (Session 72)
 
 - Logger set-lineup rows no longer show planned-vs-actual comparison text. Each row shows only the set number, status (Current/Pending/Editing/Done/Skipped), and either the actual logged values or the live current draft (for the Current/Editing row) — never planned weight/reps/RPE or the "Enter starting weight" placeholder.
