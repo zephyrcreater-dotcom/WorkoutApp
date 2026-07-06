@@ -1,5 +1,34 @@
 # HANDOFF.md
 
+## Current Handoff — Logger Set Row Cleanup + Active Set Persistence Hardening (Session 72)
+
+- Logger set-lineup rows no longer show planned-vs-actual comparison text. Each row shows only the set number, status (Current/Pending/Editing/Done/Skipped), and either the actual logged values or the live current draft (for the Current/Editing row) — never planned weight/reps/RPE or the "Enter starting weight" placeholder.
+- Root cause of sets "unsaving" on mobile tab/app switching was three compounding gaps, all fixed:
+  1. Several navigation paths (exercise tab-strip switch, exercise-context-menu switch, back-to-Today/back-to-summary, and the explicit "Finish Workout" button) never flushed a dirty active set draft before moving on — only "Next Set"/"Finish Exercise" did.
+  2. No `visibilitychange`/`pagehide`/`blur` handling existed at all, so a backgrounded/evicted mobile tab could lose an in-progress (typed but unsaved) set.
+  3. In cloud-sync mode, `hydrateCloudMode` unconditionally replaced the local IndexedDB cache with whatever was last pushed to Supabase. Since the auto cloud push is debounced (`AUTO_SYNC_DELAY_MS` = 3s), a fast background/reload could re-hydrate from a stale remote snapshot and silently erase a just-completed local set even though it had already reached IndexedDB.
+- Added a single idempotent `commitActiveSetDraft()` helper in `LiveLogger` that flushes a dirty, valid active set draft (new pending set or in-progress edit) via the existing `logSet(..., "stay")` path. It uses a synchronous `draftDirtyRef` mirror (not the async `draftDirty` state) so repeated calls in the same tick can never push a duplicate set.
+- `commitActiveSetDraft()` is now called before: exercise tab-strip switch, exercise-context-menu "Add Set"/"Skip Entire Exercise" on a different exercise, `backToToday`/`backToSummary`, and `finishWorkout()`. `finishExercise()`'s existing edit-guard now delegates to it. `Next Set`/`Finish Exercise`'s existing combined save-and-navigate logic was left untouched (it already commits atomically with the correct afterAction and reading it through the new helper would introduce a stale-render navigation bug).
+- Added `visibilitychange` (hidden), `pagehide`, and `blur` listeners in `LiveLogger` that call `commitActiveSetDraft()` via an always-current ref, so backgrounding/evicting the tab can no longer lose an unsaved set.
+- `useTrainingDb`'s `hydrateCloudMode` now merges the cached local snapshot with the fetched remote snapshot via `mergeAppSnapshots` (per-entity `updatedAt` wins) instead of blindly replacing local with remote. Also added a `visibilitychange`/`pagehide` flush that fires any pending debounced cloud push immediately when the page starts hiding, shrinking the window where a background/reload could outrace the 3s auto-sync debounce.
+
+**Invariants to preserve:**
+- Set-lineup rows must never render planned weight/reps/RPE or an "Enter starting weight" placeholder. Only actual logged values, the live draft for the active/editing row, or a bare status label.
+- Any new logger navigation action that can move focus away from an in-progress set (switching exercises, added back/close paths, etc.) must call `commitActiveSetDraft()` first.
+- `commitActiveSetDraft()` must stay idempotent (guarded by the synchronous `draftDirtyRef`, not the async `draftDirty` state) — do not replace that guard with a plain `draftDirty` state check.
+- Do not make `hydrateCloudMode` blindly `replaceDatabase` with the remote snapshot when a local cache exists — it must merge so a fresher local session (not yet pushed) can't be silently discarded.
+
+### Validation
+- `npm run build` ✓
+- Manually verified in browser preview: dirty draft commits on simulated `visibilitychange`/`pagehide`, no duplicate sets from repeated dispatch, dirty draft flushes when switching exercise tabs, and a full 2-exercise/6-set off-program workout completes end-to-end via the primary "Finish Workout" action with a correct completion summary.
+
+### Files changed
+- `src/App.tsx`
+- `src/hooks/useTrainingDb.ts`
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Block Builder Additional Exercises (Session 71)
 
 - Block Builder now supports two distinct exercise types in every workout day: **Requirement Exercises** (fulfilling a muscle slot) and **Additional Exercises** (no slot, added freely).

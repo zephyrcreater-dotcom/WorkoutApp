@@ -320,16 +320,25 @@ export function useTrainingDb() {
           supabaseUserId: session.user.id,
           email: session.user.email,
         });
+        // Merge rather than blindly overwrite: the on-device cache can hold workout progress
+        // (e.g. a set completed seconds before the tab was backgrounded/reloaded) that never
+        // reached the server because the auto-sync push is debounced. mergeAppSnapshots picks
+        // the newer side per entity (by updatedAt), so a fresher local session always wins over
+        // a stale remote one instead of being silently discarded on re-hydrate.
+        const mergedData = cachedBound
+          ? mergeAppSnapshots(buildAppSnapshot(cachedBound), buildAppSnapshot(remoteBound)).data
+          : remoteBound;
         logLoggerSync("HYDRATE_FROM_SUPABASE", {
           source: "supabase-read",
           reason,
           userId: session.user.id,
           remoteUpdatedAt: remote.updated_at,
           remoteEnvelopeUpdatedAt: remote.data.updatedAt,
+          cachedUpdatedAt: cachedBound?.updatedAt,
           inMemoryUpdatedAt: dbRef.current?.updatedAt,
           pendingLocalMutations: pendingLocalMutationCountRef.current,
         });
-        const saved = await replaceDatabase(scope, remoteBound, { preserveUpdatedAt: true });
+        const saved = await replaceDatabase(scope, mergedData, { preserveUpdatedAt: true });
         applyDbToState(saved);
         lastSavedSerializedSnapshotRef.current = JSON.stringify(buildAppSnapshot(saved));
         hasHydratedFromCloudRef.current = true;
@@ -509,6 +518,31 @@ export function useTrainingDb() {
       subscription?.unsubscribe();
     };
   }, [clearPendingCloudSave, handleAuthEvent, refreshLocalOnlySummary, updateCloudState]);
+
+  // Mobile browsers/PWAs can background, suspend, or evict a tab at any moment. The auto cloud
+  // sync push is debounced (AUTO_SYNC_DELAY_MS) so a quick tab/app switch can outrace it, leaving
+  // the server snapshot stale until the next local mutation. Flush any pending push immediately
+  // once the page starts hiding so the debounce window can't cause a lost sync.
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    const flushPendingCloudSave = () => {
+      if (pendingCloudSaveRef.current === undefined) return;
+      clearPendingCloudSave();
+      const latest = dbRef.current;
+      if (latest && authModeRef.current === "cloud") {
+        void pushSnapshotToCloud(latest, "auto");
+      }
+    };
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") flushPendingCloudSave();
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("pagehide", flushPendingCloudSave);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("pagehide", flushPendingCloudSave);
+    };
+  }, [clearPendingCloudSave, pushSnapshotToCloud]);
 
   const continueLocalOnly = useCallback(async () => {
     try {

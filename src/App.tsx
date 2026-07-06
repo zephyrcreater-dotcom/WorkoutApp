@@ -3874,12 +3874,14 @@ function LiveLogger({
     return confirm("Leave editing? Unsaved changes may be lost.");
   };
   const backToToday = () => {
-    if (!confirmLeaveCompletedEdit()) return;
+    const committed = commitActiveSetDraft();
+    if (!committed && !confirmLeaveCompletedEdit()) return;
     setActiveSessionId(undefined);
     setScreen("today");
   };
   const backToSummary = () => {
-    if (!confirmLeaveCompletedEdit()) return;
+    const committed = commitActiveSetDraft();
+    if (!committed && !confirmLeaveCompletedEdit()) return;
     if (navigation.completedReviewState && sessionId) {
       onOpenCompletedSessionReview(sessionId, navigation.completedReviewState.returnScreen);
       return;
@@ -3937,6 +3939,12 @@ function LiveLogger({
     });
   });
   const [draftDirty, setDraftDirty] = useState<boolean>(() => storedSessionDraft?.draftDirty ?? false);
+  // Mirrors draftDirty synchronously so commitActiveSetDraft can't double-commit when called
+  // multiple times in the same tick (e.g. a blur handler and a click handler firing together).
+  const draftDirtyRef = useRef(draftDirty);
+  useEffect(() => {
+    draftDirtyRef.current = draftDirty;
+  }, [draftDirty]);
   const [restRemaining, setRestRemaining] = useState(0);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [showAddExercisePicker, setShowAddExercisePicker] = useState(false);
@@ -4213,6 +4221,29 @@ function LiveLogger({
     syncSwipeCapability();
     mediaQuery.addEventListener("change", syncSwipeCapability);
     return () => mediaQuery.removeEventListener("change", syncSwipeCapability);
+  }, []);
+
+  // Always-current ref so the visibility/pagehide listeners below never close over a stale
+  // commitActiveSetDraft from an earlier render (avoids re-subscribing listeners every render).
+  const commitActiveSetDraftRef = useRef(commitActiveSetDraft);
+  commitActiveSetDraftRef.current = commitActiveSetDraft;
+
+  useEffect(() => {
+    if (typeof document === "undefined") return undefined;
+    // Mobile browsers/PWAs can background, suspend, or fully evict this tab without warning —
+    // flush any dirty active set the moment the page starts hiding so it can never be lost.
+    const flushOnHide = () => {
+      if (document.visibilityState === "hidden") commitActiveSetDraftRef.current();
+    };
+    const flushOnPageHide = () => commitActiveSetDraftRef.current();
+    document.addEventListener("visibilitychange", flushOnHide);
+    window.addEventListener("pagehide", flushOnPageHide);
+    window.addEventListener("blur", flushOnPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", flushOnHide);
+      window.removeEventListener("pagehide", flushOnPageHide);
+      window.removeEventListener("blur", flushOnPageHide);
+    };
   }, []);
 
   useEffect(() => {
@@ -5028,6 +5059,29 @@ function LiveLogger({
     loggerDebug("SAVE_SET_END", { mode: "create-new", afterAction });
   }
 
+  // Flushes any dirty, saveable active set draft into the session immediately (afterAction "stay").
+  // Idempotent: draftDirtyRef is cleared synchronously the moment a commit fires, so calling this
+  // more than once in the same tick (navigation + visibility handlers overlapping, etc.) cannot push
+  // a duplicate logged set. Returns true if a commit actually happened.
+  function commitActiveSetDraft(): boolean {
+    if (!draftDirtyRef.current) return false;
+    if (isEditingLoggedSet) {
+      draftDirtyRef.current = false;
+      logSet(setDraft.setRating, "stay");
+      return true;
+    }
+    const currentDraftWeight = Number(setDraft.actualWeight) || 0;
+    const currentDraftReps = Number(setDraft.actualReps) || 0;
+    const isWeightBased = liveExercise.category !== "bodyweight" && !liveExercise.bestTrackedBy.includes("time");
+    const hasValidUnsavedValues = !isPastLastPlannedSet
+      && currentPendingSetIsUncovered
+      && (currentDraftWeight > 0 || (!isWeightBased && currentDraftReps > 0));
+    if (!hasValidUnsavedValues) return false;
+    draftDirtyRef.current = false;
+    logSet(setDraft.setRating, "stay");
+    return true;
+  }
+
   function skipSet() {
     if (isPastLastPlannedSet) return;
     const shouldAdvanceExercise = currentSetWouldCompleteExercise && hasMoreExercises;
@@ -5634,8 +5688,7 @@ function LiveLogger({
   function finishExercise() {
     loggerDebug("FINISH_EXERCISE_START");
     // If the user is mid-edit of a logged/skipped set with unsaved changes, save first.
-    if (isEditingLoggedSet && draftDirty) {
-      logSet(setDraft.setRating, "stay");
+    if (isEditingLoggedSet && commitActiveSetDraft()) {
       return;
     }
     // Hard guard: if the current on-screen pending set has valid draft values, save it first.
@@ -5867,6 +5920,8 @@ function LiveLogger({
   }
 
   function finishWorkout() {
+    // Save any active dirty set (e.g. a mid-edit to a completed set) before finishing.
+    commitActiveSetDraft();
     void updateDb((draft) => {
       const target = draft.sessions.find((item) => item.id === liveSession.id);
       // Move to review — actual finalization happens when user confirms in the summary overlay.
@@ -6080,6 +6135,7 @@ function LiveLogger({
                 onClick: () => {
                   if (menuLog) {
                     if (menuLog.id !== activeExerciseLog.id) {
+                      commitActiveSetDraft();
                       setActiveExerciseId(menuLog.id);
                       setSelectedLoggingIndex(null);
                       setEditingSetId(null);
@@ -6096,6 +6152,7 @@ function LiveLogger({
                 destructive: true,
                 onClick: () => {
                   if (menuLog && menuLog.id !== activeExerciseLog.id) {
+                    commitActiveSetDraft();
                     setActiveExerciseId(menuLog.id);
                   }
                   setShowSkipExerciseConfirm(true);
@@ -6291,6 +6348,7 @@ function LiveLogger({
             const totalSets = logged.sets.length;
 
             const selectExercise = () => {
+              if (logged.id !== activeExerciseLog.id) commitActiveSetDraft();
               setActiveExerciseId(logged.id);
               setSelectedLoggingIndex(null);
               setEditingSetId(null);
@@ -6409,7 +6467,6 @@ function LiveLogger({
                   const isSelected = isEditingThisRow
                     || (!!actual && focusedActualSetId === actual.id)
                     || (!selectedActualLineupItem && !isEditingLoggedSet && lineupItem.plannedIndex !== undefined && effectiveSetIndex === lineupItem.plannedIndex);
-                  const isLoggedSet = !!actual;
                   const statusLabel = isEditingThisRow ? "Editing" : actual?.skipped ? "Skipped" : actual ? "Done" : isSelected ? "Current" : "Pending";
                   // Pending rows use planned set id so they can also be swiped.
                   const swipeRowId = actual?.id ?? set?.id;
@@ -6428,14 +6485,10 @@ function LiveLogger({
                   const isPendingRow = !actual && !!set && !lineupItem.isExtra;
                   const showSwipeSkipReveal = isSwipeEnabled && isPendingRow;
                   const showSwipeDeleteReveal = isSwipeEnabled && !!actual;
-                  const plannedWeightText = bodyweightMovement
-                    ? formatExerciseLoadText({ exercise: liveExercise, user, weight: set?.plannedWeight, unit: exerciseUnit })
-                    : set?.plannedWeight && set.plannedWeight > 0
-                      ? `${formatWeight(set.plannedWeight, exerciseUnit)} ${exerciseUnit}`
-                      : lineupItem.isExtra ? "Extra set" : "Enter starting weight";
                   const actualWeightText = actual && !actual.skipped
                     ? formatExerciseLoadText({ exercise: liveExercise, user, weight: actual.actualWeight, unit: actual.unit || exerciseUnit })
                     : undefined;
+                  const draftWeightText = formatExerciseLoadText({ exercise: liveExercise, user, weight: Number(setDraft.actualWeight) || 0, unit: exerciseUnit });
                   // No active: classes — content must never become transparent on press/touch.
                   const rowBg = isEditingThisRow
                     ? "bg-[#0a84ff]/[0.07]"
@@ -6550,19 +6603,23 @@ function LiveLogger({
                               )}
                             </div>
                             <div className="mt-0.5 flex items-center gap-2 text-xs">
-                              {set && !actual && (
-                                <span className="text-iron-500">{plannedWeightText} × {set.targetReps}{set.targetRpe ? ` @ ${set.targetRpe}` : ""}</span>
-                              )}
-                              {!set && !actual && <span className="text-iron-600">Extra set</span>}
-                              {actual && !actual.skipped && (
-                                <span className={isLoggedSet && !isEditingThisRow ? "text-[#0a84ff]/90 font-medium" : "text-iron-400"}>
+                              {isEditingThisRow ? (
+                                <span className="text-[#0a84ff]/90 font-medium">
+                                  {draftWeightText} × {setDraft.actualReps || "0"}{setDraft.actualRpe ? ` @ ${setDraft.actualRpe}` : ""}
+                                </span>
+                              ) : actual && !actual.skipped ? (
+                                <span className="text-[#0a84ff]/90 font-medium">
                                   {actualWeightText || getBodyweightPreviewLabel(liveExercise)} × {actual.actualReps}{actual.actualRpe ? ` @ ${actual.actualRpe}` : ""}
                                 </span>
-                              )}
-                              {actual?.skipped && <span className="text-orange-400/60">Skipped</span>}
-                              {actual && set && !actual.skipped && (
-                                <span className="text-iron-700">· planned {plannedWeightText} × {set.targetReps}</span>
-                              )}
+                              ) : actual?.skipped ? (
+                                <span className="text-orange-400/60">Skipped</span>
+                              ) : isSelected ? (
+                                <span className="text-[#0a84ff]/90 font-medium">
+                                  {draftWeightText} × {setDraft.actualReps || "0"}{setDraft.actualRpe ? ` @ ${setDraft.actualRpe}` : ""}
+                                </span>
+                              ) : !set ? (
+                                <span className="text-iron-600">Extra set</span>
+                              ) : null}
                             </div>
                           </div>
                           {actual && !actual.skipped && !isEditingThisRow ? (
