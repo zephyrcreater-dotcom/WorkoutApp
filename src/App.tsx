@@ -40,7 +40,7 @@ import {
   X,
   Zap
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type FocusEvent, type KeyboardEvent, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
 import type { SnapshotSummary } from "./lib/cloudSync";
 import {
@@ -1178,6 +1178,7 @@ type WorkoutGridRowDraft = {
   rpe: string;
   difficulty: SetRating;
   weightManual: boolean;
+  difficultyManual: boolean;
   notes?: string;
 };
 
@@ -1225,6 +1226,7 @@ function emptyWorkoutGridRowDraft(seed?: Partial<WorkoutGridRowDraft>): WorkoutG
     rpe: "",
     difficulty: 3,
     weightManual: false,
+    difficultyManual: false,
     notes: "",
     ...seed,
   };
@@ -4016,6 +4018,12 @@ function WorkoutGrid({
   const extraPendingRowKeysRef = useRef(extraPendingRowKeys);
   useEffect(() => { extraPendingRowKeysRef.current = extraPendingRowKeys; }, [extraPendingRowKeys]);
 
+  // Refs for keyboard navigation (Enter moves to the same column, next set down) and for
+  // Escape-to-cancel (restores the draft value captured on focus — see fieldHandlers below).
+  // Declared before the early return below so hook order stays stable across renders.
+  const cellRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  const preEditValueRef = useRef<Record<string, string>>({});
+
   function persistGridDraft(rows: Record<string, WorkoutGridRowDraft>, extras: Record<string, string[]>) {
     if (!sessionId) return;
     saveWorkoutGridDraft(user.id, sessionId, { sessionId, rows, extraPendingRowKeys: extras, lastLocalMutationAt: nowIso() });
@@ -4039,10 +4047,12 @@ function WorkoutGrid({
     });
   }
 
-  // Seed drafts for any pending row (planned but not yet logged) that doesn't have one yet —
-  // covers scheduled-workout exercises already present when the grid mounts (Test I) and any
-  // exercise added via the autocomplete. Purely additive: never overwrites an existing draft
-  // entry, so it can never clobber a manual edit or a value restored from a reload (section 8).
+  // Seed drafts for any row that doesn't have one yet and isn't a confirmed (logged, non-skipped)
+  // set — covers scheduled-workout exercises already present when the grid mounts (Test I), any
+  // exercise added via the autocomplete, and skipped rows (so a skip stays editable instead of
+  // showing blank fields — see skipRow, which preserves whatever was in the draft at skip time).
+  // Purely additive: never overwrites an existing draft entry, so it can never clobber a manual
+  // edit or a value restored from a reload (section 8).
   useEffect(() => {
     if (!session) return;
     setRowDrafts((current) => {
@@ -4052,14 +4062,22 @@ function WorkoutGrid({
         const planned = findPlannedExercise(db, session, log);
         const plannedSets = getLoggedExercisePlannedSets(log, planned);
         for (const item of buildLoggerLineupItems(log, plannedSets)) {
-          if (item.actualSet) continue;
+          if (item.actualSet && !item.actualSet.skipped) continue;
           const rowKey = `${log.id}:${item.key}`;
           if (next[rowKey]) continue;
+          // A skipped row's own stored values take priority (skipRow preserves whatever was
+          // being edited at skip time); otherwise fall back to the planned/suggested target.
+          const skippedSource = item.actualSet?.skipped ? item.actualSet : undefined;
           next[rowKey] = emptyWorkoutGridRowDraft({
-            weight: item.plannedSet?.plannedWeight !== undefined ? String(item.plannedSet.plannedWeight) : "",
-            reps: item.plannedSet?.targetReps !== undefined ? String(item.plannedSet.targetReps) : "",
-            rpe: item.plannedSet?.targetRpe !== undefined ? String(item.plannedSet.targetRpe) : "",
-            weightManual: false,
+            weight: skippedSource?.actualWeight ? String(skippedSource.actualWeight)
+              : item.plannedSet?.plannedWeight !== undefined ? String(item.plannedSet.plannedWeight) : "",
+            reps: skippedSource?.actualReps ? String(skippedSource.actualReps)
+              : item.plannedSet?.targetReps !== undefined ? String(item.plannedSet.targetReps) : "",
+            rpe: skippedSource?.actualRpe ? String(skippedSource.actualRpe)
+              : item.plannedSet?.targetRpe !== undefined ? String(item.plannedSet.targetRpe) : "",
+            difficulty: skippedSource?.setRating ?? 3,
+            weightManual: !!skippedSource,
+            difficultyManual: !!skippedSource,
           });
           changed = true;
         }
@@ -4173,9 +4191,14 @@ function WorkoutGrid({
     setRestRemaining(user.settings.defaultRestSeconds || 90);
   }
 
+  // Skipping is just a flag — it must never erase whatever reps/RPE/weight/difficulty the user
+  // already had entered in this row's draft (section 1). The row stays editable afterward (see
+  // the `disabled={skipped}` removal below): skipping again with new values, or hitting the
+  // checkmark, both just overwrite this same LoggedSet rather than creating a duplicate.
   function skipRow(log: LoggedExercise, row: WorkoutGridRow) {
     if (!session) return;
     const plannedSet = row.plannedSet;
+    const draft = rowDrafts[row.rowKey];
     void updateDb((next) => {
       const target = next.sessions.find((item) => item.id === session.id);
       const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
@@ -4187,10 +4210,11 @@ function WorkoutGrid({
         plannedSetId: plannedSet?.id,
         plannedWeight: plannedSet?.plannedWeight,
         plannedReps: plannedSet?.targetReps,
-        actualWeight: 0,
-        actualReps: 0,
+        actualWeight: Number(draft?.weight) || 0,
+        actualReps: Number(draft?.reps) || 0,
         targetRpe: plannedSet?.targetRpe,
-        setRating: 3,
+        actualRpe: draft?.rpe ? Math.min(10, Math.max(0, Number(draft.rpe))) || undefined : undefined,
+        setRating: draft?.difficulty ?? 3,
         skipped: true,
         completedAt: nowIso(),
       };
@@ -4203,7 +4227,23 @@ function WorkoutGrid({
       target.updatedAt = nowIso();
       return next;
     });
-    clearRowDraft(row.rowKey);
+    // Intentionally do NOT clear the draft — the row stays editable with the same values.
+  }
+
+  // Un-skips a row back to pending by deleting the skipped LoggedSet. The row's draft (reps,
+  // RPE, weight, difficulty) is untouched, so whatever was showing stays showing (section 1:
+  // "a skipped set can be restored to pending" without losing data).
+  function restoreSkippedRow(log: LoggedExercise, row: WorkoutGridRow) {
+    if (!session || !row.actualSet) return;
+    const setId = row.actualSet.id;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+      if (!targetLog) return next;
+      targetLog.sets = targetLog.sets.filter((item) => item.id !== setId);
+      if (target) target.updatedAt = nowIso();
+      return next;
+    });
   }
 
   function removeRow(log: LoggedExercise, row: WorkoutGridRow) {
@@ -4351,6 +4391,15 @@ function WorkoutGrid({
   }
 
   const totalCompletedSets = session.loggedExercises.flatMap((l) => l.sets).filter(isCompletedValidSet).length;
+  const totalRows = session.loggedExercises.reduce((sum, log) => {
+    const planned = findPlannedExercise(db, session, log);
+    const plannedSets = getLoggedExercisePlannedSets(log, planned);
+    return sum + buildLoggerLineupItems(log, plannedSets).length + (extraPendingRowKeys[log.id]?.length || 0);
+  }, 0);
+
+  function cellRefKey(logId: string, field: "reps" | "rpe" | "weight", rowIndex: number) {
+    return `${logId}:${field}:${rowIndex}`;
+  }
 
   return (
     <div className="space-y-4">
@@ -4362,7 +4411,7 @@ function WorkoutGrid({
       </div>
       <div className="flex items-center justify-between gap-2">
         <PageTitle eyebrow="Today" title={session.name || "Workout"} />
-        <span className="shrink-0 text-xs text-iron-500">{totalCompletedSets} set{totalCompletedSets === 1 ? "" : "s"} logged</span>
+        <span className="shrink-0 text-xs text-iron-500">{totalCompletedSets} / {totalRows} sets completed</span>
       </div>
 
       <div className="space-y-5">
@@ -4400,34 +4449,63 @@ function WorkoutGrid({
               </div>
 
               <div className="divide-y divide-white/[0.05]">
-                <div className="grid grid-cols-[2rem_1fr_1fr_1fr_auto_auto] gap-1.5 px-3 py-1.5 text-[0.62rem] font-semibold uppercase tracking-wide text-iron-600">
+                <div className="grid grid-cols-[1.5rem_3.25rem_3rem_1fr_2.25rem_auto] items-center gap-1.5 px-3 py-1.5 text-[0.62rem] font-semibold uppercase tracking-wide text-iron-600">
                   <span>Set</span>
                   <span>Reps</span>
                   <span>RPE</span>
-                  <span>{unit === "kg" ? "Kg" : "Lb"}</span>
+                  <span>Weight ({unit})</span>
                   <span className="text-center">Feel</span>
-                  <span></span>
+                  <span className="text-center">Done</span>
                 </div>
                 {rows.map((row, index) => {
                   const confirmed = !!row.actualSet && !row.actualSet.skipped;
                   const skipped = !!row.actualSet?.skipped;
                   const draft = rowDrafts[row.rowKey];
-                  const displayWeight = confirmed ? String(row.actualSet!.actualWeight || "") : draft?.weight ?? "";
-                  const displayReps = confirmed ? String(row.actualSet!.actualReps || "") : draft?.reps ?? "";
-                  const displayRpe = confirmed ? String(row.actualSet!.actualRpe ?? "") : draft?.rpe ?? "";
-                  const displayDifficulty: SetRating = confirmed ? row.actualSet!.setRating : (draft?.difficulty ?? 3);
+                  // A confirmed row reads straight from its LoggedSet until it's actually being
+                  // edited, at which point a draft takes over — same mechanism pending/skipped
+                  // rows already use. This matters: a controlled input whose value is read from
+                  // raw DOM state at blur time (rather than real React state) can get its typed
+                  // text silently reverted by an unrelated re-render — e.g. the rest timer ticks
+                  // every second via this component's own state, which forces every input's
+                  // value prop to reapply. Routing every cell through the draft means the typed
+                  // value survives any number of re-renders until it's explicitly committed.
+                  const displayWeight = draft ? draft.weight : confirmed ? String(row.actualSet!.actualWeight || "") : "";
+                  const displayReps = draft ? draft.reps : confirmed ? String(row.actualSet!.actualReps || "") : "";
+                  const displayRpe = draft ? draft.rpe : confirmed ? String(row.actualSet!.actualRpe ?? "") : "";
+                  const displayDifficulty: SetRating = draft ? draft.difficulty : confirmed ? row.actualSet!.setRating : 3;
                   // Gray = still an untouched auto-suggestion (section 4). Only applies to non-extra,
-                  // non-confirmed rows that a user hasn't edited yet.
+                  // non-confirmed, non-skipped rows that a user hasn't edited yet.
                   const isSuggested = !confirmed && !skipped && !row.isExtraPending && draft !== undefined
                     && draft.weight === String(row.plannedSet?.plannedWeight ?? "")
                     && draft.reps === String(row.plannedSet?.targetReps ?? "")
                     && draft.rpe === String(row.plannedSet?.targetRpe ?? "")
                     && !draft.weightManual;
-                  const cellTextClass = confirmed ? "text-white" : skipped ? "text-iron-600 line-through" : isSuggested ? "text-iron-500" : "text-iron-100";
+                  const difficultyIsSuggested = !confirmed && !draft?.difficultyManual;
+                  // Skipped rows are fully editable (section 1) — never disabled, just styled to
+                  // read as "skipped" until re-logged or restored.
+                  const cellTextClass = confirmed ? "text-white" : skipped ? "text-amber-200/80" : isSuggested ? "text-iron-500" : "text-iron-100";
+                  const cellBorderClass = skipped ? "border-amber-500/20" : "border-white/10";
+
+                  // The base a brand-new draft starts from: a confirmed row's own current values
+                  // (so editing just one cell doesn't blank out the other two), otherwise the
+                  // usual empty/suggested defaults.
+                  function draftBase(): WorkoutGridRowDraft {
+                    if (draft) return draft;
+                    if (confirmed && row.actualSet) {
+                      return emptyWorkoutGridRowDraft({
+                        weight: String(row.actualSet.actualWeight || ""),
+                        reps: String(row.actualSet.actualReps || ""),
+                        rpe: row.actualSet.actualRpe !== undefined ? String(row.actualSet.actualRpe) : "",
+                        difficulty: row.actualSet.setRating,
+                        weightManual: true,
+                        difficultyManual: true,
+                      });
+                    }
+                    return emptyWorkoutGridRowDraft();
+                  }
 
                   function onFieldChange(field: "weight" | "reps" | "rpe", value: string) {
-                    if (confirmed) return; // confirmed-row edits commit directly below, not via draft
-                    updateRowDraft(row.rowKey, { [field]: value, ...(field === "weight" ? { weightManual: true } : {}) });
+                    updateRowDraft(row.rowKey, { ...draftBase(), [field]: value, ...(field === "weight" ? { weightManual: true } : {}) });
                   }
 
                   function onRepsOrRpeBlur() {
@@ -4436,8 +4514,14 @@ function WorkoutGrid({
                     if (latest) recalcRowWeight(row.rowKey, exercise, latest);
                   }
 
-                  function onConfirmedFieldCommit(field: "actualWeight" | "actualReps" | "actualRpe", raw: string) {
+                  // Commits the current draft's value for one field into the already-logged
+                  // LoggedSet. Reads from the draft (not the raw DOM/event value) so it can
+                  // never commit a value that got reverted by an in-between re-render.
+                  function onConfirmedFieldCommit(field: "actualWeight" | "actualReps" | "actualRpe") {
                     if (!row.actualSet || !session) return;
+                    const latest = rowDrafts[row.rowKey];
+                    if (!latest) return;
+                    const raw = field === "actualWeight" ? latest.weight : field === "actualReps" ? latest.reps : latest.rpe;
                     const numeric = field === "actualRpe"
                       ? (raw ? Math.min(10, Math.max(0, Number(raw))) || undefined : undefined)
                       : Number(raw) || 0;
@@ -4451,41 +4535,75 @@ function WorkoutGrid({
                     });
                   }
 
+                  // Shared focus/blur/keydown wiring for the three numeric cells, covering:
+                  // - select-all on focus so the first keystroke replaces instead of appending
+                  //   (the "225" -> type "245" -> "245" not "225245" bug).
+                  // - Enter commits (via the existing onBlur path) and moves to the same column
+                  //   on the next set row.
+                  // - Escape cancels by restoring the value captured on focus, for both
+                  //   draft-backed and confirmed rows alike (both now read from the same draft).
+                  function fieldHandlers(field: "reps" | "rpe" | "weight", currentValue: string) {
+                    const snapshotKey = `${row.rowKey}:${field}`;
+                    return {
+                      ref: (el: HTMLInputElement | null) => { cellRefs.current[cellRefKey(log.id, field, index)] = el; },
+                      onFocus: (e: FocusEvent<HTMLInputElement>) => {
+                        preEditValueRef.current[snapshotKey] = currentValue;
+                        e.target.select();
+                      },
+                      onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => {
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          const prev = preEditValueRef.current[snapshotKey];
+                          if (prev !== undefined) updateRowDraft(row.rowKey, { ...draftBase(), [field]: prev } as Partial<WorkoutGridRowDraft>);
+                          e.currentTarget.blur();
+                        } else if (e.key === "Enter") {
+                          e.preventDefault();
+                          e.currentTarget.blur();
+                          const nextEl = cellRefs.current[cellRefKey(log.id, field, index + 1)];
+                          nextEl?.focus();
+                        }
+                      },
+                    };
+                  }
+
                   return (
-                    <div key={row.rowKey} className="group relative grid grid-cols-[2rem_1fr_1fr_1fr_auto_auto] items-center gap-1.5 px-3 py-1.5">
+                    <div key={row.rowKey} className="group relative grid grid-cols-[1.5rem_3.25rem_3rem_1fr_2.25rem_auto] items-center gap-1.5 px-3 py-1.5">
                       <span className="text-sm font-semibold text-iron-400">{index + 1}</span>
                       <input
                         inputMode="numeric"
-                        className={`w-full min-w-0 rounded-sm border border-white/10 bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
+                        data-testid={`cell-reps-${log.id}-${index}`}
+                        className={`w-full min-w-0 rounded-sm border ${cellBorderClass} bg-white/[0.03] px-1 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
                         style={{ fontSize: 16 }}
                         value={displayReps}
-                        disabled={skipped}
                         placeholder="—"
-                        onChange={(e) => confirmed ? undefined : onFieldChange("reps", e.target.value)}
-                        onBlur={(e) => confirmed ? onConfirmedFieldCommit("actualReps", e.target.value) : onRepsOrRpeBlur()}
+                        onChange={(e) => onFieldChange("reps", e.target.value)}
+                        onBlur={() => { if (confirmed) onConfirmedFieldCommit("actualReps"); else onRepsOrRpeBlur(); }}
+                        {...fieldHandlers("reps", displayReps)}
                       />
                       <input
                         inputMode="decimal"
-                        className={`w-full min-w-0 rounded-sm border border-white/10 bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
+                        data-testid={`cell-rpe-${log.id}-${index}`}
+                        className={`w-full min-w-0 rounded-sm border ${cellBorderClass} bg-white/[0.03] px-1 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
                         style={{ fontSize: 16 }}
                         value={displayRpe}
-                        disabled={skipped}
                         placeholder="—"
-                        onChange={(e) => confirmed ? undefined : onFieldChange("rpe", e.target.value)}
-                        onBlur={(e) => confirmed ? onConfirmedFieldCommit("actualRpe", e.target.value) : onRepsOrRpeBlur()}
+                        onChange={(e) => onFieldChange("rpe", e.target.value)}
+                        onBlur={() => { if (confirmed) onConfirmedFieldCommit("actualRpe"); else onRepsOrRpeBlur(); }}
+                        {...fieldHandlers("rpe", displayRpe)}
                       />
                       <div className="flex items-center gap-0.5">
                         <input
                           inputMode="decimal"
-                          className={`w-full min-w-0 rounded-sm border border-white/10 bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
+                          data-testid={`cell-weight-${log.id}-${index}`}
+                          className={`w-full min-w-0 rounded-sm border ${cellBorderClass} bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
                           style={{ fontSize: 16 }}
                           value={displayWeight}
-                          disabled={skipped}
                           placeholder="—"
-                          onChange={(e) => confirmed ? undefined : onFieldChange("weight", e.target.value)}
-                          onBlur={(e) => confirmed ? onConfirmedFieldCommit("actualWeight", e.target.value) : undefined}
+                          onChange={(e) => onFieldChange("weight", e.target.value)}
+                          onBlur={() => { if (confirmed) onConfirmedFieldCommit("actualWeight"); }}
+                          {...fieldHandlers("weight", displayWeight)}
                         />
-                        {!confirmed && !skipped && draft?.weightManual && (
+                        {!confirmed && draft?.weightManual && (
                           <button
                             className="shrink-0 rounded-sm p-1 text-iron-600 hover:text-iron-300"
                             title="Reset to suggested weight"
@@ -4497,9 +4615,9 @@ function WorkoutGrid({
                       </div>
                       <div className="relative flex justify-center">
                         <button
-                          className={`h-7 w-7 rounded-full text-xs font-bold ${confirmed ? "bg-white/10 text-iron-200" : "bg-white/[0.06] text-iron-400"}`}
+                          className={`h-7 w-7 rounded-full text-xs font-bold ${confirmed ? "bg-white/10 text-iron-200" : difficultyIsSuggested ? "bg-white/[0.04] text-iron-600" : "bg-white/[0.06] text-iron-200"}`}
                           onClick={() => setDifficultyPopoverRowKey(difficultyPopoverRowKey === row.rowKey ? null : row.rowKey)}
-                          disabled={skipped}
+                          title={DIFFICULTY_LABELS[displayDifficulty]}
                         >
                           {displayDifficulty}
                         </button>
@@ -4511,6 +4629,9 @@ function WorkoutGrid({
                                 className={`flex h-8 w-8 flex-col items-center justify-center rounded-sm text-[0.6rem] font-bold ${displayDifficulty === rating ? "bg-[#0a84ff] text-white" : "bg-white/[0.06] text-iron-400"}`}
                                 title={DIFFICULTY_LABELS[rating]}
                                 onClick={() => {
+                                  // Selecting a difficulty only ever updates that one set's rating —
+                                  // it never completes, skips, or otherwise changes set status.
+                                  updateRowDraft(row.rowKey, { ...draftBase(), difficulty: rating, difficultyManual: true });
                                   if (confirmed) {
                                     void updateDb((next) => {
                                       const target = next.sessions.find((item) => item.id === session.id);
@@ -4520,8 +4641,6 @@ function WorkoutGrid({
                                       if (target) target.updatedAt = nowIso();
                                       return next;
                                     });
-                                  } else {
-                                    updateRowDraft(row.rowKey, { difficulty: rating });
                                   }
                                   setDifficultyPopoverRowKey(null);
                                 }}
@@ -4532,27 +4651,28 @@ function WorkoutGrid({
                           </div>
                         )}
                       </div>
-                      <div className="flex items-center gap-1">
+                      <div className="flex items-center justify-end gap-1">
                         {confirmed ? (
-                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+                          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400" title="Completed">
                             <CheckCircle2 className="h-4 w-4" />
                           </span>
-                        ) : skipped ? (
-                          <button className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.06] text-iron-500" title="Skipped — tap to log" onClick={() => setRowDrafts((current) => ({ ...current, [row.rowKey]: emptyWorkoutGridRowDraft({ weight: String(row.plannedSet?.plannedWeight ?? ""), reps: String(row.plannedSet?.targetReps ?? ""), rpe: String(row.plannedSet?.targetRpe ?? "") }) }))}>
-                            <X className="h-4 w-4" />
-                          </button>
                         ) : (
-                          <button className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.08] text-iron-300 hover:bg-emerald-500/20 hover:text-emerald-400" title="Log this set" onClick={() => commitRow(log, row)}>
+                          <button className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/[0.08] text-iron-300 hover:bg-emerald-500/20 hover:text-emerald-400" title="Log this set" onClick={() => commitRow(log, row)}>
                             <Check className="h-4 w-4" />
                           </button>
                         )}
+                        {skipped && (
+                          <button className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-amber-500/10 text-amber-400 hover:bg-amber-500/20" title="Restore to pending" onClick={() => restoreSkippedRow(log, row)}>
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                         {!confirmed && !skipped && (
-                          <button className="hidden h-7 w-7 items-center justify-center rounded-full text-iron-600 hover:bg-white/10 hover:text-iron-300 group-hover:flex" title={row.isExtraPending ? "Remove set" : "Skip set"} onClick={() => row.isExtraPending ? removeRow(log, row) : skipRow(log, row)}>
+                          <button className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-iron-500 hover:bg-white/10 hover:text-iron-200" title={row.isExtraPending ? "Remove set" : "Skip set"} onClick={() => row.isExtraPending ? removeRow(log, row) : skipRow(log, row)}>
                             {row.isExtraPending ? <Trash2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
                           </button>
                         )}
                         {confirmed && (
-                          <button className="hidden h-7 w-7 items-center justify-center rounded-full text-iron-600 hover:bg-white/10 hover:text-red-400 group-hover:flex" title="Delete set" onClick={() => removeRow(log, row)}>
+                          <button className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-iron-500 hover:bg-white/10 hover:text-red-400" title="Delete set" onClick={() => removeRow(log, row)}>
                             <Trash2 className="h-3.5 w-3.5" />
                           </button>
                         )}

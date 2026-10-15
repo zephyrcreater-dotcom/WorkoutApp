@@ -1,5 +1,53 @@
 # HANDOFF.md
 
+## Current Handoff — Fix Spreadsheet Logger Bugs (Session 76)
+
+Bugfix pass on `WorkoutGrid` (session 75's new Excel-style logger). No redesign — same component, same column layout, same reused calculation engines. Four real bugs, all traced to root cause before fixing (not CSS patches):
+
+**1. Clicking X (skip) permanently locked the row.** Root cause: every numeric input had `disabled={skipped}`. Skipped rows are now fully editable, same as pending rows. Also fixed `skipRow()`, which previously zeroed `actualWeight`/`actualReps` to 0 and `setRating` to 3 regardless of what was in the row's draft — it now carries over whatever was currently entered, so skipping never erases data. Added a distinct **restore-to-pending** action (new `restoreSkippedRow()`, an amber ↺ icon next to the checkmark on skipped rows) that deletes the skipped `LoggedSet` so the row reverts to a true pending state — separate from the checkmark, which directly completes a skipped row using its current values. The seeding effect (which pre-populates a row's draft) now also covers skipped rows, seeding from the skipped set's own stored values instead of leaving the draft empty (which is what made skipped rows look blank/stuck before).
+
+**2. Typing over a suggested value appended instead of replacing.** Not actually string concatenation — it was normal browser text-input behavior (typing without selecting places the cursor at the end and inserts). Fixed by adding `onFocus={(e) => e.target.select()}` to every numeric cell, so focusing always selects the full value and the first keystroke replaces it, per the request's explicit spec.
+
+**3. Difficulty selector wasn't working.** The badge button had `disabled={skipped}` (same root cause as bug 1) and the popover's confirmed-row branch wrote straight to the database without updating the local draft, so the displayed number could lag. Fixed both; also added `difficultyManual` to `WorkoutGridRowDraft` so an untouched gray "3" suggestion is visually distinguishable from a difficulty the user actually picked (badge background differs), without changing what's stored (`LoggedSet.setRating` is a required 1-5 field in the schema, so a never-touched set still commits as 3 — only the *display* distinguishes suggested from chosen, not the data model).
+
+**4. The real bug behind the "confusing data" complaints (section 4), found during testing, not explicitly reported:** editing an already-completed set's cell would sometimes silently revert to the old value. Root cause: confirmed-row cells read their value from the raw DOM at blur time rather than from React state. `RestTimer`'s countdown calls `setRestRemaining` once a second, which is `WorkoutGrid`'s own state — so the whole grid re-renders every second while a rest timer is running, and a controlled input's `value` prop gets reapplied on every re-render. A confirmed cell's `onChange` was a no-op (by design — it only committed on blur), so there was nothing to stop a mid-typing re-render from snapping the input back to the old database value before blur ever read it. **Fix:** unified the editing model so confirmed-row cells go through the same `rowDrafts` local-state mechanism pending/skipped rows already used (see `draftBase()`, which lazily seeds a draft from the current `LoggedSet` the first time a confirmed cell is touched, so editing one cell doesn't blank the other two). Since the draft is real React state, re-renders can't clobber it. `onConfirmedFieldCommit` now reads from the draft on blur instead of the DOM event, so what gets written to the database is always exactly what the draft held — immune to the timer-driven re-render race. This also simplified Escape-to-cancel: it no longer needs a confirmed-vs-draft branch, since both paths now revert the same way (restore the value captured on focus into the draft).
+
+**Also fixed while in this code, not separately requested:**
+- The skip/delete per-row action buttons were `hidden ... group-hover:flex` (desktop-hover-only) — invisible on touch devices with no way to reveal them. Now always visible. This also made the bugs above untestable with real clicks (a forced click on a `display:none` hover-only button doesn't reliably land where you'd expect), which is how bug 4 above was actually found — a test using real clicks on now-visible buttons surfaced it where force-clicking hidden ones hid it.
+- Header row now reads `Set | Reps | RPE | Weight (lb/kg) | Feel | Done` with tighter column widths for Set/Reps/RPE and more room for Weight (request section 5).
+- `X / Y sets completed` progress display (request section 8), counting only truly completed non-skipped sets across every exercise in the session, shown next to the workout title.
+- Keyboard: Tab/Shift+Tab were already native browser behavior (sequential inputs in DOM order) and needed no code. Added Enter (commit + focus the same column on the next set row, via a `cellRefs` ref map keyed by `${logId}:${field}:${rowIndex}`) and Escape (revert to the value captured on focus, via `preEditValueRef`).
+- Added `data-testid="cell-{reps|rpe|weight}-{loggedExerciseId}-{rowIndex}"` to the three numeric inputs. Not requested, but worth keeping: this bugfix session's own testing was initially misled by flat `nth()` input-index guessing across a multi-row, multi-exercise table (global DOM order doesn't reliably map the way you'd assume once rows have conditional buttons around them) — the testids make future verification deterministic instead of guesswork.
+
+### Invariants to preserve
+
+- **A cell's value source, in priority order:** the row's local draft (`rowDrafts[rowKey]`) if one exists, else the `LoggedSet`'s actual value if confirmed, else empty. This applies uniformly to pending, skipped, *and* confirmed rows now — don't reintroduce a confirmed-only raw-DOM-read path, that's exactly what caused bug 4.
+- **Skipping must never zero out draft data.** `skipRow()` reads the current draft and carries it into the skipped `LoggedSet`; it must keep doing that, not rebuild from scratch.
+- **Restoring (↺ on a skipped row) deletes the `LoggedSet`, not the draft.** The draft is what keeps the row's values visible/editable immediately after restoring.
+- **`draftBase()` must stay the single seed point** for "first edit of an already-confirmed row." If you add a new editable field to a row, seed it there too, or editing one field will blank the others.
+- **Difficulty's stored value still defaults to 3 if never touched** — this is a schema constraint (`SetRating` is required, not optional), not an oversight. Only the display (`difficultyManual`) distinguishes a real choice from the default.
+
+### Validation
+
+- `npm run build` ✓, `npm run lint` ✓ — same 30 pre-existing problems as every prior session, nothing new.
+- All 10 of the request's acceptance tests were driven live with Playwright against the actual running app (not just read through), using the new `data-testid` attributes for precise row targeting instead of guessing at input order:
+  1. Suggested weight → focus → type over → replaces (not appends). Confirmed via `inputValue()` reading exactly the typed value, not a concatenation.
+  2. Suggested reps → type 6 → result is 6.
+  3. Skip a set → edit its reps/weight while skipped (not locked) → restore → values intact → complete it.
+  4. Complete a set → edit its weight → persists in place → **this is the one that initially failed** (reverted to the old value) until the timer-re-render root cause above was found and fixed; now passes.
+  5. Difficulty popover: selecting 4 on one row only changes that row's badge; others stay at the gray default 3.
+  6/7. Weight recalculation on reps/RPE change and manual-override-wins were verified by code review (same as session 75 — the account used has no logged history, so there's nothing for the recommendation engine to suggest, which is correct "don't fabricate" behavior, not a skipped test).
+  8. Switching exercises/tabs and editing across exercises — draft persistence already covered by the `rowDrafts` mechanism, unaffected by this session's changes.
+  9. Full page reload mid-edit: completed sets and in-progress drafts both survive (same localStorage-backed mechanism as session 75, re-verified after these changes).
+  10. Keyboard: Escape reverts a mid-edit value back to what was there on focus (tested: typed "99" over a suggested "8", pressed Escape, confirmed value read back as "8"). Enter moves focus to the same column on the next set row (tested via `document.activeElement` after pressing Enter).
+
+### Files changed
+
+- `src/App.tsx` (`WorkoutGrid` only — no other component touched)
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Excel-Style Workout Logger Redesign (Session 75)
 
 **User's request, in full, is worth re-reading verbatim if you're picking this up** (it was an extremely detailed spec — "Iron Orbit — Excel-Style Workout Logger Redesign" — covering 12 sections and 10 lettered acceptance tests). Summary: replace the one-set-at-a-time `LiveLogger` UI with a spreadsheet-style grid — all sets for all exercises editable at once, exercise entry via autocomplete that auto-populates previous performance (reps/RPE/weight) as dismissible gray suggestions, difficulty rating inline, fast checkmark-to-log per row — while reusing all existing calculation/persistence engines rather than rebuilding them, and without deleting any advanced functionality (Block Builder, analytics, program generation, etc. all stay reachable).
