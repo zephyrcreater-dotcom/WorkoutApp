@@ -2338,6 +2338,44 @@ function TodayScreen({
     onTodayWorkspaceModeChange("off-program-builder");
   }
 
+  // Drops straight into the logger with zero exercises instead of the pre-planning
+  // wizard — add exercises one at a time as you go, each one auto-filled from your
+  // last performed sets/reps/RPE/weight (see getLastPerformedExerciseDefaults in the
+  // logger's "Add Exercise" flow). No block or pre-set plan required.
+  function startQuickWorkout() {
+    const otherInProgress = db.sessions.find((s) => s.userId === user.id && (s.status === "in-progress" || s.status === "review"));
+    if (otherInProgress) {
+      const completedCount = otherInProgress.loggedExercises.flatMap((e) => e.sets).filter((s) => !s.skipped).length;
+      if (!confirm(`Starting a new workout will archive the current in-progress session (${completedCount} completed set${completedCount !== 1 ? "s" : ""} saved). Continue?`)) return;
+      void updateDb((draft) => {
+        const target = draft.sessions.find((s) => s.id === otherInProgress.id);
+        if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
+        return draft;
+      });
+      clearActiveWorkoutSessionDraft(user.id, otherInProgress.id);
+    }
+    const session: WorkoutSession = {
+      id: createId("session"),
+      userId: user.id,
+      gymId: user.activeGymId,
+      name: "Quick Workout",
+      status: "in-progress",
+      startedAt: nowIso(),
+      updatedAt: nowIso(),
+      currentExerciseIndex: 0,
+      currentSetIndex: 0,
+      loggedExercises: [],
+      recommendations: [],
+      offProgram: true,
+    };
+    void updateDb((draft) => {
+      draft.sessions.unshift(session);
+      return draft;
+    });
+    onTodayWorkspaceModeChange("off-program-workout");
+    onOpenLoggerSession(session.id, { previousScreen: "today" });
+  }
+
   function finishActiveBlock() {
     if (!activeProgram) return;
     void updateDb((draft) => {
@@ -2880,10 +2918,13 @@ function TodayScreen({
       {!activeProgram && (
         <Panel title="No Active Block" icon={CalendarDays}>
           <EmptyState title="No active block yet" detail="Build and activate a block before starting scheduled training." />
-          <button className="btn-primary mt-4 w-full" onClick={() => setScreen("programs")}>Open Block Builder</button>
-          <button className="btn-secondary mt-2 w-full" onClick={goOffProgram}>
+          <button className="btn-primary mt-4 w-full" onClick={startQuickWorkout}>
             <Shuffle className="h-4 w-4" />
-            Start Individual Workout
+            Start Workout
+          </button>
+          <button className="btn-secondary mt-2 w-full" onClick={() => setScreen("programs")}>Open Block Builder</button>
+          <button className="btn-ghost mt-2 w-full" onClick={goOffProgram}>
+            Plan a workout first
           </button>
         </Panel>
       )}
@@ -4555,13 +4596,12 @@ function LiveLogger({
     const isEmptySession = !session.loggedExercises.length;
     return (
       <div className="space-y-5">
-        <PageTitle eyebrow="Today" title={isEmptySession ? "Workout could not be resumed" : "No exercise selected"} />
+        <PageTitle eyebrow="Today" title={isEmptySession ? "Add your first exercise" : "No exercise selected"} />
         {isEmptySession && (
           <Panel title="Build your workout" icon={Dumbbell}>
             <p className="mb-3 text-sm text-iron-300">
-              This in-progress workout has no exercises.
+              Add an exercise below to get started. Each one auto-fills your last sets, reps, RPE, and weight — adjust as needed.
             </p>
-            <EmptyState title="Add an exercise to continue" detail="Open Today to return safely, abandon this workout, or add an exercise below." />
           </Panel>
         )}
         <div className="grid gap-2 sm:grid-cols-2">
