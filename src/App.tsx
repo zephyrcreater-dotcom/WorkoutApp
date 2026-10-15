@@ -8337,7 +8337,10 @@ function WorkoutDayEditor({
   const firstUnmetIndex = findNextUnmetRequirementIndex(requirements, requirementAllocation, skippedReqIds);
 
   const [currentReqIndex, setCurrentReqIndex] = useState<number>(firstUnmetIndex >= 0 ? firstUnmetIndex : 0);
-  const [showAllExercises, setShowAllExercises] = useState(false);
+  // Defaults to true: free exercise picking is the default flow. The requirement
+  // stepper (muscle-by-muscle, forced order, auto-opening picker) is an opt-in aid,
+  // not a gate you have to fight through to add exercises.
+  const [showAllExercises, setShowAllExercises] = useState(true);
   const [chooserWarning, setChooserWarning] = useState("");
   const [showRequirementWarning, setShowRequirementWarning] = useState(false);
   const [showPrescription, setShowPrescription] = useState(allReqsMet);
@@ -9378,8 +9381,8 @@ function WorkoutDayEditor({
       {(!allReqsMet || !showPrescription) && (
         <div className="rounded-lg border border-white/10 bg-iron-950/45 p-3">
           <label className="mb-3 flex items-center gap-2 text-sm font-bold text-iron-200">
-            <input type="checkbox" checked={showAllExercises} onChange={(event) => setShowAllExercises(event.target.checked)} />
-            Override: show all exercises
+            <input type="checkbox" checked={!showAllExercises} onChange={(event) => setShowAllExercises(!event.target.checked)} />
+            Guide me by muscle requirement (optional)
           </label>
           <ExercisePicker
             db={db}
