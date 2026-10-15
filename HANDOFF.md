@@ -1,5 +1,36 @@
 # HANDOFF.md
 
+## Current Handoff — Reduce Friction: Free Picking, Quick-Start Logging, Stale-PWA Fix (Session 74)
+
+**Product direction from this session (user's own words, paraphrased):** The app has grown too cumbersome to actually use day-to-day. The user wants something closer to their old Excel sheet — fast, low-friction set/rep/weight entry, keep the 1-5 difficulty rating system — with a powerlifting lean, and with the heavier builder/library UI tucked behind simpler defaults rather than ripped out. Explicit asks, in order:
+1. Block Builder's muscle-requirement stepper "locks me into" a forced order when adding exercises — too finicky, confusing.
+2. Wants to log workouts the way Excel let them: build the workout *as they go*, not pre-plan everything from week one. Picking an exercise should behave like an xlookup — auto-pull last sets/reps/RPE/weight for that exercise so they can just adjust and go.
+3. Longer-term direction (not yet started): an actual Excel-style grid for logging sets (rows/columns, inline-editable), and generally trimming what's front-and-center vs. tucked away. **Do not start a broad pivot to "powerlifting-only mode"** — ruled out explicitly; the ask is about logging friction, not deleting bodybuilding/general-health support.
+
+**Changes made:**
+- `WorkoutDayEditor`: `showAllExercises` now defaults to `true`. Previously it defaulted `false`, which forced the exercise picker to auto-open on the first unmet muscle requirement in order (`currentReq`/`firstUnmetIndex` effects) every time you tried to add an exercise. The requirement stepper is now an opt-in "Guide me by muscle requirement" checkbox instead of an opt-out "Override: show all exercises" one. No other behavior changed — `exerciseFulfillsRequirement`, requirement counting, etc. are untouched.
+- `public/service-worker.js`: was cache-first for every GET including `/` and `/index.html`, so once the PWA shell was cached once on a deployed build, it kept rendering that exact old build forever — even online, even after new deploys — until the user manually cleared site data. This is why the deployed/"cloud" site looked nothing like current `npm run dev`. Fixed: navigation requests (`event.request.mode === "navigate"` or path `/` / `/index.html`) now go network-first with cache fallback only when offline. Hashed JS/CSS assets stay cache-first (safe — Vite fingerprints filenames per build). Bumped `CACHE_NAME` to `iron-orbit-v2` to flush the old cache on first activate. **Note for next session:** users with an already-stuck old service worker may need one hard refresh / PWA close-reopen before the new worker takes over; after that it self-updates.
+- New `startQuickWorkout()` in `TodayScreen`, wired to a new primary **"Start Workout"** button (was "Start Individual Workout", which opened the `offProgramBuilder` pre-planning wizard — pick every exercise + target sets/reps/RPE before you could start). `startQuickWorkout()` instead creates an empty off-program `WorkoutSession` (`loggedExercises: []`) and opens the logger directly. The logger's existing "no-exercises" empty state (`resumeState.kind === "no-exercises"`) already had a working Add Exercise flow that calls `getLastPerformedExerciseDefaults` + `getOffProgramStartingWeight` to prefill sets/reps/RPE/weight from history when you add each exercise — this already-built mechanism *is* the "xlookup" behavior the user asked for; it just wasn't reachable without the wizard. The old wizard is kept as a secondary "Plan a workout first" ghost-button for anyone who wants to pre-plan.
+- Same empty-session logger screen had a copy bug: title said "Workout could not be resumed" even when the session was intentionally empty (quick-start). Changed to "Add your first exercise" / "Build your workout" copy that explains the auto-fill behavior instead of reading as an error.
+
+**Still open / not started:**
+- Excel-style grid logging (multiple sets as rows, inline-editable weight/reps/RPE/difficulty in one table instead of one-set-at-a-time with "Next Set") — user explicitly deferred this to a later pass, said try the quick-start flow first.
+- `programGenerator.ts` still doesn't use split-day `requirements` (pre-existing known gap, see "Known Bugs/TODOs" below) — unrelated to this session's changes but adjacent if block generation quality comes up again.
+- User workflow note: working directly on `main` now (no PR branch) at their explicit request — see git log, not something to re-litigate without asking again.
+- User is testing with a local Windows `npm run dev` checkout; watch for them hitting stale-build confusion again if they forget to `git pull` before reporting a UI issue — confirm `git log -1` matches before debugging a "doesn't look right" report.
+
+### Validation
+- `npm run build` ✓ (after each of the three changes above)
+- `npm run lint` ✓ — same 30 pre-existing errors/warnings before and after, nothing new introduced (verified via `git stash` diff)
+- Manually drove the app headlessly (Playwright + the repo's own Chromium at `/opt/pw-browsers`) for both the free-exercise-picker fix and the quick-start flow: built a Bodybuilding PPL block, confirmed "Add Exercise" on a Push day shows squats/deadlifts/rows (not just Chest); confirmed Start Workout → Add Exercise → Competition Bench Press lands in the logger with an editable set card.
+
+### Files changed
+- `src/App.tsx`
+- `public/service-worker.js`
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Analytics Coaching/Decision Dashboard Redesign (Session 73)
 
 - Analytics ("progress" screen) was redesigned around a new coaching-analytics data layer instead of a raw stats dump. New module `src/lib/coachingAnalytics.ts` is pure logic (no React) and exports:
