@@ -1,5 +1,54 @@
 # HANDOFF.md
 
+## Current Handoff — Fix Exercise Weight Units (Session 78)
+
+**User report:** the spreadsheet logger showed `WEIGHT (LB)` for Competition Bench Press even though its default unit in the Exercise Library was KG.
+
+### Root cause (two bugs, both in `src/lib/loadingProfiles.ts`'s `getEffectiveLoading`)
+
+`getExerciseDisplayUnit`/`getExerciseLoadUnit` (`trainingMath.ts`) — what `WorkoutGrid`'s header actually reads — already correctly prioritized `exercise.defaultUnit` over the user's global preference. That part of the pipeline was never broken. The real bug was one level up, in the **loading profile system**, which exists to answer "what increment does this equipment jump by" (e.g. "this barbell adds 5 lb per side") but had been given unintended authority over the exercise's *display* unit too:
+
+1. **`profileToEffectiveLoading` silently returned the loading profile's own hardcoded unit** (`"lb"` on all six `DEFAULT_LOADING_PROFILES`) instead of the unit the caller actually asked for — so for any exercise using an equipment-default or assigned loading profile (effectively every barbell/dumbbell/cable/machine/bodyweight exercise, since `EQUIPMENT_DEFAULT_PROFILE_IDS` auto-assigns one per category), `getEffectiveLoading(...).unit` came back `"lb"` no matter what.
+2. **The Exercise Library's edit form used that `.unit`/`.source` to decide whether to show the "Default unit" picker at all.** When a loading profile applied (`effectiveLoading.source === "exercise_profile" | "equipment_default"` — true for nearly everything), the picker was replaced with a read-only box reading "Controlled by {profile name}". **The user could not set an exercise's unit to kg through the normal UI at all** for any exercise with equipment. This is almost certainly what the user actually hit — not a display-logic bug, an inaccessible control.
+
+Even once unlocked, the increment itself would have been wrong: `DEFAULT_LOADING_PROFILES` increments (5, 10, 2.5) are authored in lb, and nothing converted them for a kg-configured exercise — rounding a kg weight to the nearest "5" (meant as 5 lb) is a real physical-value bug, not a label one. Same issue existed in `getExerciseIncrement`'s `defaultIncrement`/`customIncrement` fields (authored in lb by `seedData.ts`'s `inferExerciseFlags`) and in `programGenerator.ts`'s weight-planning function, which used `user.unit` instead of the exercise's own configured unit for both the baseline lookup and the increment.
+
+### What changed
+
+- **`loadingProfiles.ts` — `profileToEffectiveLoading`:** now always returns the unit the caller requested, and converts the profile's increment into that unit (via `convertWeight` + `roundToIncrement`, reusing the existing utilities, not a new conversion) when it differs from the profile's native unit. A barbell profile's "5 lb" now correctly becomes "2.5 kg" when requested for a kg exercise — verified live: the Library's "Resolved increment" line read `2.5 kg jumps` immediately after switching Competition Bench Press to kg.
+- **Exercise Library edit form (`src/App.tsx`):** removed the "Controlled by {profile}" lock entirely. "Default unit" is now always an editable picker, for every exercise, regardless of loading profile. The loading profile still governs the *increment* (shown next to it, correctly converted) — it was never meant to lock the unit, that coupling was the bug. Changing the unit now also converts `defaultIncrement`/`customIncrement` in the draft (lb↔kg, physically equivalent, not reinterpreted) so a 5 lb jump stays a ~2.5 kg jump instead of silently becoming "5 kg."
+- **`WorkoutGrid.incrementFor`:** was a standalone fallback (`exercise.defaultIncrement || (user.unit === "kg" ? 2.5 : 5)`) that bypassed the loading-profile system entirely, inheriting the same lb-authored-number-used-raw problem. Now calls `getEffectiveLoading(exercise, db.loadingProfiles, getExerciseLoadUnit(exercise, user)).increment` — the same function everything else in the app uses.
+- **`programGenerator.ts`'s per-exercise prescription builder:** was computing the planned weight's baseline, recommendation, and increment all in `user.unit` (the global preference), ignoring `exercise.defaultUnit` entirely. Planned weights for a kg-configured exercise would have been generated as lb numbers with no unit tag — since `PlannedSet.plannedWeight` carries no unit of its own and is read everywhere downstream as "this exercise's current `defaultUnit`," that's a real corruption, not cosmetic. Now uses `getExerciseDisplayUnit(exercise, user)` throughout that function instead of `user.unit`.
+
+### What was already correct, not touched
+
+`recommendWeightForExercise`/`getSameExerciseBaseline` (`trainingIntelligence/weightPrescription.ts`) already correctly convert a historical `LoggedSet`'s stored weight (`set.unit`, falling back to the exercise's unit at the time) into the caller's desired unit via `convertWeight` before using it as a baseline or computing e1RM — this is what made the "225 lb historical set → 102.5 kg displayed" test case work correctly without any change there. `LoggedSet.unit` itself (the per-set stored unit tag, set when a set is actually logged) was also already correct and untouched — completed sets save with whatever unit was in effect when they were logged, never reinterpreted.
+
+### Verified live, real UI flow (not just code review)
+
+1. Opened Competition Bench Press in the Exercise Library — confirmed the "Default unit" picker was previously a locked "Controlled by Barbell / Plates" box; after the fix it's a normal editable select.
+2. Selected kg → "Resolved increment" updated to `2.5 kg jumps` (correct conversion from the barbell profile's 5 lb) → clicked Save changes → reloaded.
+3. Started a workout, added Competition Bench Press → logger header read `WEIGHT (KG)`.
+4. Added Competition Squat (left at its default) alongside it in the same workout → squat's header read `WEIGHT (LB)` — confirmed mixed-unit workouts render correctly per exercise.
+5. Seeded a completed historical session with a 225 lb bench set (via IndexedDB, matching the app's own schema) → opened a new workout with bench press now configured kg → the suggested first set read **5 reps, RPE 8, 102.5 kg** — exactly the converted equivalent of 225 lb at the 2.5 kg increment, not a bare reinterpreted "225."
+6. Manually logged a set, reloaded the page → unit (`KG`) and the logged set both survived unchanged.
+
+### Invariants to preserve
+
+- **A loading profile determines increment math only, never the display unit.** `exercise.defaultUnit` (via `getExerciseDisplayUnit`/`getExerciseLoadUnit`) is the single source of truth for which unit an exercise displays and plans in. Don't let `getEffectiveLoading`'s `.unit` field leak back into gating what the user can configure.
+- **Any increment or weight number taken from somewhere that doesn't carry its own unit tag must be converted before use, never assumed.** `DEFAULT_LOADING_PROFILES` increments are authored in lb; `Exercise.defaultIncrement`/`customIncrement` are authored in whatever unit was current when they were set. Both need `convertWeight` at the point where the target unit might differ — see `profileToEffectiveLoading` and the Library's unit-change handler for the pattern.
+- **Always plan/recommend in `getExerciseDisplayUnit(exercise, user)`, not `user.unit`,** anywhere a specific exercise is involved (program generation, recommendations, increments). `user.unit` is only the right fallback when there's no exercise in scope yet.
+- **`LoggedSet.unit` is the ground truth for what a historical set was recorded in.** Conversion happens at read time via `convertWeight`, never by mutating stored history — don't add a "migrate all weights to the new unit" pass; that's explicitly the destructive-migration pattern the request asked to avoid.
+
+### Files changed
+
+- `src/lib/loadingProfiles.ts` (`profileToEffectiveLoading`)
+- `src/App.tsx` (Exercise Library edit form's unit field, `WorkoutGrid.incrementFor`)
+- `src/lib/programGenerator.ts` (per-exercise prescription unit)
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Fix the Fundamental Workout/Planning Architecture (Session 77)
 
 **Core product rule this session enforced:** Planning is optional. Training is not. A user can always start a workout — no active block, an unplanned week, or an unplanned day are never a reason to block starting.

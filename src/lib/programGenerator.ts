@@ -1,4 +1,5 @@
 import { createId, nowIso, todayIso } from "./ids";
+import { getExerciseDisplayUnit } from "./trainingMath";
 import {
   buildSplitSchedule,
   clonePlannedSetWithProgression,
@@ -364,6 +365,11 @@ function plannedExerciseFor(
     exerciseRole: resolvedRole,
   });
   const plannedSet = { id: createId("pset"), kind: "working" as const, setNumber: 1, targetReps: prescription.reps, repRange: { min: Math.max(1, prescription.reps - 2), max: prescription.reps + 2 }, targetRpe: prescription.rpe, targetRir: Math.max(0, Math.round(10 - prescription.rpe)) };
+  // Plan in the exercise's own configured unit, not blindly the user's global preference —
+  // an exercise explicitly set to kg in the Exercise Library must stay in kg here too, since
+  // plannedWeight carries no unit tag of its own and is read everywhere downstream as "this
+  // exercise's current defaultUnit."
+  const exerciseUnit = getExerciseDisplayUnit(exercise, user);
   const baseline = getSameExerciseBaseline({
     userId: user.id,
     exerciseId: exercise.id,
@@ -371,7 +377,7 @@ function plannedExerciseFor(
     targetReps: plannedSet.targetReps,
     targetRpe: plannedSet.targetRpe,
     gymId: user.activeGymId,
-    desiredUnit: user.unit,
+    desiredUnit: exerciseUnit,
     exerciseDefaultUnit: exercise.defaultUnit,
   });
   const suggested = recommendWeightForExercise({
@@ -379,8 +385,8 @@ function plannedExerciseFor(
     targetReps: plannedSet.targetReps,
     targetRpe: plannedSet.targetRpe,
     baseline,
-    increment: getExerciseIncrement(exercise, user.unit),
-    unit: user.unit,
+    increment: getExerciseIncrement(exercise, exerciseUnit),
+    unit: exerciseUnit,
   });
   return {
     id: createId("planned"),

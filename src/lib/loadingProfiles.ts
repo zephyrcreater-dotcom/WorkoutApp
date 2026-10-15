@@ -1,5 +1,6 @@
 import type { EquipmentCategory, Exercise, LoadingProfile, UnitPreference } from "../types/domain";
 import { getExerciseIncrement } from "./trainingIntelligence/weightPrescription";
+import { convertWeight, roundToIncrement } from "./trainingMath";
 
 export const DEFAULT_LOADING_PROFILES: LoadingProfile[] = [
   {
@@ -83,13 +84,23 @@ function profileToEffectiveLoading(
   unit: UnitPreference,
   source: EffectiveLoading["source"],
 ): EffectiveLoading {
-  // The loading profile is the unit authority — use its native unit and increment directly.
-  // unit param is only a fallback when the profile has no recognized unit.
+  // The loading profile is the increment authority (e.g. "this gym's cable stack jumps by 10
+  // lb per pin") — but it is NOT the unit authority. It governs plate/pin math, not which unit
+  // an exercise displays in; that's exercise.defaultUnit, set per-exercise in the Exercise
+  // Library. All DEFAULT_LOADING_PROFILES increments are authored in lb. Returning the
+  // profile's own unit here (as this used to do) silently overrode whatever unit the caller
+  // asked for — every barbell/dumbbell/cable/machine exercise effectively came back "lb"
+  // regardless of its configured defaultUnit, which is what made the Exercise Library's unit
+  // picker show "Controlled by {profile}" and lock the user out of setting kg. Convert the
+  // increment into the requested unit instead, and always honor that requested unit.
   const profileUnit: UnitPreference =
     profile.unit === "lb" || profile.unit === "kg" ? profile.unit : unit;
+  const increment = profileUnit === unit
+    ? profile.increment
+    : roundToIncrement(convertWeight(profile.increment, profileUnit, unit) ?? profile.increment, unit === "kg" ? 0.5 : 2.5);
   return {
-    unit: profileUnit,
-    increment: profile.increment,
+    unit,
+    increment,
     source,
     loadingProfileId: profile.id,
     loadingProfileName: profile.name,

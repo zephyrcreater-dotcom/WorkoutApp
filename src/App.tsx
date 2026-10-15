@@ -4149,7 +4149,12 @@ function WorkoutGrid({
   }
 
   function incrementFor(exercise?: Exercise): number {
-    return exercise?.defaultIncrement || (user.unit === "kg" ? 2.5 : 5);
+    // Reuse the same loading-profile-aware increment the rest of the app uses (weight
+    // recommendations, the Exercise Library) instead of a naive fallback — this is what makes
+    // the increment respect an exercise's own configured unit rather than always rounding to a
+    // number authored for lb (see HANDOFF.md "Fix Iron Orbit Exercise Weight Units").
+    if (!exercise) return user.unit === "kg" ? 2.5 : 5;
+    return getEffectiveLoading(exercise, db.loadingProfiles, getExerciseLoadUnit(exercise, user)).increment;
   }
 
   // Recalculates weight through the existing recommendation engine (never a new calculator)
@@ -11728,26 +11733,37 @@ function LibraryScreen({
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
-            {!usesCustomIncrement && (effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default") ? (
-              <div className="md:col-span-2">
-                <div className="rounded-sm border border-white/[0.08] bg-white/[0.03] px-3 py-2">
-                  <p className="text-[0.68rem] font-semibold uppercase tracking-[0.14em] text-iron-500">Default unit</p>
-                  <p className="mt-1 text-sm text-iron-200">Controlled by {effectiveLoading.loadingProfileName}</p>
-                </div>
-              </div>
-            ) : (
-              <SelectField
-                label="Default unit"
-                value={draft.defaultUnit}
-                options={exerciseUnitOptions}
-                onChange={(defaultUnit) => setDraft((item) => ({
+            {/* Default unit is always editable here, per exercise — a loading profile (below)
+                governs increment/plate math for its equipment type, not which unit the
+                exercise displays in. It used to lock this field behind a read-only "Controlled
+                by {profile}" box whenever an equipment-default profile applied (i.e. almost
+                every exercise with equipment), which made it impossible to configure an
+                individual exercise as kg from this screen. */}
+            <SelectField
+              label="Default unit"
+              value={draft.defaultUnit}
+              options={exerciseUnitOptions}
+              onChange={(nextUnitValue) => setDraft((item) => {
+                const nextUnit = nextUnitValue as ExerciseUnit;
+                // Converting lb<->kg keeps the increment physically equivalent instead of
+                // reinterpreting the same number in the new unit (a stored "5" meaning 5 lb
+                // jumps must not silently become 5 kg jumps just because the display unit
+                // changed).
+                const convert = (value?: number) => {
+                  if (value === undefined) return value;
+                  if (!isWeightUnit(item.defaultUnit) || !isWeightUnit(nextUnit) || item.defaultUnit === nextUnit) return value;
+                  return roundToIncrement(convertWeight(value, item.defaultUnit, nextUnit) ?? value, nextUnit === "kg" ? 0.5 : 2.5);
+                };
+                return {
                   ...item,
-                  defaultUnit: defaultUnit as ExerciseUnit,
-                  allowedUnits: Array.from(new Set([...item.allowedUnits, defaultUnit as ExerciseUnit])),
-                }))}
-              />
-            )}
-            <div className={!usesCustomIncrement && (effectiveLoading.source === "exercise_profile" || effectiveLoading.source === "equipment_default") ? "md:col-span-2" : ""}>
+                  defaultUnit: nextUnit,
+                  allowedUnits: Array.from(new Set([...item.allowedUnits, nextUnit])),
+                  defaultIncrement: convert(item.defaultIncrement) ?? item.defaultIncrement,
+                  customIncrement: convert(item.customIncrement) ?? item.customIncrement,
+                };
+              })}
+            />
+            <div>
               <SelectField label={loadingControlLabel} value={draft.loadingProfileId} options={profileOptions} labels={profileLabels} onChange={(value) => setDraft((item) => ({ ...item, loadingProfileId: value }))} />
               <p className="mt-1 text-xs text-iron-500">{loadingHelperText}</p>
             </div>
