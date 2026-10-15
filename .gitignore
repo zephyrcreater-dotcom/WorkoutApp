@@ -13,3 +13,5 @@ imports/*.json
 .claude/
 
 .claude/
+# Playwright CLI output (may contain credentials)
+.playwright-cli/

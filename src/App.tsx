@@ -40,7 +40,7 @@ import {
   X,
   Zap
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState, type Dispatch, type KeyboardEvent, type ReactNode, type SetStateAction } from "react";
 import { useTrainingDb } from "./hooks/useTrainingDb";
 import type { SnapshotSummary } from "./lib/cloudSync";
 import {
@@ -1167,6 +1167,69 @@ function clearOffProgramBuilderDraft(userId: string): void {
   }
 }
 
+// --- Workout grid (Excel-style logger) uncommitted-cell drafts ---
+// Separate from ActiveWorkoutSessionDraft (that one tracks a single "active set" for the
+// old one-set-at-a-time logger). The grid can have many pending rows editable at once, so
+// each row's in-progress values live here, keyed by `${loggedExerciseId}:${rowKey}`, until
+// the row is checked off and becomes a real LoggedSet in the database.
+type WorkoutGridRowDraft = {
+  weight: string;
+  reps: string;
+  rpe: string;
+  difficulty: SetRating;
+  weightManual: boolean;
+  notes?: string;
+};
+
+type WorkoutGridDraft = {
+  sessionId: string;
+  rows: Record<string, WorkoutGridRowDraft>;
+  // Pending-only "+ Set" rows not yet backed by a PlannedSet, keyed by loggedExerciseId.
+  extraPendingRowKeys: Record<string, string[]>;
+  lastLocalMutationAt: string;
+};
+
+const workoutGridDraftKey = (userId: string, sessionId: string) => `iron_orbit_workout_grid_draft_${userId}_${sessionId}`;
+
+function loadWorkoutGridDraft(userId: string, sessionId?: string): WorkoutGridDraft | undefined {
+  if (!sessionId) return undefined;
+  try {
+    const raw = localStorage.getItem(workoutGridDraftKey(userId, sessionId));
+    return raw ? JSON.parse(raw) as WorkoutGridDraft : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function saveWorkoutGridDraft(userId: string, sessionId: string, draft: WorkoutGridDraft): void {
+  try {
+    localStorage.setItem(workoutGridDraftKey(userId, sessionId), JSON.stringify(draft));
+  } catch {
+    // Ignore localStorage quota issues; confirmed sets already live in the durable database.
+  }
+}
+
+function clearWorkoutGridDraft(userId: string, sessionId?: string): void {
+  if (!sessionId) return;
+  try {
+    localStorage.removeItem(workoutGridDraftKey(userId, sessionId));
+  } catch {
+    // Ignore localStorage cleanup errors.
+  }
+}
+
+function emptyWorkoutGridRowDraft(seed?: Partial<WorkoutGridRowDraft>): WorkoutGridRowDraft {
+  return {
+    weight: "",
+    reps: "",
+    rpe: "",
+    difficulty: 3,
+    weightManual: false,
+    notes: "",
+    ...seed,
+  };
+}
+
 const READINESS_SCORE_MAP: Record<number, number> = { 1: 20, 2: 40, 3: 70, 4: 85, 5: 100 };
 
 function calculateTripleReadinessScore(mental: number, physical: number, recovery: number): number {
@@ -1807,7 +1870,7 @@ function App() {
             />
           )}
           {screen === "logger" && (
-            <LiveLogger
+            <WorkoutGrid
               db={db}
               user={currentUser}
               updateDb={updateDb}
@@ -3882,6 +3945,773 @@ function TodayExerciseDetailView({
   );
 }
 
+const DIFFICULTY_LABELS: Record<SetRating, string> = {
+  1: "Harder",
+  2: "A bit hard",
+  3: "As planned",
+  4: "A bit easy",
+  5: "Easy",
+};
+
+type WorkoutGridRow = {
+  rowKey: string;
+  plannedSet?: PlannedSet;
+  actualSet?: LoggedSet;
+  isExtraPending: boolean;
+};
+
+/**
+ * Excel-style workout logger. Replaces the one-set-at-a-time LiveLogger as the primary
+ * logging UI (see HANDOFF.md "Excel-Style Workout Logger Redesign"). Every exercise's sets
+ * render as directly editable rows at once instead of one "current set" card. Reuses the
+ * same underlying data model and helpers LiveLogger used (plannedSets/LoggedSet pairing via
+ * buildLoggerLineupItems, history-based defaults via getLastPerformedExerciseDefaults, the
+ * existing weight recommendation engine via getOffProgramStartingWeight) so persistence,
+ * analytics, and program compatibility are unchanged — only the editing surface is new.
+ */
+function WorkoutGrid({
+  db,
+  user,
+  updateDb,
+  sessionId,
+  setActiveSessionId,
+  setScreen,
+  navigation,
+  onOpenCompletedSessionReview,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  updateDb: (updater: (draft: TrainingDatabase) => TrainingDatabase) => Promise<void>;
+  sessionId?: string;
+  setActiveSessionId: (id: string | undefined) => void;
+  setScreen: (screen: Screen) => void;
+  navigation: LoggerNavigationState;
+  onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
+}) {
+  const session = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
+  const editingCompletedWorkout = navigation.loggerMode === "completed-edit";
+  const preserveCompletedStatus = (target?: WorkoutSession) => editingCompletedWorkout && target?.status === "completed";
+
+  const storedGridDraft = useMemo(() => loadWorkoutGridDraft(user.id, sessionId), [sessionId, user.id]);
+  const [rowDrafts, setRowDrafts] = useState<Record<string, WorkoutGridRowDraft>>(storedGridDraft?.rows || {});
+  const [extraPendingRowKeys, setExtraPendingRowKeys] = useState<Record<string, string[]>>(storedGridDraft?.extraPendingRowKeys || {});
+  const [restRemaining, setRestRemaining] = useState(0);
+  const [exerciseQuery, setExerciseQuery] = useState("");
+  const [showExerciseSuggestions, setShowExerciseSuggestions] = useState(false);
+  const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
+  const [showFullPicker, setShowFullPicker] = useState(false);
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
+  const [showCompletionSummary, setShowCompletionSummary] = useState(false);
+  const [completionSummary, setCompletionSummary] = useState<ReturnType<typeof buildCompletionSummary> | null>(null);
+  const [expandedNotesRowKey, setExpandedNotesRowKey] = useState<string | null>(null);
+  const [difficultyPopoverRowKey, setDifficultyPopoverRowKey] = useState<string | null>(null);
+
+  // Reset local draft state when switching to a different session (e.g. resuming a different workout).
+  useEffect(() => {
+    const next = loadWorkoutGridDraft(user.id, sessionId);
+    setRowDrafts(next?.rows || {});
+    setExtraPendingRowKeys(next?.extraPendingRowKeys || {});
+  }, [sessionId, user.id]);
+
+  const extraPendingRowKeysRef = useRef(extraPendingRowKeys);
+  useEffect(() => { extraPendingRowKeysRef.current = extraPendingRowKeys; }, [extraPendingRowKeys]);
+
+  function persistGridDraft(rows: Record<string, WorkoutGridRowDraft>, extras: Record<string, string[]>) {
+    if (!sessionId) return;
+    saveWorkoutGridDraft(user.id, sessionId, { sessionId, rows, extraPendingRowKeys: extras, lastLocalMutationAt: nowIso() });
+  }
+
+  function updateRowDraft(rowKey: string, patch: Partial<WorkoutGridRowDraft>) {
+    setRowDrafts((current) => {
+      const next = { ...current, [rowKey]: { ...(current[rowKey] || emptyWorkoutGridRowDraft()), ...patch } };
+      persistGridDraft(next, extraPendingRowKeys);
+      return next;
+    });
+  }
+
+  function clearRowDraft(rowKey: string) {
+    setRowDrafts((current) => {
+      if (!(rowKey in current)) return current;
+      const next = { ...current };
+      delete next[rowKey];
+      persistGridDraft(next, extraPendingRowKeys);
+      return next;
+    });
+  }
+
+  // Seed drafts for any pending row (planned but not yet logged) that doesn't have one yet —
+  // covers scheduled-workout exercises already present when the grid mounts (Test I) and any
+  // exercise added via the autocomplete. Purely additive: never overwrites an existing draft
+  // entry, so it can never clobber a manual edit or a value restored from a reload (section 8).
+  useEffect(() => {
+    if (!session) return;
+    setRowDrafts((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const log of session.loggedExercises) {
+        const planned = findPlannedExercise(db, session, log);
+        const plannedSets = getLoggedExercisePlannedSets(log, planned);
+        for (const item of buildLoggerLineupItems(log, plannedSets)) {
+          if (item.actualSet) continue;
+          const rowKey = `${log.id}:${item.key}`;
+          if (next[rowKey]) continue;
+          next[rowKey] = emptyWorkoutGridRowDraft({
+            weight: item.plannedSet?.plannedWeight !== undefined ? String(item.plannedSet.plannedWeight) : "",
+            reps: item.plannedSet?.targetReps !== undefined ? String(item.plannedSet.targetReps) : "",
+            rpe: item.plannedSet?.targetRpe !== undefined ? String(item.plannedSet.targetRpe) : "",
+            weightManual: false,
+          });
+          changed = true;
+        }
+      }
+      if (!changed) return current;
+      persistGridDraft(next, extraPendingRowKeysRef.current);
+      return next;
+    });
+    // persistGridDraft is intentionally omitted: it's a plain function recreated every render
+    // (closes only over sessionId/user.id) and including it would re-run this effect on every
+    // render without changing behavior, since the `changed` check already makes it a no-op
+    // whenever there's nothing new to seed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, db]);
+
+  if (!session) {
+    return (
+      <Panel title="No Active Workout" icon={Timer}>
+        <EmptyState title="Start a workout first" detail="Open Today and start a workout." />
+      </Panel>
+    );
+  }
+
+  const backToPrevious = () => {
+    setActiveSessionId(undefined);
+    if (navigation.completedReviewState && sessionId) {
+      onOpenCompletedSessionReview(sessionId, navigation.completedReviewState.returnScreen);
+      return;
+    }
+    setScreen(navigation.previousScreen);
+  };
+
+  function exerciseUnitFor(exercise?: Exercise): ExerciseUnit {
+    return exercise ? getExerciseDisplayUnit(exercise, user) : (user.unit as ExerciseUnit);
+  }
+
+  function incrementFor(exercise?: Exercise): number {
+    return exercise?.defaultIncrement || (user.unit === "kg" ? 2.5 : 5);
+  }
+
+  // Recalculates weight through the existing recommendation engine (never a new calculator)
+  // and writes it back only when the row's weight is still suggestion-controlled.
+  function recalcRowWeight(rowKey: string, exercise: Exercise | undefined, draft: WorkoutGridRowDraft) {
+    if (!exercise || draft.weightManual) return;
+    const targetReps = Number(draft.reps) || 8;
+    const targetRpe = Number(draft.rpe) || 7;
+    const suggested = getOffProgramStartingWeight({ db, user, exercise, targetReps, targetRpe });
+    if (suggested !== undefined) {
+      updateRowDraft(rowKey, { weight: String(roundToIncrement(suggested, incrementFor(exercise))) });
+    }
+  }
+
+  function commitRow(log: LoggedExercise, row: WorkoutGridRow) {
+    const exercise = db.exercises.find((item) => item.id === log.exerciseId);
+    if (!exercise || !session) return;
+    const draft = rowDrafts[row.rowKey] || emptyWorkoutGridRowDraft();
+    const actualWeight = Number(draft.weight) || 0;
+    const actualReps = Number(draft.reps) || 0;
+    const isWeightBased = exercise.category !== "bodyweight" && !exercise.bestTrackedBy.includes("time");
+    if (isWeightBased && actualWeight <= 0 && actualReps <= 0) return;
+    const actualRpe = draft.rpe ? Math.min(10, Math.max(0, Number(draft.rpe))) || undefined : undefined;
+    const plannedSet = row.plannedSet;
+    const existing = row.actualSet;
+
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+      if (!target || !targetLog) return next;
+      const loggedSet: LoggedSet = {
+        id: existing?.id || createId("set"),
+        kind: plannedSet?.kind || "working",
+        setNumber: plannedSet?.setNumber ?? targetLog.sets.length + 1,
+        plannedSetId: plannedSet?.id,
+        plannedWeight: plannedSet?.plannedWeight,
+        plannedReps: plannedSet?.targetReps,
+        actualWeight,
+        unit: exerciseUnitFor(exercise),
+        actualReps,
+        targetRpe: plannedSet?.targetRpe,
+        actualRpe,
+        setRating: draft.difficulty,
+        skipped: false,
+        added: !plannedSet,
+        notes: draft.notes || undefined,
+        completedAt: nowIso(),
+      };
+      const performance = calculateSetPerformanceScore(plannedSet, loggedSet);
+      loggedSet.performanceScore = performance.score;
+      loggedSet.performanceStatus = performance.status;
+      if (existing) {
+        const idx = targetLog.sets.findIndex((item) => item.id === existing.id);
+        if (idx >= 0) targetLog.sets[idx] = loggedSet; else targetLog.sets.push(loggedSet);
+      } else {
+        targetLog.sets.push(loggedSet);
+      }
+      targetLog.weakPointTags = detectWeakPointTags(targetLog);
+      learnGymExerciseAdjustment({ db: next, user, session: target, loggedExercise: targetLog, loggedSet, exercise });
+      if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
+      target.updatedAt = nowIso();
+      return next;
+    });
+
+    clearRowDraft(row.rowKey);
+    if (row.isExtraPending) {
+      setExtraPendingRowKeys((current) => {
+        const next = { ...current, [log.id]: (current[log.id] || []).filter((key) => key !== row.rowKey) };
+        persistGridDraft(rowDrafts, next);
+        return next;
+      });
+    }
+    setRestRemaining(user.settings.defaultRestSeconds || 90);
+  }
+
+  function skipRow(log: LoggedExercise, row: WorkoutGridRow) {
+    if (!session) return;
+    const plannedSet = row.plannedSet;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+      if (!target || !targetLog) return next;
+      const skippedSet: LoggedSet = {
+        id: row.actualSet?.id || createId("set"),
+        kind: plannedSet?.kind || "working",
+        setNumber: plannedSet?.setNumber ?? targetLog.sets.length + 1,
+        plannedSetId: plannedSet?.id,
+        plannedWeight: plannedSet?.plannedWeight,
+        plannedReps: plannedSet?.targetReps,
+        actualWeight: 0,
+        actualReps: 0,
+        targetRpe: plannedSet?.targetRpe,
+        setRating: 3,
+        skipped: true,
+        completedAt: nowIso(),
+      };
+      if (row.actualSet) {
+        const idx = targetLog.sets.findIndex((item) => item.id === row.actualSet!.id);
+        if (idx >= 0) targetLog.sets[idx] = skippedSet; else targetLog.sets.push(skippedSet);
+      } else {
+        targetLog.sets.push(skippedSet);
+      }
+      target.updatedAt = nowIso();
+      return next;
+    });
+    clearRowDraft(row.rowKey);
+  }
+
+  function removeRow(log: LoggedExercise, row: WorkoutGridRow) {
+    if (row.isExtraPending) {
+      clearRowDraft(row.rowKey);
+      setExtraPendingRowKeys((current) => {
+        const next = { ...current, [log.id]: (current[log.id] || []).filter((key) => key !== row.rowKey) };
+        persistGridDraft(rowDrafts, next);
+        return next;
+      });
+      return;
+    }
+    if (!session || !row.actualSet) return;
+    const setId = row.actualSet.id;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+      if (!targetLog) return next;
+      targetLog.sets = targetLog.sets.filter((item) => item.id !== setId);
+      if (target) target.updatedAt = nowIso();
+      return next;
+    });
+  }
+
+  function addSetRow(log: LoggedExercise) {
+    const key = `extra:${createId("row")}`;
+    setExtraPendingRowKeys((current) => {
+      const next = { ...current, [log.id]: [...(current[log.id] || []), key] };
+      persistGridDraft(rowDrafts, next);
+      return next;
+    });
+    const lastLoggedWeight = [...log.sets].reverse().find(isCompletedValidSet);
+    updateRowDraft(key, emptyWorkoutGridRowDraft({
+      weight: lastLoggedWeight ? String(lastLoggedWeight.actualWeight) : "",
+      reps: lastLoggedWeight ? String(lastLoggedWeight.actualReps) : "",
+      rpe: lastLoggedWeight?.actualRpe ? String(lastLoggedWeight.actualRpe) : "",
+      weightManual: true,
+    }));
+  }
+
+  function removeExercise(log: LoggedExercise) {
+    if (!session) return;
+    if (log.sets.some(isCompletedValidSet) && !confirm(`Remove ${db.exercises.find((e) => e.id === log.exerciseId)?.name || "this exercise"}? Logged sets will be lost.`)) return;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      if (!target) return next;
+      target.loggedExercises = target.loggedExercises.filter((item) => item.id !== log.id);
+      target.updatedAt = nowIso();
+      return next;
+    });
+    setExtraPendingRowKeys((current) => {
+      const next = { ...current };
+      delete next[log.id];
+      persistGridDraft(rowDrafts, next);
+      return next;
+    });
+  }
+
+  function addExerciseToSession(exercise: Exercise) {
+    if (!session) return;
+    const histDefaults = getLastPerformedExerciseDefaults(db, user.id, exercise.id);
+    const plannedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: histDefaults.reps, targetRpe: histDefaults.rpe });
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      if (!target) return next;
+      target.loggedExercises.push({
+        id: createId("logex"),
+        exerciseId: exercise.id,
+        order: target.loggedExercises.length + 1,
+        sets: [],
+        weakPointTags: [],
+        offProgram: true,
+        offProgramPlannedSets: buildOffProgramPlannedSets(histDefaults.sets, histDefaults.reps, histDefaults.rpe, plannedWeight),
+      });
+      if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
+      target.updatedAt = nowIso();
+      return next;
+    });
+    setExerciseQuery("");
+    setShowExerciseSuggestions(false);
+    setHighlightedSuggestionIndex(0);
+  }
+
+  function openFinishConfirm() {
+    setShowFinishConfirm(true);
+  }
+
+  function confirmFinishWorkout() {
+    if (!session) return;
+    const summary = buildCompletionSummary(session);
+    setCompletionSummary(summary);
+    setShowFinishConfirm(false);
+    setShowCompletionSummary(true);
+  }
+
+  function finalizeWorkout() {
+    if (!session) return;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      if (target) finishWorkoutInDraft(next, user, target);
+      return next;
+    });
+    clearActiveWorkoutSessionDraft(user.id, session.id);
+    clearWorkoutGridDraft(user.id, session.id);
+    setShowCompletionSummary(false);
+    setActiveSessionId(undefined);
+    if (editingCompletedWorkout) backToPrevious(); else setScreen("today");
+  }
+
+  function abandonWorkout() {
+    if (!session) return;
+    if (!confirm("Abandon this workout? Logged sets are kept in history, but the session will no longer be in progress.")) return;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
+      return next;
+    });
+    clearActiveWorkoutSessionDraft(user.id, session.id);
+    clearWorkoutGridDraft(user.id, session.id);
+    setActiveSessionId(undefined);
+    setScreen("today");
+  }
+
+  const exerciseMatches = exerciseQuery.trim().length
+    ? getSharedExerciseLibrarySource(db.exercises, user.id, { query: exerciseQuery, includeVariations: true })
+      .filter((exercise) => !session.loggedExercises.some((log) => log.exerciseId === exercise.id))
+      .slice(0, 8)
+    : [];
+
+  function handleExerciseInputKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (!showExerciseSuggestions || !exerciseMatches.length) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHighlightedSuggestionIndex((i) => Math.min(i + 1, exerciseMatches.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHighlightedSuggestionIndex((i) => Math.max(i - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const pick = exerciseMatches[highlightedSuggestionIndex];
+      if (pick) addExerciseToSession(pick);
+    } else if (e.key === "Escape") {
+      setShowExerciseSuggestions(false);
+    }
+  }
+
+  const totalCompletedSets = session.loggedExercises.flatMap((l) => l.sets).filter(isCompletedValidSet).length;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-2">
+        <button className="btn-ghost" onClick={backToPrevious}>
+          <ChevronLeft className="h-4 w-4" /> Back
+        </button>
+        <RestTimer seconds={restRemaining} setSeconds={setRestRemaining} />
+      </div>
+      <div className="flex items-center justify-between gap-2">
+        <PageTitle eyebrow="Today" title={session.name || "Workout"} />
+        <span className="shrink-0 text-xs text-iron-500">{totalCompletedSets} set{totalCompletedSets === 1 ? "" : "s"} logged</span>
+      </div>
+
+      <div className="space-y-5">
+        {session.loggedExercises.map((log) => {
+          const exercise = db.exercises.find((item) => item.id === log.exerciseId);
+          const planned = findPlannedExercise(db, session, log);
+          const plannedSets = getLoggedExercisePlannedSets(log, planned);
+          const lineupItems = buildLoggerLineupItems(log, plannedSets);
+          const pendingExtraKeys = extraPendingRowKeys[log.id] || [];
+          const rows: WorkoutGridRow[] = [
+            ...lineupItems.map((item) => ({
+              rowKey: `${log.id}:${item.key}`,
+              plannedSet: item.plannedSet,
+              actualSet: item.actualSet,
+              isExtraPending: false,
+            })),
+            ...pendingExtraKeys.map((key) => ({ rowKey: key, isExtraPending: true } as WorkoutGridRow)),
+          ];
+          const unit = exerciseUnitFor(exercise);
+
+          return (
+            <div key={log.id} className="rounded-lg border border-white/10 bg-iron-950/40">
+              <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="truncate font-bold text-white">{exercise?.name || "Unknown exercise"}</p>
+                  {exercise && (
+                    <p className="truncate text-xs text-iron-500">
+                      {[...exercise.primaryMuscles.slice(0, 2), exercise.equipment[0]].filter(Boolean).join(" · ")}
+                    </p>
+                  )}
+                </div>
+                <button className="shrink-0 rounded-sm p-1.5 text-iron-500 hover:bg-white/10 hover:text-iron-200" onClick={() => removeExercise(log)} aria-label="Remove exercise">
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="divide-y divide-white/[0.05]">
+                <div className="grid grid-cols-[2rem_1fr_1fr_1fr_auto_auto] gap-1.5 px-3 py-1.5 text-[0.62rem] font-semibold uppercase tracking-wide text-iron-600">
+                  <span>Set</span>
+                  <span>Reps</span>
+                  <span>RPE</span>
+                  <span>{unit === "kg" ? "Kg" : "Lb"}</span>
+                  <span className="text-center">Feel</span>
+                  <span></span>
+                </div>
+                {rows.map((row, index) => {
+                  const confirmed = !!row.actualSet && !row.actualSet.skipped;
+                  const skipped = !!row.actualSet?.skipped;
+                  const draft = rowDrafts[row.rowKey];
+                  const displayWeight = confirmed ? String(row.actualSet!.actualWeight || "") : draft?.weight ?? "";
+                  const displayReps = confirmed ? String(row.actualSet!.actualReps || "") : draft?.reps ?? "";
+                  const displayRpe = confirmed ? String(row.actualSet!.actualRpe ?? "") : draft?.rpe ?? "";
+                  const displayDifficulty: SetRating = confirmed ? row.actualSet!.setRating : (draft?.difficulty ?? 3);
+                  // Gray = still an untouched auto-suggestion (section 4). Only applies to non-extra,
+                  // non-confirmed rows that a user hasn't edited yet.
+                  const isSuggested = !confirmed && !skipped && !row.isExtraPending && draft !== undefined
+                    && draft.weight === String(row.plannedSet?.plannedWeight ?? "")
+                    && draft.reps === String(row.plannedSet?.targetReps ?? "")
+                    && draft.rpe === String(row.plannedSet?.targetRpe ?? "")
+                    && !draft.weightManual;
+                  const cellTextClass = confirmed ? "text-white" : skipped ? "text-iron-600 line-through" : isSuggested ? "text-iron-500" : "text-iron-100";
+
+                  function onFieldChange(field: "weight" | "reps" | "rpe", value: string) {
+                    if (confirmed) return; // confirmed-row edits commit directly below, not via draft
+                    updateRowDraft(row.rowKey, { [field]: value, ...(field === "weight" ? { weightManual: true } : {}) });
+                  }
+
+                  function onRepsOrRpeBlur() {
+                    if (confirmed || !exercise) return;
+                    const latest = rowDrafts[row.rowKey];
+                    if (latest) recalcRowWeight(row.rowKey, exercise, latest);
+                  }
+
+                  function onConfirmedFieldCommit(field: "actualWeight" | "actualReps" | "actualRpe", raw: string) {
+                    if (!row.actualSet || !session) return;
+                    const numeric = field === "actualRpe"
+                      ? (raw ? Math.min(10, Math.max(0, Number(raw))) || undefined : undefined)
+                      : Number(raw) || 0;
+                    void updateDb((next) => {
+                      const target = next.sessions.find((item) => item.id === session.id);
+                      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+                      const set = targetLog?.sets.find((item) => item.id === row.actualSet!.id);
+                      if (set) (set as unknown as Record<string, unknown>)[field] = numeric;
+                      if (target) target.updatedAt = nowIso();
+                      return next;
+                    });
+                  }
+
+                  return (
+                    <div key={row.rowKey} className="group relative grid grid-cols-[2rem_1fr_1fr_1fr_auto_auto] items-center gap-1.5 px-3 py-1.5">
+                      <span className="text-sm font-semibold text-iron-400">{index + 1}</span>
+                      <input
+                        inputMode="numeric"
+                        className={`w-full min-w-0 rounded-sm border border-white/10 bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
+                        style={{ fontSize: 16 }}
+                        value={displayReps}
+                        disabled={skipped}
+                        placeholder="—"
+                        onChange={(e) => confirmed ? undefined : onFieldChange("reps", e.target.value)}
+                        onBlur={(e) => confirmed ? onConfirmedFieldCommit("actualReps", e.target.value) : onRepsOrRpeBlur()}
+                      />
+                      <input
+                        inputMode="decimal"
+                        className={`w-full min-w-0 rounded-sm border border-white/10 bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
+                        style={{ fontSize: 16 }}
+                        value={displayRpe}
+                        disabled={skipped}
+                        placeholder="—"
+                        onChange={(e) => confirmed ? undefined : onFieldChange("rpe", e.target.value)}
+                        onBlur={(e) => confirmed ? onConfirmedFieldCommit("actualRpe", e.target.value) : onRepsOrRpeBlur()}
+                      />
+                      <div className="flex items-center gap-0.5">
+                        <input
+                          inputMode="decimal"
+                          className={`w-full min-w-0 rounded-sm border border-white/10 bg-white/[0.03] px-1.5 py-1.5 text-center text-base font-semibold ${cellTextClass}`}
+                          style={{ fontSize: 16 }}
+                          value={displayWeight}
+                          disabled={skipped}
+                          placeholder="—"
+                          onChange={(e) => confirmed ? undefined : onFieldChange("weight", e.target.value)}
+                          onBlur={(e) => confirmed ? onConfirmedFieldCommit("actualWeight", e.target.value) : undefined}
+                        />
+                        {!confirmed && !skipped && draft?.weightManual && (
+                          <button
+                            className="shrink-0 rounded-sm p-1 text-iron-600 hover:text-iron-300"
+                            title="Reset to suggested weight"
+                            onClick={() => { updateRowDraft(row.rowKey, { weightManual: false }); recalcRowWeight(row.rowKey, exercise, { ...(draft || emptyWorkoutGridRowDraft()), weightManual: false }); }}
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      <div className="relative flex justify-center">
+                        <button
+                          className={`h-7 w-7 rounded-full text-xs font-bold ${confirmed ? "bg-white/10 text-iron-200" : "bg-white/[0.06] text-iron-400"}`}
+                          onClick={() => setDifficultyPopoverRowKey(difficultyPopoverRowKey === row.rowKey ? null : row.rowKey)}
+                          disabled={skipped}
+                        >
+                          {displayDifficulty}
+                        </button>
+                        {difficultyPopoverRowKey === row.rowKey && (
+                          <div className="absolute right-0 top-8 z-20 flex gap-1 rounded-lg border border-white/10 bg-iron-900 p-1.5 shadow-xl">
+                            {([1, 2, 3, 4, 5] as SetRating[]).map((rating) => (
+                              <button
+                                key={rating}
+                                className={`flex h-8 w-8 flex-col items-center justify-center rounded-sm text-[0.6rem] font-bold ${displayDifficulty === rating ? "bg-[#0a84ff] text-white" : "bg-white/[0.06] text-iron-400"}`}
+                                title={DIFFICULTY_LABELS[rating]}
+                                onClick={() => {
+                                  if (confirmed) {
+                                    void updateDb((next) => {
+                                      const target = next.sessions.find((item) => item.id === session.id);
+                                      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+                                      const set = targetLog?.sets.find((item) => item.id === row.actualSet!.id);
+                                      if (set) set.setRating = rating;
+                                      if (target) target.updatedAt = nowIso();
+                                      return next;
+                                    });
+                                  } else {
+                                    updateRowDraft(row.rowKey, { difficulty: rating });
+                                  }
+                                  setDifficultyPopoverRowKey(null);
+                                }}
+                              >
+                                {rating}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1">
+                        {confirmed ? (
+                          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-400">
+                            <CheckCircle2 className="h-4 w-4" />
+                          </span>
+                        ) : skipped ? (
+                          <button className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.06] text-iron-500" title="Skipped — tap to log" onClick={() => setRowDrafts((current) => ({ ...current, [row.rowKey]: emptyWorkoutGridRowDraft({ weight: String(row.plannedSet?.plannedWeight ?? ""), reps: String(row.plannedSet?.targetReps ?? ""), rpe: String(row.plannedSet?.targetRpe ?? "") }) }))}>
+                            <X className="h-4 w-4" />
+                          </button>
+                        ) : (
+                          <button className="flex h-7 w-7 items-center justify-center rounded-full bg-white/[0.08] text-iron-300 hover:bg-emerald-500/20 hover:text-emerald-400" title="Log this set" onClick={() => commitRow(log, row)}>
+                            <Check className="h-4 w-4" />
+                          </button>
+                        )}
+                        {!confirmed && !skipped && (
+                          <button className="hidden h-7 w-7 items-center justify-center rounded-full text-iron-600 hover:bg-white/10 hover:text-iron-300 group-hover:flex" title={row.isExtraPending ? "Remove set" : "Skip set"} onClick={() => row.isExtraPending ? removeRow(log, row) : skipRow(log, row)}>
+                            {row.isExtraPending ? <Trash2 className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+                          </button>
+                        )}
+                        {confirmed && (
+                          <button className="hidden h-7 w-7 items-center justify-center rounded-full text-iron-600 hover:bg-white/10 hover:text-red-400 group-hover:flex" title="Delete set" onClick={() => removeRow(log, row)}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <button className="text-xs font-semibold text-iron-400 hover:text-iron-200" onClick={() => addSetRow(log)}>
+                  <Plus className="mr-1 inline h-3.5 w-3.5" />+ Set
+                </button>
+                <button
+                  className="text-xs font-semibold text-iron-500 hover:text-iron-300"
+                  onClick={() => setExpandedNotesRowKey(expandedNotesRowKey === log.id ? null : log.id)}
+                >
+                  Notes
+                </button>
+              </div>
+              {expandedNotesRowKey === log.id && (
+                <div className="border-t border-white/[0.05] px-3 py-2">
+                  <textarea
+                    className="w-full rounded-sm border border-white/10 bg-white/[0.03] p-2 text-sm text-iron-200"
+                    style={{ fontSize: 16 }}
+                    rows={2}
+                    placeholder="Notes for this exercise..."
+                    defaultValue={log.notes || ""}
+                    onBlur={(e) => {
+                      void updateDb((next) => {
+                        const target = next.sessions.find((item) => item.id === session.id);
+                        const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+                        if (targetLog) targetLog.notes = e.target.value;
+                        if (target) target.updatedAt = nowIso();
+                        return next;
+                      });
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+
+        {!session.loggedExercises.length && (
+          <Panel title="Build your workout" icon={Dumbbell}>
+            <p className="text-sm text-iron-400">Start typing an exercise name below to add your first one.</p>
+          </Panel>
+        )}
+
+        <div className="relative">
+          <input
+            className="w-full rounded-lg border border-white/10 bg-iron-950/40 px-3 py-3 text-base font-semibold text-iron-100 placeholder:text-iron-600"
+            style={{ fontSize: 16 }}
+            placeholder="+ Add exercise... (type to search)"
+            value={exerciseQuery}
+            onChange={(e) => { setExerciseQuery(e.target.value); setShowExerciseSuggestions(true); setHighlightedSuggestionIndex(0); }}
+            onFocus={() => setShowExerciseSuggestions(true)}
+            onKeyDown={handleExerciseInputKeyDown}
+            onBlur={() => window.setTimeout(() => setShowExerciseSuggestions(false), 150)}
+          />
+          {showExerciseSuggestions && exerciseQuery.trim().length > 0 && (
+            <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-lg border border-white/10 bg-iron-900 shadow-xl">
+              {exerciseMatches.map((exercise, index) => (
+                <button
+                  key={exercise.id}
+                  className={`block w-full px-3 py-2 text-left ${index === highlightedSuggestionIndex ? "bg-white/10" : "hover:bg-white/[0.06]"}`}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => addExerciseToSession(exercise)}
+                >
+                  <p className="font-semibold text-white">{exercise.name}</p>
+                  <p className="text-xs text-iron-500">
+                    {[...exercise.primaryMuscles.slice(0, 2), exercise.equipment[0]].filter(Boolean).join(" · ")}
+                  </p>
+                </button>
+              ))}
+              {!exerciseMatches.length && (
+                <button className="block w-full px-3 py-2 text-left text-sm text-iron-400 hover:bg-white/[0.06]" onMouseDown={(e) => e.preventDefault()} onClick={() => setShowFullPicker(true)}>
+                  No matches — create a custom exercise
+                </button>
+              )}
+              {!!exerciseMatches.length && (
+                <button className="block w-full border-t border-white/[0.05] px-3 py-2 text-left text-xs text-iron-500 hover:bg-white/[0.06]" onMouseDown={(e) => e.preventDefault()} onClick={() => setShowFullPicker(true)}>
+                  More options / create new exercise
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button className="btn-danger" onClick={abandonWorkout}>Abandon</button>
+        <button className="apollo-primary-btn" onClick={openFinishConfirm}>Finish Workout</button>
+      </div>
+
+      {showFullPicker && (
+        <ExercisePicker
+          db={db}
+          user={user}
+          updateDb={updateDb}
+          variant="week-sheet"
+          title="Add exercise"
+          onClose={() => setShowFullPicker(false)}
+          onPick={(ex) => { setShowFullPicker(false); addExerciseToSession(ex); }}
+        />
+      )}
+
+      {showFinishConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/80 px-4">
+          <div className="panel w-full max-w-sm space-y-4 p-6">
+            <h3 className="text-xl font-black">Finish workout?</h3>
+            <p className="text-sm text-iron-400">{totalCompletedSets} set{totalCompletedSets === 1 ? "" : "s"} logged this session.</p>
+            <div className="space-y-2">
+              <button className="apollo-primary-btn w-full" onClick={confirmFinishWorkout}>Finish Workout</button>
+              <button className="btn-ghost w-full" onClick={() => setShowFinishConfirm(false)}>Keep Logging</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCompletionSummary && completionSummary && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-iron-950/90 px-4">
+          <div className="panel w-full max-w-sm space-y-4 p-6">
+            <div className="text-center">
+              <p className="text-3xl font-bold text-volt">{completionSummary.score}<span className="text-base font-normal text-iron-500">/100</span></p>
+              <p className="mt-1 text-sm capitalize text-iron-300">{completionSummary.status} · workout complete</p>
+            </div>
+            <div className="grid grid-cols-3 gap-2 rounded-lg bg-white/[0.04] p-3">
+              <div className="text-center">
+                <p className="text-lg font-bold">{completionSummary.hardSets}</p>
+                <p className="text-xs text-iron-500">Hard sets</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold">{completionSummary.completedSets}</p>
+                <p className="text-xs text-iron-500">Completed</p>
+              </div>
+              <div className="text-center">
+                <p className="text-lg font-bold">{completionSummary.skippedSets}</p>
+                <p className="text-xs text-iron-500">Skipped</p>
+              </div>
+            </div>
+            <button className="apollo-primary-btn w-full" onClick={finalizeWorkout}>Done</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// LiveLogger is no longer rendered anywhere — WorkoutGrid (above) replaced it as the primary
+// logging UI in the "Excel-Style Workout Logger Redesign" session (see HANDOFF.md). Kept in
+// source rather than deleted outright: it's a large, intricate component (draft persistence,
+// cloud-sync race guards, rest timer, pain warnings, exercise swap, etc.) and a blind deletion
+// risked losing reference logic without a full line-by-line audit against WorkoutGrid's
+// coverage. The production build's minifier already drops it (verified: bundle size went down
+// after this change, not up). Flagged in HANDOFF.md as a cleanup candidate for a future session
+// once WorkoutGrid has had real usage to confirm nothing here still needs porting over.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function LiveLogger({
   db,
   user,
