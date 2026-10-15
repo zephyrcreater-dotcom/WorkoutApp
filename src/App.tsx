@@ -878,6 +878,49 @@ function isWeekPlanned(week: { isDraft?: boolean; workouts: { status?: string; e
   return trainingDays.every((day) => isWorkoutDayPlanned(day));
 }
 
+// Single canonical session constructor for "start this block day," used by every entry point
+// (Today, Week, and anywhere else that starts a specific WorkoutDay). Planning is optional:
+// day.exercises may be empty (an unplanned day) and this still produces a session correctly
+// associated with the program/block/week/day — loggedExercises is just []. Exercises added
+// later during the live session (via the spreadsheet logger's Add Exercise) are tagged
+// offProgram on the LoggedExercise itself, not on the session, so the session keeps its block
+// association regardless of how its exercises were populated. See HANDOFF.md "Fix the
+// Fundamental Workout/Planning Architecture".
+function buildWorkoutSessionForDay(params: {
+  user: UserProfile;
+  activeProgram?: Program;
+  day: WorkoutDay;
+  readiness?: ReadinessCheckIn;
+}): WorkoutSession {
+  const { user, activeProgram, day, readiness } = params;
+  return {
+    id: createId("session"),
+    userId: user.id,
+    gymId: user.activeGymId,
+    programId: activeProgram?.id,
+    blockId: activeProgram?.blocks[0]?.id,
+    workoutDayId: day.id,
+    name: day.name,
+    status: "in-progress",
+    startedAt: nowIso(),
+    updatedAt: nowIso(),
+    weekNumber: day.weekNumber,
+    currentExerciseIndex: 0,
+    currentSetIndex: 0,
+    loggedExercises: day.exercises.map((exercise, index) => ({
+      id: createId("logex"),
+      exerciseId: exercise.exerciseId,
+      plannedExerciseId: exercise.id,
+      plannedExerciseSnapshot: clonePlannedExerciseSnapshot(exercise),
+      order: index + 1,
+      sets: [],
+      weakPointTags: [],
+    })),
+    recommendations: [],
+    readiness,
+  };
+}
+
 type ResumeWorkoutState =
   | { kind: "missing"; reason: string }
   | { kind: "invalid"; session: WorkoutSession; reason: string }
@@ -1772,6 +1815,38 @@ function App() {
     setScreen("today");
   }
 
+  // Shared "start this specific block day" entry point, usable from any screen (currently Today
+  // and Week) — not just the one the user happened to be on. Resumes an existing session for
+  // this day if one's already in progress; otherwise builds a fresh one via
+  // buildWorkoutSessionForDay, which works identically whether or not the day has any planned
+  // exercises yet (planning is optional, see HANDOFF.md).
+  function startDayWorkout(day: WorkoutDay, previousScreen: LoggerNavigationState["previousScreen"] = "today") {
+    if (!currentUser) return;
+    const sameDaySession = appDb.sessions.find((session) => session.userId === resolvedCurrentUserId && (session.status === "in-progress" || session.status === "review") && session.workoutDayId === day.id);
+    if (sameDaySession) {
+      void resumeWorkoutSession(sameDaySession.id, { previousScreen });
+      return;
+    }
+    const otherInProgress = appDb.sessions.find((session) => session.userId === resolvedCurrentUserId && (session.status === "in-progress" || session.status === "review") && session.workoutDayId !== day.id);
+    if (otherInProgress) {
+      const completedCount = otherInProgress.loggedExercises.flatMap((e) => e.sets).filter((s) => !s.skipped).length;
+      if (!confirm(`Starting a new workout will archive the current in-progress session (${completedCount} completed set${completedCount !== 1 ? "s" : ""} saved). Continue?`)) return;
+      void updateDb((draft) => {
+        const target = draft.sessions.find((s) => s.id === otherInProgress.id);
+        if (target) { target.status = "abandoned"; target.updatedAt = nowIso(); }
+        return draft;
+      });
+      clearActiveWorkoutSessionDraft(resolvedCurrentUserId, otherInProgress.id);
+    }
+    const activeProgram = appDb.programs.find((program) => program.userId === resolvedCurrentUserId && program.status === "active");
+    const session = buildWorkoutSessionForDay({ user: currentUser, activeProgram, day });
+    void updateDb((draft) => {
+      draft.sessions.unshift(session);
+      return draft;
+    });
+    openLoggerSession(session.id, { previousScreen });
+  }
+
   return (
     <div className={`min-h-dvh max-w-full text-white ${screen !== "logger" ? "pb-32 lg:pb-0" : ""}`}>
       <header className={`safe-top sticky top-0 z-30 backdrop-blur-xl ${screen === "logger" ? "bg-iron-950/95" : "border-b border-white/[0.08] bg-iron-950/90 px-4"}`}>
@@ -1956,7 +2031,7 @@ function App() {
           })()}
           {screen === "programs" && <BuilderScreen db={db} user={currentUser} updateDb={updateDb} setScreen={setScreen} />}
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
-          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} onOpenExerciseAnalytics={openExerciseAnalytics} />}
+          {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} onOpenExerciseAnalytics={openExerciseAnalytics} onStartDayWorkout={(day) => startDayWorkout(day, "week")} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
@@ -2252,32 +2327,7 @@ function TodayScreen({
       });
       clearActiveWorkoutSessionDraft(user.id, otherInProgress.id);
     }
-    const session: WorkoutSession = {
-      id: createId("session"),
-      userId: user.id,
-      gymId: user.activeGymId,
-      programId: activeProgram?.id,
-      blockId: activeProgram?.blocks[0]?.id,
-      workoutDayId: day.id,
-      name: day.name,
-      status: "in-progress",
-      startedAt: nowIso(),
-      updatedAt: nowIso(),
-      weekNumber: day.weekNumber,
-      currentExerciseIndex: 0,
-      currentSetIndex: 0,
-      loggedExercises: day.exercises.map((exercise, index) => ({
-        id: createId("logex"),
-        exerciseId: exercise.exerciseId,
-        plannedExerciseId: exercise.id,
-        plannedExerciseSnapshot: clonePlannedExerciseSnapshot(exercise),
-        order: index + 1,
-        sets: [],
-        weakPointTags: []
-      })),
-      recommendations: [],
-      readiness,
-    };
+    const session = buildWorkoutSessionForDay({ user, activeProgram, day, readiness });
     void updateDb((draft) => {
       draft.sessions.unshift(session);
       if (readiness) draft.readiness.unshift(readiness);
@@ -3144,31 +3194,9 @@ function TodayScreen({
           </button>
         </Panel>
       )}
-      {/* Week locked: current week is being planned — hide workout card entirely */}
-      {activeProgram && selectedDay && weekLocked && !todaySelectedDayId && (
-        <section className="panel border-amber-500/20 p-4">
-          <p className="text-xs font-semibold text-amber-400">Week {currentWeekNumber} not ready</p>
-          <h2 className="mt-1 font-semibold">{isWeekDraft(todayPlan?.week) || weekBeingEdited ? "Planning in progress" : "Plan this week before training"}</h2>
-          <p className="mt-1 text-sm text-iron-400">
-            Finish planning and save Week {currentWeekNumber} before starting this workout.
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button className="apollo-primary-btn" onClick={() => onPlanWeek(currentWeekNumber)}>
-              <CalendarDays className="h-4 w-4" /> Plan Week {currentWeekNumber}
-            </button>
-            <button className="apollo-secondary-btn" onClick={goOffProgram}>
-              <Shuffle className="h-3.5 w-3.5" /> Off Program
-            </button>
-          </div>
-          {canGoBack && (
-            <div className="compact-actions">
-              <button className="btn-compact" onClick={handleTodayBack}>← Back</button>
-            </div>
-          )}
-        </section>
-      )}
-      {/* Week ready: show normal workout card */}
-      {activeProgram && selectedDay && !weekLocked && !todaySelectedDayId && (
+      {/* Planning status is informational only now — it never blocks starting a workout.
+          weekBeingEdited/isWeekDraft still drive a small secondary note below (not a gate). */}
+      {activeProgram && selectedDay && !todaySelectedDayId && (
         (() => {
           const readiness = resumableSelectedDaySession?.readiness ?? todaysReadiness(db, user.id);
           const dayNumber = selectedDay.dayIndex || (todayPlan ? todayPlan.dayIndex + 1 : 1);
@@ -3195,6 +3223,11 @@ function TodayScreen({
                 <p className="text-sm text-iron-500">{metadata}</p>
               </div>
 
+              {/* Planning is optional, training is not: this button always starts (or resumes)
+                  today's block day, whether or not it has any planned exercises. Starting an
+                  unplanned day opens the spreadsheet logger empty, with the session still
+                  correctly associated to this program/block/week/day (see doStartWorkout) —
+                  add-as-you-go there, no separate planning step required. */}
               {selectedDay.status === "rest" ? (
                 <button
                   className="apollo-primary-btn w-full sm:w-auto"
@@ -3202,20 +3235,21 @@ function TodayScreen({
                 >
                   Mark Rest
                 </button>
-              ) : selectedDay.exercises.length ? (
+              ) : (
                 <button
                   className="apollo-primary-btn w-full sm:w-auto"
                   onClick={() => startWorkout(selectedDay)}
                 >
-                  Resume
+                  {resumableSelectedDaySession ? "Resume Workout" : "Start Workout"}
                 </button>
-              ) : (
-                <button
-                  className="apollo-primary-btn w-full sm:w-auto"
-                  onClick={() => onPlanWeek(currentWeekNumber)}
-                >
-                  Plan Week
-                </button>
+              )}
+              {!isWorkoutDayPlanned(selectedDay) && selectedDay.status !== "rest" && !resumableSelectedDaySession && (
+                <p className="mt-1.5 text-xs text-iron-500">
+                  No exercises planned for this day yet — you can add them as you go, or{" "}
+                  <button className="underline decoration-dotted hover:text-iron-300" onClick={() => onPlanWeek(currentWeekNumber)}>
+                    plan Week {currentWeekNumber}
+                  </button> first.
+                </p>
               )}
 
               <div className="border-b border-white/[0.07] pb-2.5">
@@ -13308,7 +13342,7 @@ function WeekEditor({
 }
 
 function WeekProgressScreen({
-  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout, onOpenCompletedSessionReview, onOpenExerciseAnalytics
+  db, user, setScreen, planWeekRequest, onPlanWeekRequestHandled, editingWeekNumber, onEditingWeekNumberChange, updateDb, onResumeWorkout, onOpenCompletedSessionReview, onOpenExerciseAnalytics, onStartDayWorkout
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -13328,6 +13362,9 @@ function WeekProgressScreen({
   ) => Promise<void> | void;
   onOpenCompletedSessionReview?: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
   onOpenExerciseAnalytics?: (state: ExerciseAnalyticsState) => void;
+  // Starts (or resumes, if already in progress) this specific block day — works whether or
+  // not the day has planned exercises yet. See startDayWorkout at the app root.
+  onStartDayWorkout?: (day: WorkoutDay) => void;
 }) {
   const activeProgram = db.programs.find((program) => program.userId === user.id && program.status === "active");
   const block = activeProgram?.blocks[0];
@@ -13613,11 +13650,16 @@ function WeekProgressScreen({
                 const dayPlanned = isWorkoutDayPlanned(day);
                 const isInlineEditing = inlineDayEditId === day.id;
                 const status = getDayStatus(session, daySkipped, dayPlanned);
+                // Every non-skipped day is actionable — planning is optional, training is not.
+                // No session yet -> start one (works identically whether the day has planned
+                // exercises or not, see buildWorkoutSessionForDay / startDayWorkout).
                 const primaryAction = session?.status === "completed"
                   ? () => onOpenCompletedSessionReview?.(session.id, "week")
                   : session?.status === "review" || session?.status === "in-progress"
                     ? () => setReviewSessionId(session.id)
-                    : undefined;
+                    : !daySkipped && day.status !== "rest" && onStartDayWorkout
+                      ? () => onStartDayWorkout(day)
+                      : undefined;
                 const singleInsight = session ? getCompactSessionInsight(session) : undefined;
                 return (
                   <div key={day.id} className="py-3.5">
@@ -13663,10 +13705,19 @@ function WeekProgressScreen({
                       </div>
                     </div>
                     <div className="mt-2 flex flex-wrap items-center gap-x-1 gap-y-1 text-xs text-iron-500">
+                      {!session && !daySkipped && day.status !== "rest" && onStartDayWorkout && (
+                        <button
+                          className="btn-compact text-volt"
+                          onClick={(event) => { event.stopPropagation(); onStartDayWorkout(day); }}
+                        >
+                          <Dumbbell className="h-3.5 w-3.5" />
+                          Start Workout
+                        </button>
+                      )}
                       {activeProgram && session?.status !== "completed" && (
                         <button
                           className={`btn-compact ${isInlineEditing ? "text-[#8fb9ff]" : ""}`}
-                          onClick={() => setInlineDayEditId(isInlineEditing ? undefined : day.id)}
+                          onClick={(event) => { event.stopPropagation(); setInlineDayEditId(isInlineEditing ? undefined : day.id); }}
                         >
                           <Pencil className="h-3 w-3" />
                           {isInlineEditing ? "Done" : "Edit"}

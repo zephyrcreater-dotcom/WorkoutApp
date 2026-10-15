@@ -1,5 +1,57 @@
 # HANDOFF.md
 
+## Current Handoff — Fix the Fundamental Workout/Planning Architecture (Session 77)
+
+**Core product rule this session enforced:** Planning is optional. Training is not. A user can always start a workout — no active block, an unplanned week, or an unplanned day are never a reason to block starting.
+
+### Root cause (investigated before writing any code, per the request's section 8)
+
+The data model was already correct. `doStartWorkout` (in `TodayScreen`) already built a `WorkoutSession` with the correct `programId`/`blockId`/`weekNumber`/`workoutDayId` regardless of whether `day.exercises` was empty — `loggedExercises: day.exercises.map(...)` is just `[]` for an unplanned day, and nothing else about session creation depends on exercises existing. `WorkoutGrid`'s "Add Exercise" flow (`addExerciseToSession`) only ever sets `offProgram: true` on the individual `LoggedExercise` it creates, never on the session — so a session's block/week/day association was never at risk from adding ad-hoc exercises mid-workout. Week progress (`WeekProgressScreen`'s completion %, hard/skipped set counts, avg RPE) was already computed from `session.loggedExercises[].sets` (actual performed data), filtered by `session.blockId === block.id && session.weekNumber === week.weekNumber` — already correct, already excludes off-program sessions (which have no `blockId`).
+
+The actual blocker was two purely cosmetic/UI gates, both now removed:
+
+1. **`TodayScreen`'s `weekLocked` panel.** `weekLocked = selectedDay && (weekBeingEdited || isWeekDraft(week) || !weekPlanned)`, and `isWeekPlanned` required **every** non-rest day in the week to have `exercises.length > 0` — one unplanned day anywhere in the week blocked starting **any** day in that week, showing "Week N not ready" with only "Plan Week" or "Off Program" as options. Even past that gate, the normal card's primary button was a three-way ternary that showed a **"Plan Week"** button instead of "Resume" whenever `selectedDay.exercises.length === 0` — so even a day that individually had no exercises couldn't be started directly.
+2. **`WeekProgressScreen` had no start action for a day without a session at all.** Every day row's `primaryAction` only handled sessions that already existed (completed → review, in-progress/review → resume). A day with zero sessions, planned or not, had no click target and no button — "Edit" (opens the day in the exercise-requirement planner) was the only thing you could do with it.
+
+### What changed
+
+- **New shared session constructor, `buildWorkoutSessionForDay`** (`src/App.tsx`, near `isWeekPlanned`) — the single canonical "start this block day" builder, extracted from what used to be inlined in `doStartWorkout`. `doStartWorkout` now just calls it. Works identically whether `day.exercises` is empty or full.
+- **New root-level `startDayWorkout(day, previousScreen)`** (next to `resumeWorkoutSession`) — the same resume-if-in-progress / confirm-archive-other-session / build-and-open flow `doStartWorkout` has, but available to *any* screen, not just Today. Wired into `WeekProgressScreen` as a new `onStartDayWorkout` prop.
+- **`TodayScreen`:** the `weekLocked`-gated blocking panel is gone entirely. The normal workout card now always renders when there's a `selectedDay`, and its primary button is always "Start Workout" / "Resume Workout" (never "Plan Week") — labeled by whether `resumableSelectedDaySession` exists. Planning status is now a one-line secondary note below the button ("No exercises planned for this day yet — you can add them as you go, or plan Week N first") instead of a blocking screen, exactly as the request specified. "Off Program" and "Plan Week" remain available as secondary links in the existing Back/Next/Skip/Edit row — nothing was removed, just demoted from gate to option.
+- **`WeekProgressScreen`:** every non-skipped, non-rest day with no existing session now gets a `primaryAction` of `() => onStartDayWorkout(day)` (the whole row is clickable) plus an explicit green "Start Workout" button in the day's action row, regardless of whether that day has any planned exercises. Added `event.stopPropagation()` to the Edit/Start buttons so clicking them doesn't also fire the row's own click handler.
+
+### What did *not* change (reused, not rebuilt, per request section 7)
+
+Program generation, Block Builder, Exercise Library, exercise history, the weight recommendation engine, RPE, difficulty feedback, analytics, local persistence, Supabase sync, and session resume logic are all untouched. There is still exactly one `WorkoutSession` model — no second competing session system was introduced. `getLastPerformedExerciseDefaults`/`getOffProgramStartingWeight`/`findPlannedExercise`/`buildLoggerLineupItems` (the pairing pipeline `WorkoutGrid` uses) needed zero changes, because they already treat "has a `PlannedExercise`" and "doesn't" as two cases of the same thing.
+
+### Verified live (not just reasoned about)
+
+Driving a real block through the Block Builder wizard headlessly proved unreliable (its own multi-step "Deploy Block" flow doesn't behave consistently under Playwright — a pre-existing quirk, unrelated to this session's code, not investigated further). Instead, a realistic active block was constructed directly in IndexedDB (same schema the app itself writes — `iron-orbit-training-db` / store `documents` / key `iron-orbit-local-only`) with Week 1 containing an **unplanned "Push B"** (zero exercises) and two planned days ("Pull B", "Legs B"), reproducing the user's exact reported scenario. Confirmed end to end:
+- Today on the unplanned day showed **Start Workout** immediately, no gate, with the planning status as a secondary note underneath.
+- Clicked through, added Competition Bench Press and Overhead Press via the grid's autocomplete, logged 2 sets, hit Finish Workout.
+- Week screen afterward: **Push B → COMPLETED, "planned 0 sets", 2 hard sets, avg RPE 7.0, score 85** — real performed data, correctly attributed to Week 1 / Day 1, block progress updated to "33% complete." Pull B and Legs B (both pre-planned, no session yet) each show a green **Start Workout** button directly on the Week screen.
+- `npm run build` ✓, `npm run lint` ✓ — same 30 pre-existing problems as every prior session.
+
+### Not independently re-verified this session (reasoned through via code, not re-driven live)
+
+- Explicit Off-Program workouts (via the "No Active Block" screen's quick-start, or `goOffProgram`) still set `offProgram: true` at the **session** level with no `blockId`/`weekNumber`/`workoutDayId` — confirmed by reading `startQuickWorkout`, unchanged this session. This is what keeps them out of `WeekProgressScreen`'s `weekSessions` filter.
+- Resume-exact-session-on-navigate-away and reload-mid-workout persistence are the same mechanisms validated in sessions 75–76 (`WorkoutGrid`'s localStorage draft channel, `resolveWorkoutResumeState`); nothing in this session's diff touches them.
+- Reopening a completed workout without creating a duplicate relies on `onResumeWorkout`/`onOpenCompletedSessionReview`'s existing completed-session handling, unchanged.
+
+### Invariants to preserve
+
+- **A `WorkoutDay` with `exercises: []` is a valid, startable day**, not an error state. Never reintroduce a check that blocks starting based on exercise count or week-wide planning completeness.
+- **`buildWorkoutSessionForDay` is the only place a block-day session gets constructed.** Any new "start this day" entry point should call it (or `startDayWorkout`, which wraps it with the resume/archive-confirm flow), not hand-roll another `WorkoutSession` literal.
+- **Session-level `offProgram` and per-exercise `LoggedExercise.offProgram` are different flags with different meanings.** The session flag means "not associated with any block" (set only by the explicit off-program/quick-start entry points). The per-exercise flag means "this particular exercise wasn't in the day's prescription" and says nothing about the session's block association. Don't conflate them.
+- **Week/block completion and set summaries must keep reading from actual `LoggedSet` data** (`session.loggedExercises[].sets`), never from `day.exercises[].plannedSets` — planned data is a target, not a record.
+
+### Files changed
+
+- `src/App.tsx` (`TodayScreen`, `WeekProgressScreen`, root component, `buildWorkoutSessionForDay`)
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Fix Spreadsheet Logger Bugs (Session 76)
 
 Bugfix pass on `WorkoutGrid` (session 75's new Excel-style logger). No redesign — same component, same column layout, same reused calculation engines. Four real bugs, all traced to root cause before fixing (not CSS patches):
