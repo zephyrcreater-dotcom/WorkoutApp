@@ -1,5 +1,62 @@
 # HANDOFF.md
 
+## Current Handoff — Workout Experience Redesign (Session 79)
+
+**The ask:** reverse the app's center of gravity from "a Block Builder with a logger attached" to "a workout log with programming as an optional layer on top." Not a rewrite — a navigation/reachability fix plus a handful of targeted UI additions, reusing everything already built.
+
+### What the audit found (per the request's own instruction to investigate before changing code)
+
+The data model and most of the analytics pipeline were **already correct** for manual/off-program workouts — they were just unreachable:
+
+- `WorkoutSession` has never needed a `blockId`/`workoutDayId` to exist or to be marked `completed`. `startQuickWorkout`/`startDayWorkout` (sessions 74/77) already build fully valid sessions either way, and `WorkoutGrid`'s add-exercise flow only ever tags the individual `LoggedExercise` as `offProgram`, never the session.
+- `CompletedWorkoutReview` and `ExerciseAnalyticsView` (components that already existed, reachable only from Week's day cards) already read exclusively from actual `LoggedSet` data — never planned defaults — and already compute e1RM, history, and trend charts correctly from whichever session the sets came from, manual or programmed.
+- `getLatestExercisePreviewHistory`, `getSessionSummary`, `formatExerciseLoadText`/`getExerciseDisplayUnit` (fixed for loading profiles last session) were all already unit-correct, single-source-of-truth helpers.
+
+**So nothing was silently broken or losing data.** The actual problem, confirmed by reading `WeekProgressScreen`: if there was no active block, the entire Week screen rendered nothing but "No Active Block / Open Program Builder" — which also hid the one place off-program session history was shown (`offProgramCompletedSessions`, only rendered in the active-block branch). A user who never built a block, or who logged workouts between blocks, had **no reachable screen at all** that listed their completed sessions. That's what "workouts disappearing" actually was: not data loss, a missing front door.
+
+### What changed
+
+- **New `PreviousSessionsScreen`** (`src/App.tsx`, next to `CompletedWorkoutReview`) — lists every completed session for the user, block-associated or not, reverse-chronological, via `getSessionSummary` (the same helper Week already used). Routes into the *existing* `CompletedWorkoutReview` via the *existing* `openCompletedSessionReview` — no new review UI, no new data model.
+- **`CompletedReviewState.returnScreen`** widened from `"today" | "week"` to include `"sessions"`; added a `backToScreenLabel()` helper so the back button reads correctly from any of the three entry points. `LoggerNavigationState.previousScreen` widened the same way.
+- **New `Screen` value `"sessions"`**, wired into the root render switch and into `navItems`.
+- **Navigation restructured** to match the request's hierarchy (Workout / Previous Sessions / Progress / Planning, with Week and Library demoted to secondary): `navItems` now lists Today, **Sessions** (new), **Progress** (relabeled from "Analytics"), **Planning** (relabeled from "Block"), Week, Library, Settings. `mobileNavItems` — a fixed 5-column bottom bar — now filters out Week and Library instead of Progress (Progress was previously hidden on mobile entirely, which contradicted it being a primary destination). Week and Library remain fully functional screens, just reached from within Today/Planning rather than occupying a bottom-bar slot.
+- **`WorkoutGrid` exercise names are now clickable** — opens the *existing* `ExerciseAnalyticsView` with `returnScreen: "logger"`, so Back resumes the exact same active session (verified live: logged a set, opened analytics, hit Back, the same in-progress grid with the same completed-set count was still there).
+- **"Last: …" line added under each exercise's header in `WorkoutGrid`**, via `getLatestExercisePreviewHistory` (already-existing, already unit-correct helper) — satisfies the request's "Last: 100 kg × 5 @ 8" ask with no new history-fetching logic.
+
+### What was deliberately *not* touched
+
+- No new session/history data model — `PreviousSessionsScreen` is a read-only list over `db.sessions`, nothing persisted differently.
+- No changes to Block Builder, program generation, block progression, or any calculation formula (e1RM, RPE, recommendations). Per the request's own instruction not to change formulas without justification, and none was needed — they were already correct once reachable.
+- Didn't collapse Week or the Block Builder into a single "Planning" screen internally; that would have been a much larger, riskier restructuring than the request's "smallest coherent change" asked for. They're separate screens still, just reprioritized in navigation.
+- Didn't chase the single-data-point e1RM chart rendering "Invalid Date" for its second axis label, spotted during verification. Pre-existing, cosmetic, unrelated to this session's actual goal (reachability) — needs its own look, not a drive-by fix under a different task.
+
+### Verified live, three full end-to-end flows (not just code review)
+
+1. **Fully manual workout**: Start Workout (no block) → add Competition Bench Press → log a set → click the exercise name → `ExerciseAnalyticsView` showed the real logged set (135 lb × 8 @ 7, e1RM 191) under "Selected workout sets" → Back → same in-progress session, same set count → Finish → opened **Sessions** → the workout appeared ("Quick Workout · 1 exercise · ~1 min · Off-program · 1 set · 1 hard · avg RPE 7.0"). Opened it from the list → full `CompletedWorkoutReview` → clicked the exercise again → **e1RM trend chart and history table now show that same manual session's data**, proving manual sessions feed exercise progress exactly like programmed ones.
+2. **Programmed day + unplanned exercise**: seeded an active block with a planned "Push B" day (Competition Bench Press prescribed) → started it → added an unplanned Overhead Press on top → logged bench press → finished → reopened from **Sessions** (listed correctly as "Push B", not off-program) → **Overhead Press was still there** alongside the prescribed Bench Press, exactly as required.
+3. **Mobile nav**: confirmed exactly 5 bottom-bar items (Today, Sessions, Progress, Planning, Settings), matching the existing `grid-cols-5` layout with no CSS changes needed.
+
+`npm run build` ✓, `npm run lint` ✓ — same 30 pre-existing issues as every prior session.
+
+### Not independently re-verified this session
+
+- Unit consistency in the exercise picker, progress charts, and session history was **audited by reading code**, not re-driven live beyond what session 78 already tested: every weight display in `CompletedWorkoutReview`, `ExerciseAnalyticsView`, and the new `PreviousSessionsScreen`'s summary line goes through `getExerciseLoadUnit`/`formatExerciseLoadText`, the same functions session 78 fixed at the loading-profile root cause. No new unit bug was introduced because no new weight-formatting code was written — everything here reuses those functions directly.
+- Existing block progression, day types, and block-level analytics are untouched code paths (nothing in `BuilderScreen`, `programGenerator.ts`, or block-progress calculations was edited this session) — not re-tested beyond confirming the seeded block in flow 2 above still progressed and labeled its session correctly.
+
+### Invariants to preserve
+
+- **`PreviousSessionsScreen` must keep reading from `db.sessions` directly** (`status === "completed"`, no `blockId` filter) — the moment it starts filtering by program/block association again, off-program sessions vanish from it exactly the way they vanished from Week.
+- **A session never needs `blockId`/`workoutDayId`/`templateId` to be valid or to appear anywhere history is shown.** Don't reintroduce a required-block assumption in a new screen the way `WeekProgressScreen` had one.
+- **`onOpenExerciseAnalytics` from an active session must pass `returnScreen: "logger"`**, not `"today"` — that's what makes Back resume the in-progress workout instead of dropping the user out of it.
+- Nav labels ("Sessions", "Progress", "Planning") are cosmetic renames of existing screen ids (`sessions` is genuinely new; `programs`/`progress` kept their ids) — don't let a future session quietly revert the mobile nav's item list back to hiding Progress.
+
+### Files changed
+
+- `src/App.tsx` (new `PreviousSessionsScreen`, nav restructuring, `WorkoutGrid` exercise-click + last-performance line, type widening for `sessions` as a return screen)
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Fix Exercise Weight Units (Session 78)
 
 **User report:** the spreadsheet logger showed `WEIGHT (LB)` for Competition Bench Press even though its default unit in the Exercise Library was KG.

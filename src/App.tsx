@@ -16,6 +16,7 @@ import {
   Gauge,
   GitBranch,
   GripVertical,
+  History,
   Home,
   EyeOff,
   Library,
@@ -207,15 +208,16 @@ type Screen =
   | "library"
   | "week"
   | "progress"
+  | "sessions"
   | "settings";
 
 type CompletedReviewState = {
   sessionId: string;
-  returnScreen: "today" | "week";
+  returnScreen: "today" | "week" | "sessions";
 };
 
 type LoggerNavigationState = {
-  previousScreen: "today" | "week" | "programs" | "library" | "progress" | "settings";
+  previousScreen: "today" | "week" | "programs" | "library" | "progress" | "sessions" | "settings";
   completedReviewState?: CompletedReviewState;
   loggerMode?: "active-logger" | "completed-edit";
 };
@@ -234,16 +236,23 @@ type ExerciseAnalyticsState = {
   returnCompletedReviewState?: CompletedReviewState;
 };
 
+// Nav hierarchy follows the product's actual priority: Workout (today) -> Sessions -> Progress
+// -> Planning (programs/Block Builder), with Week and Library as secondary/desktop-only
+// destinations reachable from within those. See HANDOFF.md "Workout Experience Redesign."
 const navItems: { id: Screen; label: string; icon: typeof Home }[] = [
   { id: "today", label: "Today", icon: Dumbbell },
+  { id: "sessions", label: "Sessions", icon: History },
+  { id: "progress", label: "Progress", icon: BarChart3 },
+  { id: "programs", label: "Planning", icon: CalendarDays },
   { id: "week", label: "Week", icon: ClipboardList },
-  { id: "programs", label: "Block", icon: CalendarDays },
   { id: "library", label: "Library", icon: Library },
-  { id: "progress", label: "Analytics", icon: BarChart3 },
   { id: "settings", label: "Settings", icon: Settings }
 ];
 
-const mobileNavItems = navItems.filter((item) => item.id !== "progress");
+// Mobile's bottom bar is a fixed 5-column grid — keep it to the 5 primary destinations.
+// Week and Library stay fully functional screens, just reached from within Today/Planning
+// (as they already mostly are) rather than occupying a scarce bottom-bar slot.
+const mobileNavItems = navItems.filter((item) => item.id !== "week" && item.id !== "library");
 
 const muscleOptions: MuscleGroup[] = [
   "chest",
@@ -859,6 +868,12 @@ function deriveRequirements(day: WorkoutDay, splitDays: SplitDay[]): SplitDayReq
 // ── Week planned-state source of truth ───────────────────────────────────────
 // These functions are the single canonical check used by Today, WeekEditor, and
 // any future screen that needs to know whether a week is safe to train on.
+
+function backToScreenLabel(screen: "today" | "week" | "sessions"): string {
+  if (screen === "week") return "Back to Week";
+  if (screen === "sessions") return "Back to Sessions";
+  return "Back to Today";
+}
 
 function isWeekDraft(week: { isDraft?: boolean } | undefined): boolean {
   return week?.isDraft === true;
@@ -1956,6 +1971,13 @@ function App() {
               setScreen={setScreen}
               navigation={loggerNavigation}
               onOpenCompletedSessionReview={openCompletedSessionReview}
+              onOpenExerciseAnalytics={(exerciseId, exerciseName) => openExerciseAnalytics({
+                exerciseId,
+                exerciseName,
+                sessionId: activeSession?.id,
+                workoutDayId: activeSession?.workoutDayId,
+                returnScreen: "logger",
+              })}
             />
           )}
           {screen === "completed-review" && completedReviewState && (() => {
@@ -1965,7 +1987,7 @@ function App() {
                 <Panel title="Workout not found" icon={ShieldAlert}>
                   <EmptyState title="That workout could not be opened" detail="The session may have been deleted or changed." />
                   <button className="btn-secondary mt-4 w-full" onClick={() => setScreen(completedReviewState.returnScreen)}>
-                    {completedReviewState.returnScreen === "week" ? "Back to Week" : "Back to Today"}
+                    {backToScreenLabel(completedReviewState.returnScreen)}
                   </button>
                 </Panel>
               );
@@ -1989,7 +2011,7 @@ function App() {
                   completedReviewState,
                   loggerMode: "completed-edit",
                 })}
-                backLabel={completedReviewState.returnScreen === "week" ? "Back to Week" : "Back to Today"}
+                backLabel={backToScreenLabel(completedReviewState.returnScreen)}
               />
             );
           })()}
@@ -2033,6 +2055,7 @@ function App() {
           {screen === "library" && <LibraryScreen db={db} user={currentUser} updateDb={updateDb} authMode={authMode} cloudStatus={cloud.status} />}
           {screen === "week" && <WeekProgressScreen db={db} user={currentUser} setScreen={setScreen} planWeekRequest={planWeekRequest} onPlanWeekRequestHandled={() => setPlanWeekRequest(undefined)} editingWeekNumber={editingWeekNumber} onEditingWeekNumberChange={setEditingWeekNumber} updateDb={updateDb} onResumeWorkout={resumeWorkoutSession} onOpenCompletedSessionReview={openCompletedSessionReview} onOpenExerciseAnalytics={openExerciseAnalytics} onStartDayWorkout={(day) => startDayWorkout(day, "week")} />}
           {screen === "progress" && <ProgressScreen db={db} user={currentUser} updateDb={updateDb} />}
+          {screen === "sessions" && <PreviousSessionsScreen db={db} user={currentUser} onOpenCompletedSessionReview={openCompletedSessionReview} />}
           {screen === "settings" && <SettingsScreen db={db} user={currentUser} updateDb={updateDb} importDb={importDb} reseed={reseed} cloud={cloud} authMode={authMode} />}
         </section>
       </main>
@@ -4014,6 +4037,7 @@ function WorkoutGrid({
   setScreen,
   navigation,
   onOpenCompletedSessionReview,
+  onOpenExerciseAnalytics,
 }: {
   db: TrainingDatabase;
   user: UserProfile;
@@ -4023,6 +4047,7 @@ function WorkoutGrid({
   setScreen: (screen: Screen) => void;
   navigation: LoggerNavigationState;
   onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
+  onOpenExerciseAnalytics?: (exerciseId?: string, exerciseName?: string) => void;
 }) {
   const session = db.sessions.find((item) => item.id === sessionId && item.userId === user.id);
   const editingCompletedWorkout = navigation.loggerMode === "completed-edit";
@@ -4475,12 +4500,31 @@ function WorkoutGrid({
             <div key={log.id} className="rounded-lg border border-white/10 bg-iron-950/40">
               <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
                 <div className="min-w-0">
-                  <p className="truncate font-bold text-white">{exercise?.name || "Unknown exercise"}</p>
+                  {exercise && onOpenExerciseAnalytics ? (
+                    <button
+                      className="truncate text-left font-bold text-white underline decoration-white/20 decoration-dotted underline-offset-2 hover:text-[#8fb9ff]"
+                      onClick={() => onOpenExerciseAnalytics(exercise.id, exercise.name)}
+                      title="View exercise history and progress"
+                    >
+                      {exercise.name}
+                    </button>
+                  ) : (
+                    <p className="truncate font-bold text-white">{exercise?.name || "Unknown exercise"}</p>
+                  )}
                   {exercise && (
                     <p className="truncate text-xs text-iron-500">
                       {[...exercise.primaryMuscles.slice(0, 2), exercise.equipment[0]].filter(Boolean).join(" · ")}
                     </p>
                   )}
+                  {exercise && (() => {
+                    const last = getLatestExercisePreviewHistory(db, user, exercise, getExerciseLoadUnit(exercise, user));
+                    if (!last) return null;
+                    return (
+                      <p className="mt-0.5 truncate text-xs text-iron-600">
+                        Last: {formatExerciseLoadText({ exercise, user, weight: last.weight, unit: last.unit })} × {last.reps}{last.rpe ? ` @ ${last.rpe}` : ""}
+                      </p>
+                    );
+                  })()}
                 </div>
                 <button className="shrink-0 rounded-sm p-1.5 text-iron-500 hover:bg-white/10 hover:text-iron-200" onClick={() => removeExercise(log)} aria-label="Remove exercise">
                   <Trash2 className="h-4 w-4" />
@@ -13881,6 +13925,71 @@ function SessionReviewHeader({
         </p>
         <p className="mt-3 text-sm text-iron-300">{statusText}</p>
       </div>
+    </div>
+  );
+}
+
+// Previous Sessions: the one place every completed workout lives, regardless of whether it
+// came from a block day, an unplanned day, or a fully off-program quick workout. Deliberately
+// reuses getSessionSummary/countSessionCompletedSets (same helpers Week and the completed
+// review already use) rather than a second history model — see HANDOFF.md "Workout Experience
+// Redesign" for why this screen exists: completed sessions were never actually lost, they just
+// had no reachable list once a block wasn't active.
+function PreviousSessionsScreen({
+  db,
+  user,
+  onOpenCompletedSessionReview,
+}: {
+  db: TrainingDatabase;
+  user: UserProfile;
+  onOpenCompletedSessionReview: (sessionId: string, returnScreen: CompletedReviewState["returnScreen"]) => void;
+}) {
+  const completed = db.sessions
+    .filter((session) => session.userId === user.id && session.status === "completed")
+    .sort((a, b) => (b.completedAt || b.updatedAt || b.startedAt).localeCompare(a.completedAt || a.updatedAt || a.startedAt));
+
+  return (
+    <div className="mx-auto max-w-4xl space-y-5">
+      <PageTitle eyebrow="Sessions" title="Previous Sessions" />
+      {!completed.length ? (
+        <Panel title="No completed workouts yet" icon={ClipboardList}>
+          <EmptyState title="Nothing logged yet" detail="Finish a workout — programmed or not — and it shows up here." />
+        </Panel>
+      ) : (
+        <div className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
+          {completed.map((session) => {
+            const summary = getSessionSummary(session);
+            const exerciseCount = session.loggedExercises.length;
+            const startedMs = Date.parse(session.startedAt);
+            const completedMs = Date.parse(session.completedAt || "");
+            const durationMin = !Number.isNaN(startedMs) && !Number.isNaN(completedMs) && completedMs > startedMs
+              ? Math.max(1, Math.round((completedMs - startedMs) / 60000))
+              : undefined;
+            const dateLabel = new Date(session.completedAt || session.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+            return (
+              <button
+                key={session.id}
+                className="flex w-full items-center justify-between gap-3 py-3.5 text-left transition hover:bg-white/[0.03]"
+                onClick={() => onOpenCompletedSessionReview(session.id, "sessions")}
+              >
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-white">{session.name || "Workout"}</p>
+                  <p className="mt-0.5 text-xs text-iron-500">
+                    {dateLabel} · {exerciseCount} exercise{exerciseCount === 1 ? "" : "s"}
+                    {durationMin ? ` · ~${durationMin} min` : ""}
+                    {session.offProgram ? " · Off-program" : ""}
+                  </p>
+                  <p className="mt-0.5 text-xs text-iron-400">
+                    {summary.completedSets} set{summary.completedSets === 1 ? "" : "s"} · {summary.hardSets} hard
+                    {summary.avgRpe ? ` · avg RPE ${summary.avgRpe.toFixed(1)}` : ""}
+                  </p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-iron-600" />
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
