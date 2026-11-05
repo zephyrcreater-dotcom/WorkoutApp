@@ -518,6 +518,62 @@ function buildExerciseSearchText(exercise: Exercise, exerciseById?: Map<ID, Exer
     .toLowerCase();
 }
 
+// Small, cheap edit-distance check for typo tolerance in the inline autocomplete ("Cable
+// pulldwn" -> "Cable Pulldown"). Only ever called on short words, so the O(n*m) table is fine.
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i += 1) dp[i][0] = i;
+  for (let j = 0; j <= b.length; j += 1) dp[0][j] = j;
+  for (let i = 1; i <= a.length; i += 1) {
+    for (let j = 1; j <= b.length; j += 1) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[a.length][b.length];
+}
+
+// Ranks exercises for the inline exercise-name autocomplete: exact match, then prefix, then
+// substring, then a word-prefix match, then typo-tolerant fuzzy, then a small recency bonus for
+// exercises the user actually performed recently — never reached if any stronger match exists.
+// Returns best-first; an exercise with no match at all (score <= 0) is excluded.
+function rankExerciseMatches(
+  exercises: Exercise[],
+  query: string,
+  recentExerciseIds: Set<string>,
+  limit = 5,
+): Exercise[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return [];
+  const scored = exercises
+    .map((exercise) => {
+      const name = exercise.name.trim().toLowerCase();
+      let score = 0;
+      if (name === normalizedQuery) score = 1000;
+      else if (name.startsWith(normalizedQuery)) score = 900;
+      else if (name.includes(normalizedQuery)) score = 700;
+      else {
+        const words = name.split(/\s+/);
+        if (words.some((word) => word.startsWith(normalizedQuery))) {
+          score = 650;
+        } else {
+          const bestDistance = Math.min(...words.map((word) => levenshteinDistance(word.slice(0, normalizedQuery.length + 2), normalizedQuery)));
+          const tolerance = Math.max(1, Math.floor(normalizedQuery.length * 0.34));
+          if (bestDistance <= tolerance) score = 500 - bestDistance * 10;
+        }
+      }
+      if (score > 0 && recentExerciseIds.has(exercise.id)) score += 15;
+      return { exercise, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((item) => item.exercise);
+}
+
 function matchesExerciseSearch(exercise: Exercise, query: string, exerciseById?: Map<ID, Exercise>): boolean {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return true;
@@ -1245,6 +1301,12 @@ type WorkoutGridDraft = {
   rows: Record<string, WorkoutGridRowDraft>;
   // Pending-only "+ Set" rows not yet backed by a PlannedSet, keyed by loggedExerciseId.
   extraPendingRowKeys: Record<string, string[]>;
+  // In-progress edits to an unmatched exercise's free-text name, keyed by loggedExerciseId —
+  // local until committed (blur/Enter/selecting a suggestion), but persisted here so a refresh
+  // mid-typing doesn't lose it (section 10 of the spreadsheet-logger spec).
+  exerciseNameDrafts: Record<string, string>;
+  // The not-yet-committed text in the trailing "add exercise" row.
+  newExerciseNameDraft: string;
   lastLocalMutationAt: string;
 };
 
@@ -4056,9 +4118,12 @@ function WorkoutGrid({
   const storedGridDraft = useMemo(() => loadWorkoutGridDraft(user.id, sessionId), [sessionId, user.id]);
   const [rowDrafts, setRowDrafts] = useState<Record<string, WorkoutGridRowDraft>>(storedGridDraft?.rows || {});
   const [extraPendingRowKeys, setExtraPendingRowKeys] = useState<Record<string, string[]>>(storedGridDraft?.extraPendingRowKeys || {});
+  const [exerciseNameDrafts, setExerciseNameDrafts] = useState<Record<string, string>>(storedGridDraft?.exerciseNameDrafts || {});
+  const [newExerciseNameDraft, setNewExerciseNameDraft] = useState<string>(storedGridDraft?.newExerciseNameDraft || "");
   const [restRemaining, setRestRemaining] = useState(0);
-  const [exerciseQuery, setExerciseQuery] = useState("");
-  const [showExerciseSuggestions, setShowExerciseSuggestions] = useState(false);
+  // Which row's autocomplete dropdown is open: a loggedExercise id, "__new__" for the trailing
+  // add-exercise row, or false for none. Only one dropdown is open at a time.
+  const [showExerciseSuggestions, setShowExerciseSuggestions] = useState<string | false>(false);
   const [highlightedSuggestionIndex, setHighlightedSuggestionIndex] = useState(0);
   const [showFullPicker, setShowFullPicker] = useState(false);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
@@ -4072,10 +4137,16 @@ function WorkoutGrid({
     const next = loadWorkoutGridDraft(user.id, sessionId);
     setRowDrafts(next?.rows || {});
     setExtraPendingRowKeys(next?.extraPendingRowKeys || {});
+    setExerciseNameDrafts(next?.exerciseNameDrafts || {});
+    setNewExerciseNameDraft(next?.newExerciseNameDraft || "");
   }, [sessionId, user.id]);
 
   const extraPendingRowKeysRef = useRef(extraPendingRowKeys);
   useEffect(() => { extraPendingRowKeysRef.current = extraPendingRowKeys; }, [extraPendingRowKeys]);
+  const exerciseNameDraftsRef = useRef(exerciseNameDrafts);
+  useEffect(() => { exerciseNameDraftsRef.current = exerciseNameDrafts; }, [exerciseNameDrafts]);
+  const newExerciseNameDraftRef = useRef(newExerciseNameDraft);
+  useEffect(() => { newExerciseNameDraftRef.current = newExerciseNameDraft; }, [newExerciseNameDraft]);
 
   // Refs for keyboard navigation (Enter moves to the same column, next set down) and for
   // Escape-to-cancel (restores the draft value captured on focus — see fieldHandlers below).
@@ -4083,9 +4154,44 @@ function WorkoutGrid({
   const cellRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const preEditValueRef = useRef<Record<string, string>>({});
 
-  function persistGridDraft(rows: Record<string, WorkoutGridRowDraft>, extras: Record<string, string[]>) {
+  function persistGridDraft(
+    rows: Record<string, WorkoutGridRowDraft>,
+    extras: Record<string, string[]>,
+    nameDrafts: Record<string, string> = exerciseNameDraftsRef.current,
+    newNameDraft: string = newExerciseNameDraftRef.current,
+  ) {
     if (!sessionId) return;
-    saveWorkoutGridDraft(user.id, sessionId, { sessionId, rows, extraPendingRowKeys: extras, lastLocalMutationAt: nowIso() });
+    saveWorkoutGridDraft(user.id, sessionId, {
+      sessionId,
+      rows,
+      extraPendingRowKeys: extras,
+      exerciseNameDrafts: nameDrafts,
+      newExerciseNameDraft: newNameDraft,
+      lastLocalMutationAt: nowIso(),
+    });
+  }
+
+  function updateExerciseNameDraft(logId: string, value: string) {
+    setExerciseNameDrafts((current) => {
+      const next = { ...current, [logId]: value };
+      persistGridDraft(rowDrafts, extraPendingRowKeys, next);
+      return next;
+    });
+  }
+
+  function clearExerciseNameDraft(logId: string) {
+    setExerciseNameDrafts((current) => {
+      if (!(logId in current)) return current;
+      const next = { ...current };
+      delete next[logId];
+      persistGridDraft(rowDrafts, extraPendingRowKeys, next);
+      return next;
+    });
+  }
+
+  function updateNewExerciseNameDraft(value: string) {
+    setNewExerciseNameDraft(value);
+    persistGridDraft(rowDrafts, extraPendingRowKeys, exerciseNameDraftsRef.current, value);
   }
 
   function updateRowDraft(rowKey: string, patch: Partial<WorkoutGridRowDraft>) {
@@ -4131,7 +4237,9 @@ function WorkoutGrid({
             weight: skippedSource?.actualWeight ? String(skippedSource.actualWeight)
               : item.plannedSet?.plannedWeight !== undefined ? String(item.plannedSet.plannedWeight) : "",
             reps: skippedSource?.actualReps ? String(skippedSource.actualReps)
-              : item.plannedSet?.targetReps !== undefined ? String(item.plannedSet.targetReps) : "",
+              // A quick-added exercise's blank starter set stores targetReps: 0 as a "no
+              // target" sentinel (see blankPlannedSet) — treat it the same as unset, not "0".
+              : item.plannedSet?.targetReps ? String(item.plannedSet.targetReps) : "",
             rpe: skippedSource?.actualRpe ? String(skippedSource.actualRpe)
               : item.plannedSet?.targetRpe !== undefined ? String(item.plannedSet.targetRpe) : "",
             difficulty: skippedSource?.setRating ?? 3,
@@ -4151,6 +4259,17 @@ function WorkoutGrid({
     // whenever there's nothing new to seed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, db]);
+
+  // Recently-performed exercises get a small ranking bonus in the inline autocomplete
+  // (section 3: "aliases, recently performed exercises, and fuzzy matches"). Declared before
+  // the early return below so hook order stays stable across renders.
+  const recentExerciseIds = useMemo(() => new Set(
+    db.sessions
+      .filter((item) => item.userId === user.id && item.status === "completed")
+      .sort((a, b) => (b.completedAt || b.startedAt).localeCompare(a.completedAt || a.startedAt))
+      .slice(0, 10)
+      .flatMap((item) => item.loggedExercises.map((log) => log.exerciseId)),
+  ), [db.sessions, user.id]);
 
   if (!session) {
     return (
@@ -4195,12 +4314,17 @@ function WorkoutGrid({
   }
 
   function commitRow(log: LoggedExercise, row: WorkoutGridRow) {
+    // An unmatched (pendingExerciseName) row has no real Exercise record yet — its exerciseId
+    // is a locally-generated placeholder that will never resolve in db.exercises. Logging a set
+    // for it must still work (section 8: "a workout containing an unmatched exercise must save
+    // successfully") — only fall back to generic defaults where the exercise would normally
+    // inform behavior (unit, bodyweight check, gym-learning).
     const exercise = db.exercises.find((item) => item.id === log.exerciseId);
-    if (!exercise || !session) return;
+    if (!session) return;
     const draft = rowDrafts[row.rowKey] || emptyWorkoutGridRowDraft();
     const actualWeight = Number(draft.weight) || 0;
     const actualReps = Number(draft.reps) || 0;
-    const isWeightBased = exercise.category !== "bodyweight" && !exercise.bestTrackedBy.includes("time");
+    const isWeightBased = !exercise || (exercise.category !== "bodyweight" && !exercise.bestTrackedBy.includes("time"));
     if (isWeightBased && actualWeight <= 0 && actualReps <= 0) return;
     const actualRpe = draft.rpe ? Math.min(10, Math.max(0, Number(draft.rpe))) || undefined : undefined;
     const plannedSet = row.plannedSet;
@@ -4238,7 +4362,7 @@ function WorkoutGrid({
         targetLog.sets.push(loggedSet);
       }
       targetLog.weakPointTags = detectWeakPointTags(targetLog);
-      learnGymExerciseAdjustment({ db: next, user, session: target, loggedExercise: targetLog, loggedSet, exercise });
+      if (exercise) learnGymExerciseAdjustment({ db: next, user, session: target, loggedExercise: targetLog, loggedSet, exercise });
       if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
       target.updatedAt = nowIso();
       return next;
@@ -4366,10 +4490,17 @@ function WorkoutGrid({
     });
   }
 
+  // A single blank, unprefilled set — no history-based reps/RPE/weight, no three-set
+  // prescription. Quick-added exercises start empty; the user fills in what they did, with
+  // "Last: …" shown separately as a reference, never written into the editable cells (section
+  // 5 of the spreadsheet-logger spec). targetReps uses 0 as a "no target set" sentinel — see
+  // the row-seeding effect below, which treats a falsy targetReps as blank, same as undefined.
+  function blankPlannedSet(): PlannedSet {
+    return { id: createId("pset"), kind: "working", setNumber: 1, targetReps: 0 };
+  }
+
   function addExerciseToSession(exercise: Exercise) {
     if (!session) return;
-    const histDefaults = getLastPerformedExerciseDefaults(db, user.id, exercise.id);
-    const plannedWeight = getOffProgramStartingWeight({ db, user, exercise, targetReps: histDefaults.reps, targetRpe: histDefaults.rpe });
     void updateDb((next) => {
       const target = next.sessions.find((item) => item.id === session.id);
       if (!target) return next;
@@ -4380,15 +4511,122 @@ function WorkoutGrid({
         sets: [],
         weakPointTags: [],
         offProgram: true,
-        offProgramPlannedSets: buildOffProgramPlannedSets(histDefaults.sets, histDefaults.reps, histDefaults.rpe, plannedWeight),
+        offProgramPlannedSets: [blankPlannedSet()],
       });
       if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
       target.updatedAt = nowIso();
       return next;
     });
-    setExerciseQuery("");
+    updateNewExerciseNameDraft("");
     setShowExerciseSuggestions(false);
     setHighlightedSuggestionIndex(0);
+  }
+
+  // Adds a row for a typed name that hasn't been matched to a library exercise. exerciseId is
+  // a locally-generated id that will never collide with a real exercise id (createId uses a
+  // random uuid), so every existing exerciseId-keyed lookup still works — it just resolves to
+  // undefined in db.exercises until this gets resolved. pendingExerciseName is the source of
+  // truth for display until then (section 2/8 of the spec).
+  function addFreeTextExerciseToSession(name: string) {
+    if (!session || !name.trim()) return;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      if (!target) return next;
+      target.loggedExercises.push({
+        id: createId("logex"),
+        exerciseId: createId("unmatched"),
+        pendingExerciseName: name.trim(),
+        order: target.loggedExercises.length + 1,
+        sets: [],
+        weakPointTags: [],
+        offProgram: true,
+        offProgramPlannedSets: [blankPlannedSet()],
+      });
+      if (!preserveCompletedStatus(target) && (target.status === "completed" || target.status === "review")) target.status = "in-progress";
+      target.updatedAt = nowIso();
+      return next;
+    });
+    updateNewExerciseNameDraft("");
+    setShowExerciseSuggestions(false);
+    setHighlightedSuggestionIndex(0);
+  }
+
+  // Resolves an existing (matched or still-pending) logged exercise to a real library exercise
+  // id, or re-labels it as a different unmatched name. Never touches `sets` — all previously
+  // logged sets for this row carry over under the new association, satisfying "preserve all
+  // original logged sets" / "avoid duplicate history" from section 9.
+  function resolveLoggedExerciseName(log: LoggedExercise, resolvedExercise?: Exercise, freeTextName?: string) {
+    if (!session) return;
+    void updateDb((next) => {
+      const target = next.sessions.find((item) => item.id === session.id);
+      const targetLog = target?.loggedExercises.find((item) => item.id === log.id);
+      if (!targetLog) return next;
+      if (resolvedExercise) {
+        targetLog.exerciseId = resolvedExercise.id;
+        targetLog.pendingExerciseName = undefined;
+      } else if (freeTextName && freeTextName.trim()) {
+        targetLog.pendingExerciseName = freeTextName.trim();
+      }
+      if (target) target.updatedAt = nowIso();
+      return next;
+    });
+    clearExerciseNameDraft(log.id);
+  }
+
+  // "+ Create ... as new exercise" — the optional path from section 3/9. Minimal generic
+  // defaults; the user can flesh it out later from the Exercise Library like any custom
+  // exercise. Historical sets already logged under the pending name carry over via
+  // resolveLoggedExerciseName, same as matching to an existing exercise.
+  function buildMinimalCustomExercise(name: string): Exercise {
+    const trimmed = name.trim();
+    return {
+      id: createId("ex"),
+      ownerUserId: user.id,
+      name: trimmed,
+      muscleGroup: "chest",
+      primaryMuscles: [],
+      secondaryMuscles: [],
+      equipment: ["machine"],
+      movementPattern: "isolation",
+      tags: [user.goal],
+      variants: [],
+      substitutionIds: [],
+      setupCues: [],
+      trackByBodyweight: false,
+      trackPerSide: false,
+      category: "machine",
+      kind: ["accessory"],
+      directVolumeMuscles: [],
+      indirectVolumeMuscles: [],
+      bestTrackedBy: ["load", "reps"],
+      createdByUser: true,
+      source: "custom",
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+    };
+  }
+
+  function createLibraryExerciseFromName(log: LoggedExercise, name: string) {
+    if (!name.trim()) return;
+    const newExercise = buildMinimalCustomExercise(name);
+    void updateDb((next) => {
+      next.exercises.unshift(newExercise);
+      return next;
+    });
+    resolveLoggedExerciseName(log, newExercise);
+  }
+
+  // Trailing-row equivalent of createLibraryExerciseFromName — creates the library exercise
+  // and adds it to the session in one step, since there's no existing LoggedExercise yet to
+  // resolve.
+  function createNewExerciseAndAddToSession(name: string) {
+    if (!name.trim()) return;
+    const newExercise = buildMinimalCustomExercise(name);
+    void updateDb((next) => {
+      next.exercises.unshift(newExercise);
+      return next;
+    });
+    addExerciseToSession(newExercise);
   }
 
   function openFinishConfirm() {
@@ -4431,25 +4669,50 @@ function WorkoutGrid({
     setScreen("today");
   }
 
-  const exerciseMatches = exerciseQuery.trim().length
-    ? getSharedExerciseLibrarySource(db.exercises, user.id, { query: exerciseQuery, includeVariations: true })
-      .filter((exercise) => !session.loggedExercises.some((log) => log.exerciseId === exercise.id))
-      .slice(0, 8)
-    : [];
+  // Recently-performed exercises get a small ranking bonus in the inline autocomplete
+  // (section 3: "aliases, recently performed exercises, and fuzzy matches").
+  function exerciseSuggestionsFor(query: string): Exercise[] {
+    if (!query.trim() || !session) return [];
+    const candidates = getSharedExerciseLibrarySource(db.exercises, user.id, { includeVariations: true })
+      .filter((exercise) => !session.loggedExercises.some((log) => log.exerciseId === exercise.id));
+    return rankExerciseMatches(candidates, query, recentExerciseIds, 5);
+  }
 
-  function handleExerciseInputKeyDown(e: KeyboardEvent<HTMLInputElement>) {
-    if (!showExerciseSuggestions || !exerciseMatches.length) return;
-    if (e.key === "ArrowDown") {
+  const exerciseMatches = exerciseSuggestionsFor(newExerciseNameDraft);
+
+  // Shared commit path for both the trailing "add exercise" row (log undefined) and
+  // re-editing an already-added unmatched row's name (log provided). `pick` is set only when
+  // the user explicitly selected a suggestion (click or Enter-on-highlighted) — an exact
+  // case-insensitive name match on blur/Tab auto-resolves too (zero ambiguity), but a mere
+  // partial/fuzzy match never silently replaces the typed text (section 3/4).
+  function commitExerciseName(log: LoggedExercise | undefined, rawQuery: string, pick?: Exercise) {
+    const trimmed = rawQuery.trim();
+    if (!trimmed) { setShowExerciseSuggestions(false); return; }
+    const exact = pick ?? getSharedExerciseLibrarySource(db.exercises, user.id, { includeVariations: true })
+      .find((exercise) => exercise.name.trim().toLowerCase() === trimmed.toLowerCase());
+    if (log) {
+      resolveLoggedExerciseName(log, exact, exact ? undefined : trimmed);
+    } else if (exact) {
+      addExerciseToSession(exact);
+    } else {
+      addFreeTextExerciseToSession(trimmed);
+    }
+    setShowExerciseSuggestions(false);
+    setHighlightedSuggestionIndex(0);
+  }
+
+  function handleExerciseNameKeyDown(e: KeyboardEvent<HTMLInputElement>, log: LoggedExercise | undefined, query: string, matches: Exercise[]) {
+    if (e.key === "ArrowDown" && matches.length) {
       e.preventDefault();
-      setHighlightedSuggestionIndex((i) => Math.min(i + 1, exerciseMatches.length - 1));
-    } else if (e.key === "ArrowUp") {
+      setHighlightedSuggestionIndex((i) => Math.min(i + 1, matches.length - 1));
+    } else if (e.key === "ArrowUp" && matches.length) {
       e.preventDefault();
       setHighlightedSuggestionIndex((i) => Math.max(i - 1, 0));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      const pick = exerciseMatches[highlightedSuggestionIndex];
-      if (pick) addExerciseToSession(pick);
+      commitExerciseName(log, query, matches[highlightedSuggestionIndex]);
     } else if (e.key === "Escape") {
+      // Dismiss the dropdown only — never clear what was typed (section 3).
       setShowExerciseSuggestions(false);
     }
   }
@@ -4496,11 +4759,51 @@ function WorkoutGrid({
           ];
           const unit = exerciseUnitFor(exercise);
 
+          const isUnmatched = !!log.pendingExerciseName;
+          const nameDraft = exerciseNameDrafts[log.id];
+          const nameFieldValue = nameDraft ?? log.pendingExerciseName ?? "";
+          const nameSuggestions = isUnmatched && showExerciseSuggestions === log.id ? exerciseSuggestionsFor(nameFieldValue) : [];
+
           return (
             <div key={log.id} className="rounded-lg border border-white/10 bg-iron-950/40">
               <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2.5">
-                <div className="min-w-0">
-                  {exercise && onOpenExerciseAnalytics ? (
+                <div className="min-w-0 flex-1">
+                  {isUnmatched ? (
+                    <div className="relative">
+                      <input
+                        className="w-full truncate rounded-sm border border-amber-500/40 bg-amber-500/[0.08] px-1.5 py-1 text-left font-bold text-amber-200 placeholder:text-amber-200/50 focus:outline-none"
+                        style={{ fontSize: 16 }}
+                        value={nameFieldValue}
+                        title="Unmatched exercise — type to search or edit, or leave as-is"
+                        onChange={(e) => { updateExerciseNameDraft(log.id, e.target.value); setShowExerciseSuggestions(log.id); setHighlightedSuggestionIndex(0); }}
+                        onFocus={(e) => { e.target.select(); setShowExerciseSuggestions(log.id); }}
+                        onBlur={(e) => window.setTimeout(() => { commitExerciseName(log, e.target.value); }, 150)}
+                        onKeyDown={(e) => handleExerciseNameKeyDown(e, log, nameFieldValue, nameSuggestions)}
+                      />
+                      {showExerciseSuggestions === log.id && nameFieldValue.trim() && (
+                        <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-lg border border-white/10 bg-iron-900 shadow-xl">
+                          {nameSuggestions.map((candidate, index) => (
+                            <button
+                              key={candidate.id}
+                              className={`block w-full px-3 py-2 text-left ${index === highlightedSuggestionIndex ? "bg-white/10" : "hover:bg-white/[0.06]"}`}
+                              onMouseDown={(e) => e.preventDefault()}
+                              onClick={() => commitExerciseName(log, nameFieldValue, candidate)}
+                            >
+                              <p className="font-semibold text-white">{candidate.name}</p>
+                              <p className="text-xs text-iron-500">{[...candidate.primaryMuscles.slice(0, 2), candidate.equipment[0]].filter(Boolean).join(" · ")}</p>
+                            </button>
+                          ))}
+                          <button
+                            className="block w-full border-t border-white/[0.05] px-3 py-2 text-left text-xs text-iron-500 hover:bg-white/[0.06]"
+                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => createLibraryExerciseFromName(log, nameFieldValue)}
+                          >
+                            + Create "{nameFieldValue.trim()}" as new exercise
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ) : exercise && onOpenExerciseAnalytics ? (
                     <button
                       className="truncate text-left font-bold text-white underline decoration-white/20 decoration-dotted underline-offset-2 hover:text-[#8fb9ff]"
                       onClick={() => onOpenExerciseAnalytics(exercise.id, exercise.name)}
@@ -4511,12 +4814,12 @@ function WorkoutGrid({
                   ) : (
                     <p className="truncate font-bold text-white">{exercise?.name || "Unknown exercise"}</p>
                   )}
-                  {exercise && (
+                  {!isUnmatched && exercise && (
                     <p className="truncate text-xs text-iron-500">
                       {[...exercise.primaryMuscles.slice(0, 2), exercise.equipment[0]].filter(Boolean).join(" · ")}
                     </p>
                   )}
-                  {exercise && (() => {
+                  {!isUnmatched && exercise && (() => {
                     const last = getLatestExercisePreviewHistory(db, user, exercise, getExerciseLoadUnit(exercise, user));
                     if (!last) return null;
                     return (
@@ -4800,31 +5103,29 @@ function WorkoutGrid({
           );
         })}
 
-        {!session.loggedExercises.length && (
-          <Panel title="Build your workout" icon={Dumbbell}>
-            <p className="text-sm text-iron-400">Start typing an exercise name below to add your first one.</p>
-          </Panel>
-        )}
-
-        <div className="relative">
+        {/* Always present, never gated behind an "Add Exercise" action — this is the blank
+            spreadsheet row itself (section 1). Typing immediately works; nothing here commits
+            until the name is actually entered (section 10 — a truly empty row stays local-only,
+            nothing is pushed to the session). */}
+        <div className="relative rounded-lg border border-dashed border-white/15 bg-iron-950/20 px-3 py-2.5">
           <input
-            className="w-full rounded-lg border border-white/10 bg-iron-950/40 px-3 py-3 text-base font-semibold text-iron-100 placeholder:text-iron-600"
+            className="w-full bg-transparent text-base font-semibold text-iron-100 placeholder:text-iron-600 focus:outline-none"
             style={{ fontSize: 16 }}
-            placeholder="+ Add exercise... (type to search)"
-            value={exerciseQuery}
-            onChange={(e) => { setExerciseQuery(e.target.value); setShowExerciseSuggestions(true); setHighlightedSuggestionIndex(0); }}
-            onFocus={() => setShowExerciseSuggestions(true)}
-            onKeyDown={handleExerciseInputKeyDown}
-            onBlur={() => window.setTimeout(() => setShowExerciseSuggestions(false), 150)}
+            placeholder={session.loggedExercises.length ? "+ Add exercise..." : "Start typing your workout — e.g. Squat"}
+            value={newExerciseNameDraft}
+            onChange={(e) => { updateNewExerciseNameDraft(e.target.value); setShowExerciseSuggestions("__new__"); setHighlightedSuggestionIndex(0); }}
+            onFocus={() => setShowExerciseSuggestions("__new__")}
+            onKeyDown={(e) => handleExerciseNameKeyDown(e, undefined, newExerciseNameDraft, exerciseMatches)}
+            onBlur={(e) => window.setTimeout(() => { commitExerciseName(undefined, e.target.value); }, 150)}
           />
-          {showExerciseSuggestions && exerciseQuery.trim().length > 0 && (
+          {showExerciseSuggestions === "__new__" && newExerciseNameDraft.trim().length > 0 && (
             <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-lg border border-white/10 bg-iron-900 shadow-xl">
               {exerciseMatches.map((exercise, index) => (
                 <button
                   key={exercise.id}
                   className={`block w-full px-3 py-2 text-left ${index === highlightedSuggestionIndex ? "bg-white/10" : "hover:bg-white/[0.06]"}`}
                   onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => addExerciseToSession(exercise)}
+                  onClick={() => commitExerciseName(undefined, newExerciseNameDraft, exercise)}
                 >
                   <p className="font-semibold text-white">{exercise.name}</p>
                   <p className="text-xs text-iron-500">
@@ -4832,16 +5133,20 @@ function WorkoutGrid({
                   </p>
                 </button>
               ))}
-              {!exerciseMatches.length && (
-                <button className="block w-full px-3 py-2 text-left text-sm text-iron-400 hover:bg-white/[0.06]" onMouseDown={(e) => e.preventDefault()} onClick={() => setShowFullPicker(true)}>
-                  No matches — create a custom exercise
-                </button>
-              )}
-              {!!exerciseMatches.length && (
-                <button className="block w-full border-t border-white/[0.05] px-3 py-2 text-left text-xs text-iron-500 hover:bg-white/[0.06]" onMouseDown={(e) => e.preventDefault()} onClick={() => setShowFullPicker(true)}>
-                  More options / create new exercise
-                </button>
-              )}
+              <button
+                className="block w-full border-t border-white/[0.05] px-3 py-2 text-left text-xs text-iron-500 hover:bg-white/[0.06]"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => createNewExerciseAndAddToSession(newExerciseNameDraft)}
+              >
+                + Create "{newExerciseNameDraft.trim()}" as new exercise
+              </button>
+              <button
+                className="block w-full border-t border-white/[0.05] px-3 py-2 text-left text-xs text-iron-500 hover:bg-white/[0.06]"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { setShowFullPicker(true); setShowExerciseSuggestions(false); }}
+              >
+                More options / browse library
+              </button>
             </div>
           )}
         </div>
@@ -14049,37 +14354,40 @@ function CompletedWorkoutReview({
         <div className="mt-3 divide-y divide-white/[0.06] border-t border-white/[0.06]">
           {session.loggedExercises.map((logged) => {
             const exercise = db.exercises.find((item) => item.id === logged.exerciseId);
+            const isUnmatched = !!logged.pendingExerciseName;
+            const displayName = exercise?.name || logged.pendingExerciseName || "Unknown exercise";
             const displayUnit = exercise ? getExerciseLoadUnit(exercise, user, logged.sets.find((set) => isWeightUnit(set.unit))?.unit) : user.unit;
             const completedSetCount = logged.sets.filter(isCompletedValidSet).length;
             const hardSetCount = logged.sets.filter(isHardSet).length;
             const skippedSetCount = logged.sets.filter((set) => set.skipped).length;
-            const openExerciseAnalytics = () => onOpenExerciseAnalytics?.(logged.exerciseId, exercise?.name || "Exercise");
+            // Only a resolved (matched) exercise has real history/e1RM to open — an unmatched
+            // row has nothing to show there yet (section 4: history only applies once resolved).
+            const canOpenAnalytics = !isUnmatched && !!exercise;
+            const openExerciseAnalytics = () => onOpenExerciseAnalytics?.(logged.exerciseId, displayName);
             return (
               <div key={logged.id} className="py-4">
                 <div
-                  className={`flex flex-wrap items-start justify-between gap-3 ${onOpenExerciseAnalytics ? "cursor-pointer transition hover:bg-white/[0.03]" : ""}`}
-                  onClick={onOpenExerciseAnalytics ? openExerciseAnalytics : undefined}
-                  onKeyDown={onOpenExerciseAnalytics ? (event) => {
+                  className={`flex flex-wrap items-start justify-between gap-3 ${onOpenExerciseAnalytics && canOpenAnalytics ? "cursor-pointer transition hover:bg-white/[0.03]" : ""}`}
+                  onClick={onOpenExerciseAnalytics && canOpenAnalytics ? openExerciseAnalytics : undefined}
+                  onKeyDown={onOpenExerciseAnalytics && canOpenAnalytics ? (event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
                       openExerciseAnalytics();
                     }
                   } : undefined}
-                  role={onOpenExerciseAnalytics ? "button" : undefined}
-                  tabIndex={onOpenExerciseAnalytics ? 0 : undefined}
-                  aria-label={onOpenExerciseAnalytics ? `Open analytics for ${exercise?.name || "exercise"}` : undefined}
+                  role={onOpenExerciseAnalytics && canOpenAnalytics ? "button" : undefined}
+                  tabIndex={onOpenExerciseAnalytics && canOpenAnalytics ? 0 : undefined}
+                  aria-label={onOpenExerciseAnalytics && canOpenAnalytics ? `Open analytics for ${displayName}` : undefined}
                 >
                   <div>
-                    <p className="text-sm font-medium text-white">{exercise?.name || "Unknown exercise"}</p>
+                    <p className={`text-sm font-medium ${isUnmatched ? "text-amber-300" : "text-white"}`}>
+                      {displayName}{isUnmatched ? " · unresolved" : ""}
+                    </p>
                     <p className="mt-1 text-sm text-iron-400">{completedSetCount} completed sets · {hardSetCount} hard · {skippedSetCount} skipped</p>
                   </div>
-                  {onOpenExerciseAnalytics ? <ChevronRight className="h-3.5 w-3.5 text-iron-600" /> : null}
+                  {onOpenExerciseAnalytics && canOpenAnalytics ? <ChevronRight className="h-3.5 w-3.5 text-iron-600" /> : null}
                 </div>
-                {exercise ? (
-                  <LoggedSetsTable logged={logged} exercise={exercise} user={user} displayUnit={displayUnit} />
-                ) : (
-                  <p className="mt-3 text-sm text-iron-400">Exercise details are unavailable for this logged entry.</p>
-                )}
+                <LoggedSetsTable logged={logged} exercise={exercise} user={user} displayUnit={displayUnit} />
               </div>
             );
           })}
@@ -15619,7 +15927,7 @@ function WorkoutDayView({ db, user, day }: { db: TrainingDatabase; user: UserPro
   );
 }
 
-function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: LoggedExercise; exercise: Exercise; user: UserProfile; displayUnit?: UnitPreference }) {
+function LoggedSetsTable({ logged, exercise, user, displayUnit }: { logged: LoggedExercise; exercise?: Exercise; user: UserProfile; displayUnit?: UnitPreference }) {
   const unit = displayUnit || getExerciseLoadUnit(exercise, user);
   const bodyweightMovement = isBodyweightExercise(exercise);
   if (!logged.sets.length) return null;
@@ -16087,8 +16395,14 @@ function formatExerciseLoadText(params: {
   bodyweightEmptyLabel?: string;
 }): string {
   const { exercise, user, weight, unit, bodyweightEmptyLabel = "BW" } = params;
-  if (!exercise) return "—";
+  // An unmatched (pendingExerciseName) exercise has no real Exercise record — fall back to the
+  // explicit unit param or the user's global preference rather than hiding the weight behind
+  // "—" entirely. See getExerciseLoadUnit, which already accepts an undefined exercise.
   const loadUnit = getExerciseLoadUnit(exercise, user, unit);
+  if (!exercise) {
+    if (weight === undefined || weight === null || weight <= 0) return "—";
+    return `${formatWeight(weight, loadUnit)} ${loadUnit}`;
+  }
   if (isBodyweightExercise(exercise)) {
     if (weight !== undefined && weight !== null && weight > 0) {
       return `BW + ${formatWeight(convertWeight(weight, loadUnit, loadUnit), loadUnit)} ${loadUnit}`;

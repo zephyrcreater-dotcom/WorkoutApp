@@ -675,6 +675,12 @@ export interface LoggedExercise {
   weakPointTags: string[];
   offProgram?: boolean;
   offProgramPlannedSets?: PlannedSet[];
+  // Set while a typed exercise name hasn't been matched/confirmed against the library yet.
+  // exerciseId still holds a locally-generated id (never colliding with a real exercise id,
+  // see createId) so every existing exerciseId-keyed lookup keeps working — it just won't
+  // resolve to anything in db.exercises until this is cleared by resolving to a real exercise.
+  // Sets, history, and e1RM for this entry only become available once resolved.
+  pendingExerciseName?: string;
 }
 
 export interface LoggedSet {

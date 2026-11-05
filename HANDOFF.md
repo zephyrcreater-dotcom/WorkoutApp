@@ -1,5 +1,64 @@
 # HANDOFF.md
 
+## Current Handoff — Phase 1: True Spreadsheet Workout Logger (Session 80)
+
+**The ask:** replace the add-exercise-first workflow (type in a search field → must pick from a list → *then* get set rows) with a genuine spreadsheet: the exercise name is itself an editable cell, free text always works, and the library is an optional intelligence layer — never a gate.
+
+### Two real bugs found during verification, not just the UI rework
+
+Implementing free-text exercise entry required a way to represent "not yet matched to the library" without inventing an exercise id that could collide with a real one. Added `LoggedExercise.pendingExerciseName?: string` (additive, optional — `exerciseId` still always holds a value, just a locally-generated one via `createId("unmatched")` when unresolved, so every existing `exerciseId`-keyed lookup keeps compiling and running). While wiring this up end to end, two existing code paths turned out to silently no-op whenever `db.exercises.find(...)` came back empty — which is *always* true for an unmatched row:
+
+1. **`WorkoutGrid`'s `commitRow` had `if (!exercise || !session) return;`** — the checkmark that logs a set required a real `Exercise` record to exist before it would write anything to the database. For an unmatched exercise, this meant **logging a set silently did nothing** — no error, no feedback, just nothing saved. Fixed by only requiring `session`; `exercise` is now optional throughout the function, with `isWeightBased` defaulting to true (safe — only skips bodyweight's special-case zero-weight handling) and `learnGymExerciseAdjustment` (which genuinely needs a real exercise) skipped when there isn't one.
+2. **`formatExerciseLoadText` returned `"—"` unconditionally whenever `exercise` was undefined**, regardless of whether a real weight value was passed in. Combined with bug 1 this would have doubly hidden an unmatched exercise's sets even if they *had* saved. Fixed centrally (not per call site, consistent with how session 78's unit fix was done) — `exercise` missing now falls back to the explicit `unit` param or the user's global preference instead of hiding the number.
+
+Both were caught by actually finishing a workout with an unmatched exercise and reopening it from Previous Sessions — the first attempt showed "0 / 2 sets completed" and "Unknown exercise" on reopen even though the UI had looked like logging succeeded. Re-verified clean after the fix (see below).
+
+### What changed in `WorkoutGrid`
+
+- **The "Build your workout" empty-state panel is gone.** A session with zero exercises just shows the trailing add-exercise row directly — no intermediate card, no "press Add Exercise" step.
+- **The add-exercise control is now a permanent inline row** (dashed border, styled like a spreadsheet placeholder), not a search field gated behind anything. It's always present at the bottom of the exercise list (or the only thing shown when the list is empty), with its own small anchored autocomplete dropdown — not the old full-width "+ Add exercise... (type to search)" field with no visual relationship to the rows above it.
+- **Any exercise name is accepted.** `commitExerciseName()` is the single commit path (used by both the trailing add-row and re-editing an already-added unmatched row): an exact case-insensitive name match auto-resolves (zero ambiguity), an explicitly-selected suggestion resolves to that exercise, and anything else — including deliberately not selecting a suggestion — becomes a `pendingExerciseName` row. Nothing ever blocks or interrupts; there is no "exercise not found" error state.
+- **A newly-added exercise gets exactly one blank set**, via `blankPlannedSet()` — no history-based reps/RPE/weight prefill, no three-set prescription. (`targetReps: 0` is used as a "no target" sentinel inside this blank set — the existing row-seeding effect's blank check was changed from `!== undefined` to a truthy check so `0` reads as blank, same as unset, rather than literally displaying "0". This only affects quick-added rows; a real program's prescribed `targetReps` is never `0` in practice.) Programmed-day exercises are untouched — they still come from `day.exercises`/`plannedExerciseSnapshot`, a completely separate path this session never touched.
+- **Inline ranked autocomplete**: new `rankExerciseMatches()` (exact > prefix > substring > word-prefix > typo-tolerant via a small Levenshtein check > recency bonus for exercises performed in the last 10 completed sessions) replaces the old plain-substring filter for this specific dropdown. The dropdown ends with an explicit `+ Create "…" as new exercise` action (optional, not required) — `createNewExerciseAndAddToSession`/`createLibraryExerciseFromName` share one `buildMinimalCustomExercise()` builder.
+- **An unmatched row's name is itself an always-editable, amber-bordered `<input>`** (not a button-to-edit toggle) — type into it any time to search and resolve, or leave it alone. Resolving (`resolveLoggedExerciseName`) only ever changes `exerciseId`/`pendingExerciseName`; `sets` is never touched, so nothing is lost or duplicated when an exercise gets matched or newly created later — including from a reopened, already-completed workout via "Edit Workout" (verified live, see below).
+- **Draft persistence extended** (`WorkoutGridDraft.exerciseNameDrafts`/`newExerciseNameDraft`) so an in-progress, not-yet-committed exercise name — matched or not — survives a refresh, exactly like the existing per-set draft mechanism already did for reps/weight/RPE.
+- **`CompletedWorkoutReview` and `LoggedSetsTable`** now handle a `pendingExerciseName` row directly: shows the typed name in amber with an "· unresolved" tag instead of "Unknown exercise", and always renders the actual logged sets table (previously gated behind `exercise ?` and would print "Exercise details are unavailable" — which, combined with bug 1 above, is exactly how an unmatched exercise's workout would have looked like it silently lost data).
+
+### What was deliberately not built this pass
+
+- No dedicated "N unresolved exercises" banner/prompt after finishing a workout (request section 9's "lightweight, dismissible prompt"). Resolution is fully supported — click the amber name any time, during the live session or after reopening via "Edit Workout" — but there's no separate nagging UI pointing at it yet. Low risk to add later if wanted; skipped this pass to keep the change scoped to the interaction model itself.
+- `buildMinimalCustomExercise` uses generic defaults (category "machine", no muscle groups assigned) for exercises created via "+ Create as new exercise" — same minimal-defaults tradeoff the request implicitly accepted by calling this an *optional* action; the user can flesh out the real library entry afterward from the Exercise Library like any custom exercise.
+
+### Verified live, not just read through
+
+1. Opened Quick Workout — blank grid immediately, no empty-state card.
+2. Typed "Squat" — ranked suggestions appeared; selected Competition Squat — added with **one** blank set (reps/RPE/weight all empty, not prefilled).
+3. Typed "Cable pulldwn," deliberately did not select a suggestion, clicked elsewhere — row stayed with the exact typed text in an amber-bordered input, fully editable, difficulty/checkmark all functional.
+4. Logged two sets for it (75×10@8, 75×9@8), finished the workout, reopened from Previous Sessions — **both sets present**, "Cable pulldwn · unresolved" shown correctly (this is the exact flow that caught both bugs above — first attempt showed 0 sets and "Unknown exercise").
+5. Reopened via "Edit Workout," clicked the amber name, retyped "Cable Row," selected the real match — resolved to a matched exercise, **the already-logged set was preserved** (still "1 / 1 sets completed" after resolving, not reset or duplicated).
+6. Typed a partial, never-committed exercise name ("Incline Smit") into the trailing add-row and reloaded the page — the exact uncommitted text was still there afterward.
+
+`npm run build` ✓, `npm run lint` ✓ — same 30 pre-existing issues as every prior session.
+
+### Not independently re-verified this session
+
+- Programmed-day prescriptions displaying correctly (acceptance test 15) and kg/lb consistency (test 14) were not re-driven live this session — neither code path was touched (prescriptions come from `day.exercises`, never from `addExerciseToSession`; unit display goes through the same `getExerciseLoadUnit`/`formatExerciseLoadText` functions session 78 already fixed and this session only extended, not altered, for the `exercise === undefined` case).
+
+### Invariants to preserve
+
+- **`exerciseId` on `LoggedExercise` must always hold *some* value**, even when unresolved — never make it optional. `pendingExerciseName` presence is what means "unresolved," not a missing/null `exerciseId`.
+- **Resolving an exercise (`resolveLoggedExerciseName`) must never touch `sets`.** That's the whole mechanism that makes "resolve later" safe — if a future change needs to rebuild or reset sets on resolve, that's a regression of this exact feature.
+- **Any function that does `db.exercises.find(... === log.exerciseId)` inside `WorkoutGrid` must treat the result as legitimately possibly-undefined and still do something useful** (log the set, show the weight, etc.) — don't reintroduce a bare `if (!exercise) return` guard on a path that's supposed to work for unmatched rows. Weight-recommendation paths (`recalcRowWeight`, `incrementFor`) are the one legitimate exception — there's genuinely nothing to recommend without a real exercise, and those already no-op safely.
+- **`targetReps: 0` on a `PlannedSet` means "no target set," not literally zero** — only within the row-seeding effect's display logic, and only because `blankPlannedSet()` is the sole producer of that sentinel. Don't let a real program's prescription authoring ever use `0` as a genuine target.
+
+### Files changed
+
+- `src/types/domain.ts` (`LoggedExercise.pendingExerciseName`)
+- `src/App.tsx` (`WorkoutGrid` exercise-entry rewrite, `rankExerciseMatches`/`levenshteinDistance`, `CompletedWorkoutReview`/`LoggedSetsTable`/`formatExerciseLoadText` unmatched-exercise handling)
+- `HANDOFF.md`
+
+---
+
 ## Current Handoff — Workout Experience Redesign (Session 79)
 
 **The ask:** reverse the app's center of gravity from "a Block Builder with a logger attached" to "a workout log with programming as an optional layer on top." Not a rewrite — a navigation/reachability fix plus a handful of targeted UI additions, reusing everything already built.
